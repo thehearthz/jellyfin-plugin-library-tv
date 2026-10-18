@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.1.1.0",
+        "changelog": "Adds a separate Library TV home folder containing playable channels. Uses the same schedules and shared streams as Live TV. Experimental; validate playback transitions on your clients.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.1.1.0/library-tv-0.1.1.0.zip",
+        "checksum": "dbe1b8772eaa2040fc1864bb5df46b7e",
+        "timestamp": "2026-10-18T19:37:26Z"
+      },
+      {
         "version": "0.1.0.0",
         "changelog": "Initial experimental release. Validate channel transitions on your clients before relying on unattended playback.",
         "targetAbi": "12.2.0.0",
