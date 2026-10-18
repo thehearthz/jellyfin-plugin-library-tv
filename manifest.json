@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.3.0.0",
+        "changelog": "Custom manual and automatic channel numbers and names, subchannel sorting and conflict checks, stable automatic assignments, progress retention for disabled channels, on-demand schedule health, bounded guide previews, and per-refresh query reuse.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.3.0.0/library-tv-0.3.0.0.zip",
+        "checksum": "b663e78d175f48bad777e5f8f95dd7b2",
+        "timestamp": "2026-10-18T22:44:28Z"
+      },
+      {
         "version": "0.2.0.0",
         "changelog": "Visual channel builder with searchable show/movie selection, time blocks, commercial folders, guide preview, and optional Plugin Pages 3+ integration. Existing channel IDs and saved rotations are preserved.",
         "targetAbi": "12.2.0.0",
