@@ -1,0 +1,49 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: publish-catalog
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet run --project tests/Planner.Tests -c Release
+      - run: dotnet run --project tests/Integration.Tests -c Release
+      - name: Package
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: ./scripts/package.ps1 -Version $env:TAG.Substring(1) -Repository $env:REPO
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" artifacts/* --title "Library TV $TAG (experimental)" --notes "Experimental release for Jellyfin 12.2. Read the README for setup, codec constraints, and known limitations."
+      - name: Update install catalog
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $fresh = Get-Content artifacts/manifest.json -Raw | ConvertFrom-Json
+          git checkout main
+          if (Test-Path manifest.json) {
+            $old = Get-Content manifest.json -Raw | ConvertFrom-Json
+            $fresh[0].versions = @($fresh[0].versions) + @($old[0].versions | Where-Object { $_.version -ne $env:TAG.Substring(1) })
+          }
+          ConvertTo-Json -InputObject @($fresh) -Depth 20 | Set-Content manifest.json -Encoding utf8NoBOM
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manifest.json
+          git commit -m "Update plugin catalog for $env:TAG"
+          git push origin main

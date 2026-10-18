@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html><head><title>Library TV</title></head><body>
+<div id="LibraryTVPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+<div data-role="content"><div class="content-primary">
+<h1>Library TV</h1><p>Virtual channels advance with the clock. No video processing runs when nobody is watching.</p>
+<form id="LibraryTVForm">
+<label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="AutoChannels"><span>Create channels automatically from selected libraries</span></label>
+<div id="libraries"></div>
+<div class="inputContainer"><label for="TimeZone">Schedule time zone</label><input is="emby-input" id="TimeZone" placeholder="America/New_York" required></div>
+<div class="inputContainer"><label for="BaseUrl">Internal Jellyfin URL (loopback, include base path)</label><input is="emby-input" id="BaseUrl" required></div>
+<div class="inputContainer"><label for="GuideDays">Days in rolling guide (1–7)</label><input is="emby-input" id="GuideDays" type="number" min="1" max="7" required></div>
+<div class="inputContainer"><label for="RefreshMinutes">Library refresh interval in minutes</label><input is="emby-input" id="RefreshMinutes" type="number" min="5" max="1440" required></div>
+<div class="inputContainer"><label for="MaxActive">Maximum channels streaming at once</label><input is="emby-input" id="MaxActive" type="number" min="1" max="16" required></div>
+<h2>Manual channels</h2><p>Use the library IDs below in Source.LibraryIds. For an exact episode order, add episode IDs to Source.ItemIds and set Shuffle to false. Episodes are ordered by season and episode within each series.</p>
+<button is="emby-button" type="button" id="AddChannel" class="raised">Add channel template</button>
+<label for="Channels">Channel settings (JSON)</label><textarea id="Channels" spellcheck="false" style="width:100%;min-height:26rem;font-family:monospace;box-sizing:border-box" aria-label="Manual channels JSON"></textarea>
+<p>Blocks are checked in listed order. Times use HH:mm; Days uses Sunday=0 through Saturday=6. A block may cross midnight. MaxItemsPerDay=3 schedules three episodes, then uses the channel's default source. Programs finish before the next block begins. CommercialCount inserts ads between programs; Commercials.FolderIds selects a library folder. Transcode=false uses low CPU stream copy; true encodes compatible 720p video and uses more CPU.</p>
+<p>Saved guide entries remain fixed until they air. New media enters the rolling tail automatically. Changing a channel ID starts a new schedule and episode rotation. Repeats start only after the selected pool is exhausted; RepeatWhenExhausted=false disables that.</p>
+<button is="emby-button" type="submit" class="raised button-submit block"><span>Save and refresh guide</span></button>
+</form><button is="emby-button" type="button" id="Refresh" class="raised">Refresh guide and status</button><pre id="Status" style="white-space:pre-wrap" aria-live="polite"></pre>
+<script>
+(function(){
+ const page=document.querySelector('#LibraryTVPage'); let config;
+ const el=id=>page.querySelector('#'+id);
+ function request(path,method='GET',body){return ApiClient.ajax({type:method,url:ApiClient.getUrl('LibraryTV/'+path),dataType:'json',contentType:'application/json',...(body?{data:JSON.stringify(body)}:{})});}
+ function status(value){el('Status').textContent=JSON.stringify(value,null,2);}
+ async function load(){try{
+  const values=await Promise.all([request('configuration'),request('libraries'),request('status')]);config=values[0];
+  el('AutoChannels').checked=config.AutoChannels;el('TimeZone').value=config.TimeZoneId;el('BaseUrl').value=config.InternalBaseUrl;el('GuideDays').value=config.GuideDays;el('RefreshMinutes').value=config.RefreshMinutes;el('MaxActive').value=config.MaxActiveChannels;el('Channels').value=JSON.stringify(config.Channels,null,2);
+  el('libraries').replaceChildren();values[1].forEach(l=>{const label=document.createElement('label');label.style.display='block';const input=document.createElement('input');input.type='checkbox';input.value=l.ItemId;input.checked=config.AutoLibraryIds.includes(l.ItemId);label.append(input,document.createTextNode(' '+l.Name+' — '+l.ItemId));el('libraries').append(label);});status(values[2]);
+ }catch(e){status({Error:String(e)});}}
+ page.addEventListener('pageshow',load);
+ el('AddChannel').addEventListener('click',()=>{try{const channels=JSON.parse(el('Channels').value);channels.push({Id:'channel-'+Date.now(),Name:'My channel',Number:String(channels.length+1),Enabled:true,Source:{LibraryIds:[],ItemIds:[],Shuffle:false,RepeatWhenExhausted:true},Blocks:[{Id:'evening',Start:'18:00',End:'21:00',Days:[0,1,2,3,4,5,6],MaxItemsPerDay:3,Source:{LibraryIds:[],ItemIds:[],Shuffle:false,RepeatWhenExhausted:true}}],Commercials:{FolderIds:[],Shuffle:true,RepeatWhenExhausted:true},CommercialCount:0,Transcode:false});el('Channels').value=JSON.stringify(channels,null,2);}catch(e){status({Error:String(e)});}});
+ el('LibraryTVForm').addEventListener('submit',async e=>{e.preventDefault();try{config.Channels=JSON.parse(el('Channels').value);config.AutoChannels=el('AutoChannels').checked;config.AutoLibraryIds=Array.from(el('libraries').querySelectorAll('input:checked')).map(x=>x.value);config.TimeZoneId=el('TimeZone').value;config.InternalBaseUrl=el('BaseUrl').value;config.GuideDays=Number(el('GuideDays').value);config.RefreshMinutes=Number(el('RefreshMinutes').value);config.MaxActiveChannels=Number(el('MaxActive').value);await request('configuration','POST',config);status(await request('refresh','POST'));}catch(e){status({Error:'Could not save or refresh. Check JSON, IDs, and time zone. '+String(e)});}});
+ el('Refresh').addEventListener('click',async()=>{try{status(await request('refresh','POST'));}catch(e){status({Error:String(e)});}});
+})();
+</script></div></div></div></body></html>
