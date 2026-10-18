@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "512a2a0d-5101-4fe8-9651-484f077a601a",
+    "name": "Library TV",
+    "overview": "Always-on channels from your own libraries",
+    "description": "Experimental virtual television with persistent episode order, time blocks, automatic library channels, and commercial breaks. No idle encoding. Stream copy requires compatible media; compatibility encoding costs CPU.",
+    "owner": "thehearthz",
+    "category": "Live TV",
+    "versions": [
+      {
+        "version": "0.1.0.0",
+        "changelog": "Initial experimental release. Validate channel transitions on your clients before relying on unattended playback.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.1.0.0/library-tv-0.1.0.0.zip",
+        "checksum": "e2fba57a6f9cf3f3d7b5646730874464",
+        "timestamp": "2026-10-18T05:43:42Z"
+      }
+    ]
+  }
+]
