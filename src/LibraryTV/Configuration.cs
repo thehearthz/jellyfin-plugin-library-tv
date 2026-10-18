@@ -6,6 +6,8 @@ public sealed class Configuration : BasePluginConfiguration
 {
     public bool AutoChannels { get; set; }
     public string[] AutoLibraryIds { get; set; } = [];
+    public int AutoChannelStartNumber { get; set; } = 100;
+    public AutomaticChannel[] AutomaticChannels { get; set; } = [];
     public int GuideDays { get; set; } = 3;
     public int RefreshMinutes { get; set; } = 60;
     public int MaxActiveChannels { get; set; } = 2;
@@ -13,6 +15,13 @@ public sealed class Configuration : BasePluginConfiguration
     public string InternalBaseUrl { get; set; } = "http://127.0.0.1:8096";
     public string StreamToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     public ChannelDefinition[] Channels { get; set; } = [];
+}
+
+public sealed class AutomaticChannel
+{
+    public string LibraryId { get; set; } = "";
+    public string Number { get; set; } = "";
+    public string Name { get; set; } = "";
 }
 
 public sealed class ChannelDefinition

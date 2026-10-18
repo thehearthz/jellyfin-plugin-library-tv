@@ -10,7 +10,7 @@ public sealed class LiveTvService(Scheduler scheduler) : ILiveTvService
     public string Name => "Library TV";
     public string HomePageUrl => "https://github.com/thehearthz/jellyfin-plugin-library-tv";
     public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(scheduler.Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV }));
-    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(scheduler.Guide.Where(x => x.ChannelId == channelId && x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
+    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(scheduler.GuideFor(channelId).Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
     {
         Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Title,
         StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : "From your Jellyfin library"

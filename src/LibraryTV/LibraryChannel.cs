@@ -38,8 +38,7 @@ public sealed class LibraryChannel(Scheduler scheduler, IUserManager users) : IC
         ct.ThrowIfCancellationRequested();
         if (!IsEnabledFor(query.UserId.ToString("N")) || !string.IsNullOrEmpty(query.FolderId))
             return Task.FromResult(new ChannelItemResult { TotalRecordCount = 0 });
-        var channels = scheduler.Channels.OrderBy(x => int.TryParse(x.Number, out var n) ? n : int.MaxValue)
-            .ThenBy(x => x.Number, StringComparer.Ordinal).ThenBy(x => x.Name, StringComparer.Ordinal).ToArray();
+        var channels = scheduler.Channels.OrderBy(x => ChannelNumbers.Key(x.Number)).ThenBy(x => x.Name, StringComparer.Ordinal).ToArray();
         var items = channels.Skip(query.StartIndex ?? 0).Take(query.Limit ?? int.MaxValue).Select(x => new ChannelItemInfo
         {
             Id = x.Id, Name = $"{x.Number} · {x.Name}", Type = ChannelItemType.Media,

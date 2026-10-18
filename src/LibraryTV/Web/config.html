@@ -427,11 +427,30 @@
             ><input type="checkbox" data-setting="AutoChannels" />Make a channel
             for each selected library</label
           >
+          <label class="ltv-field"
+            ><span>Starting number for new automatic channels</span
+            ><input
+              type="number"
+              min="1"
+              max="999999"
+              data-setting="AutoChannelStartNumber"
+          /></label>
           <div data-ui="auto-libraries"></div>
           <p class="ltv-muted">
             Automatic channels use the whole library. Use the channel builder
             above for a hand-picked lineup.
           </p>
+        </div>
+      </details>
+      <details class="ltv-panel">
+        <summary>Channel health</summary>
+        <div>
+          <p class="ltv-muted">
+            Check the saved schedule without starting a stream. Status updates
+            only when you ask.
+          </p>
+          <button type="button" data-action="health">Refresh status</button>
+          <div data-ui="health" aria-live="polite"></div>
         </div>
       </details>
       <details class="ltv-panel">
@@ -652,6 +671,124 @@
       function current() {
         return state.config.Channels.find((c) => c.Id === state.channel);
       }
+      function numberParts(value) {
+        const text = String(value || "").trim();
+        if (!/^[0-9]{1,6}(?:[.-][0-9]{1,4})?$/.test(text)) return null;
+        const parts = text.split(/[.-]/).map(Number);
+        return parts[0] > 0
+          ? [parts[0], parts.length > 1 ? parts[1] : -1]
+          : null;
+      }
+      function numberKey(value) {
+        const parts = numberParts(value);
+        return parts ? parts.join(":") : null;
+      }
+      function compareNumbers(a, b) {
+        const x = numberParts(a.Number) || [9999999, 0],
+          y = numberParts(b.Number) || [9999999, 0];
+        return x[0] - y[0] || x[1] - y[1] || a.Name.localeCompare(b.Name);
+      }
+      function renderAutomaticChannels() {
+        const target = ui("auto-libraries");
+        target.replaceChildren();
+        for (const library of state.libraries) {
+          const selected = state.config.AutoLibraryIds.some(
+            (x) => canonical(x) === canonical(library.ItemId),
+          );
+          let entry = state.config.AutomaticChannels.find(
+            (x) => canonical(x.LibraryId) === canonical(library.ItemId),
+          );
+          const box = node("section", { class: "ltv-block" });
+          box.append(
+            check(library.Name, selected, (value) => {
+              state.config.AutoLibraryIds = value
+                ? [...state.config.AutoLibraryIds, library.ItemId]
+                : state.config.AutoLibraryIds.filter(
+                    (x) => canonical(x) !== canonical(library.ItemId),
+                  );
+              renderAutomaticChannels();
+            }),
+          );
+          if (selected) {
+            if (!entry) {
+              entry = { LibraryId: library.ItemId, Number: "", Name: "" };
+              state.config.AutomaticChannels.push(entry);
+            }
+            box.append(
+              node(
+                "div",
+                { class: "ltv-cols" },
+                field(
+                  "Custom channel name",
+                  entry.Name,
+                  (v) => (entry.Name = v),
+                  "text",
+                  { placeholder: library.Name },
+                ),
+                field(
+                  "Custom channel number",
+                  entry.Number,
+                  (v) => (entry.Number = v),
+                  "text",
+                  {
+                    placeholder: "Assigned automatically",
+                    inputmode: "decimal",
+                  },
+                ),
+              ),
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "Leave the name blank to use the library name. A blank number receives a free number when saved; assigned numbers stay fixed.",
+              ),
+            );
+          }
+          target.append(box);
+        }
+      }
+      async function refreshHealth() {
+        const target = ui("health");
+        target.textContent = "Checking saved channels…";
+        try {
+          const result = await api("status");
+          target.replaceChildren();
+          if (result.LastError)
+            target.append(
+              node("p", {}, "Last refresh error: " + result.LastError),
+            );
+          for (const channel of result.Channels || [])
+            target.append(
+              node(
+                "div",
+                { class: "ltv-block" },
+                node(
+                  "strong",
+                  {},
+                  (channel.Number || "") + " · " + channel.Name,
+                ),
+                node(
+                  "p",
+                  { class: "ltv-muted" },
+                  channel.HasUpcomingPrograms
+                    ? channel.Current
+                      ? "On now: " + channel.Current
+                      : "Waiting for the next scheduled program."
+                    : "No upcoming programs. Check source selections, deleted files, and repeat settings.",
+                ),
+              ),
+            );
+          if (!(result.Channels || []).length)
+            target.append(
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "No enabled channels have been saved yet.",
+              ),
+            );
+        } catch (e) {
+          target.textContent = errorMessage(e);
+        }
+      }
       function field(label, value, change, type = "text", attrs = {}) {
         return node(
           "label",
@@ -814,7 +951,7 @@
       function renderChannels() {
         const nav = ui("channels");
         nav.replaceChildren();
-        for (const c of state.config.Channels) {
+        for (const c of [...state.config.Channels].sort(compareNumbers)) {
           const b = button(
             "",
             () => {
@@ -871,15 +1008,26 @@
               c.Name = v;
               renderChannels();
             }),
-            field("Channel number", c.Number, (v) => {
-              c.Number = v;
-              renderChannels();
-            }),
+            field(
+              "Channel number",
+              c.Number,
+              (v) => {
+                c.Number = v;
+                renderChannels();
+              },
+              "text",
+              { placeholder: "e.g. 42, 7.2 or 7-10", inputmode: "decimal" },
+            ),
           ),
           check("Channel enabled", c.Enabled !== false, (v) => {
             c.Enabled = v;
             renderChannels();
           }),
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Choose your own channel number, including subchannels such as 7.2. Changing a number or temporarily disabling a channel keeps its episode progress.",
+          ),
         );
         head.append(
           node(
@@ -1104,12 +1252,14 @@
         renderEditor();
       }
       function nextNumber() {
-        return String(
-          Math.max(
-            0,
-            ...state.config.Channels.map((c) => Number(c.Number) || 0),
-          ) + 1,
+        const used = new Set(
+          [...state.config.Channels, ...state.config.AutomaticChannels].map(
+            (x) => numberKey(x.Number),
+          ),
         );
+        let next = 1;
+        while (used.has(next + ":-1") && next < 999999) next++;
+        return String(next);
       }
       function addChannel() {
         const c = {
@@ -1364,6 +1514,7 @@
           ["GuideDays", 1, 7, "Days in guide"],
           ["RefreshMinutes", 5, 1440, "Refresh interval"],
           ["MaxActiveChannels", 1, 16, "Maximum active channels"],
+          ["AutoChannelStartNumber", 1, 999999, "Automatic starting number"],
         ]) {
           if (
             !Number.isInteger(state.config[key]) ||
@@ -1380,10 +1531,32 @@
             );
         }
         const ids = new Set();
+        const numbers = new Map();
+        function reserve(value, name, enabled) {
+          const key = numberKey(value);
+          if (!key)
+            throw new Error(
+              "Choose a channel number from 1–999999, with an optional subchannel such as 7.2 or 7-10.",
+            );
+          if (!enabled) return;
+          if (numbers.has(key))
+            throw new Error(
+              "Channel number " +
+                value +
+                " is used by both “" +
+                numbers.get(key) +
+                "” and “" +
+                name +
+                "”. Choose a different number.",
+            );
+          numbers.set(key, name);
+        }
         for (const c of state.config.Channels) {
           if (!c.Name.trim()) throw new Error("Every channel needs a name.");
           if (ids.has(c.Id)) throw new Error("Channel IDs must be unique.");
           ids.add(c.Id);
+          c.Number = c.Number.trim();
+          reserve(c.Number, c.Name, c.Enabled !== false);
           if (
             !Number.isInteger(c.CommercialCount) ||
             c.CommercialCount < 0 ||
@@ -1403,6 +1576,21 @@
               );
           }
         }
+        if (state.config.AutoChannels)
+          for (const entry of state.config.AutomaticChannels) {
+            if (
+              !state.config.AutoLibraryIds.some(
+                (x) => canonical(x) === canonical(entry.LibraryId),
+              ) ||
+              !entry.Number.trim()
+            )
+              continue;
+            reserve(
+              entry.Number,
+              entry.Name || titleFor("LibraryIds", entry.LibraryId),
+              true,
+            );
+          }
       }
       async function save() {
         if (state.busy || !state.config) return;
@@ -1417,8 +1605,14 @@
         page.querySelector("[data-action=save]").disabled = true;
         notice("Saving your channels…");
         try {
-          await api("configuration", "POST", state.config);
-          if (state.revision === revision) saved();
+          const savedResult = await api("configuration", "POST", state.config);
+          if (state.revision === revision) {
+            if (savedResult.AutomaticChannels)
+              state.config.AutomaticChannels = savedResult.AutomaticChannels;
+            saved();
+            renderAutomaticChannels();
+            renderChannels();
+          }
           try {
             const result = await api("refresh", "POST");
             ui("plugin-pages").textContent = result.PluginPages || "";
@@ -1467,6 +1661,10 @@
           ]);
           state.config = config;
           state.config.Channels = state.config.Channels || [];
+          state.config.AutomaticChannels = state.config.AutomaticChannels || [];
+          state.config.AutoLibraryIds = state.config.AutoLibraryIds || [];
+          state.config.AutoChannelStartNumber =
+            state.config.AutoChannelStartNumber ?? 100;
           state.libraries = libraries;
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
@@ -1507,22 +1705,7 @@
               dirty();
             });
           }
-          for (const library of libraries)
-            ui("auto-libraries").append(
-              check(
-                library.Name,
-                config.AutoLibraryIds.some(
-                  (x) => canonical(x) === canonical(library.ItemId),
-                ),
-                (value) => {
-                  config.AutoLibraryIds = value
-                    ? [...config.AutoLibraryIds, library.ItemId]
-                    : config.AutoLibraryIds.filter(
-                        (x) => canonical(x) !== canonical(library.ItemId),
-                      );
-                },
-              ),
-            );
+          renderAutomaticChannels();
           ui("plugin-pages").textContent =
             status.PluginPages || "Plugin Pages status unavailable.";
           ui("body").hidden = false;
@@ -1543,6 +1726,9 @@
         }
       }
       page.querySelector("[data-action=save]").addEventListener("click", save);
+      page
+        .querySelector("[data-action=health]")
+        .addEventListener("click", refreshHealth);
       page
         .querySelector("[data-action=add-channel]")
         .addEventListener("click", addChannel);

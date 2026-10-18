@@ -31,6 +31,42 @@ try
     Check(services.Any(x => x.ServiceType == typeof(ILiveTvService) && x.ImplementationType == typeof(LiveTvService)), "Plugin registers its native Live TV provider in dependency injection");
     Check(services.Any(x => x.ServiceType == typeof(IChannel) && x.ImplementationType == typeof(LibraryChannel)), "Plugin registers a separate home library folder");
     Check(plugin.Id == new Guid("512a2a0d-5101-4fe8-9651-484f077a601a"), "Plugin GUID matches install catalog");
+    Check(ChannelNumbers.Key("007.02") == ChannelNumbers.Key("7-2"), "Subchannel aliases and leading zeros share one conflict key");
+    var orderedNumbers = new[] { "42", "7-10", "7.2", "7" }.OrderBy(ChannelNumbers.Key).ToArray();
+    Check(orderedNumbers.SequenceEqual(new[] { "7", "7.2", "7-10", "42" }), "Custom channel numbers sort by major and subchannel rather than decimals or text");
+    try { ChannelNumbers.ValidateUnique([new ChannelDefinition { Name = "First", Number = "7.2" }, new ChannelDefinition { Name = "Second", Number = "007-02" }]); throw new Exception("Duplicate number accepted"); }
+    catch (ArgumentException ex) { Check(ex.Message.Contains("First") && ex.Message.Contains("Second"), "Conflicting channel numbers identify both channels"); }
+    try { ChannelNumbers.Key("0"); throw new Exception("Zero channel number accepted"); }
+    catch (ArgumentException) { Check(true, "Invalid channel numbers are rejected"); }
+    var autoLibraryId = Guid.NewGuid();
+    var autoFolders = new List<VirtualFolderInfo> { new() { ItemId = autoLibraryId.ToString("N"), Name = "Original library" } };
+    var autoCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, _) => name == "GetVirtualFolders" ? autoFolders : throw new NotSupportedException(name)));
+    var autoConfig = new Configuration { AutoChannels = true, AutoLibraryIds = [autoLibraryId.ToString()], Channels = [new ChannelDefinition { Id = "manual", Number = "100" }] };
+    Check(autoCatalog.PrepareAutomaticChannels(autoConfig) && autoConfig.AutomaticChannels[0].Number == "101", "Automatic channels skip reserved manual numbers and accept either GUID format");
+    var legacyConfig = new Configuration { AutoChannels = true, AutoLibraryIds = [autoLibraryId.ToString()], Channels = [new ChannelDefinition { Id = "legacy-manual", Number = "1" }] };
+    autoCatalog.PrepareAutomaticChannels(legacyConfig, preserveLegacyNumbers: true);
+    Check(legacyConfig.AutomaticChannels[0].Number == "101", "Upgrading keeps the previous automatic channel number when available");
+    autoConfig.Channels[0].Number = "999";
+    var secondLibraryId = Guid.NewGuid();
+    autoConfig.AutoLibraryIds = [autoLibraryId.ToString(), secondLibraryId.ToString()];
+    autoFolders.Add(new VirtualFolderInfo { ItemId = secondLibraryId.ToString("N"), Name = "Added library" });
+    autoCatalog.PrepareAutomaticChannels(autoConfig);
+    Check(autoConfig.AutomaticChannels.First(x => Guid.Parse(x.LibraryId) == autoLibraryId).Number == "101", "Automatic numbers remain stable when manual channels and libraries change");
+    autoConfig.AutomaticChannels[0].Name = "Custom station";
+    autoConfig.AutomaticChannels[0].Number = "7-10";
+    Check(autoCatalog.Channels(autoConfig).Any(x => x.Name == "Custom station" && x.Number == "7-10"), "Automatic channels use custom names and subchannel numbers");
+    autoConfig.Channels[0].Number = "7.10";
+    try { autoCatalog.Channels(autoConfig); throw new Exception("Manual/automatic number conflict accepted"); }
+    catch (ArgumentException) { Check(true, "Manual and automatic channels cannot share the same number"); }
+    var queryCount = 0;
+    var scanCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, _) => { if (name == "GetItemList") { queryCount++; return Array.Empty<BaseItem>(); } throw new NotSupportedException(name); }));
+    var read = scanCatalog.CreateRefreshReader();
+    var scanPool = new Pool { LibraryIds = [autoLibraryId.ToString()] };
+    var firstRead = read(scanPool);
+    firstRead.Add(new Media(Guid.NewGuid(), "Not cached", "", 10, "", 0, 0));
+    Check(read(new Pool { LibraryIds = scanPool.LibraryIds, Shuffle = false }).Count == 0 && queryCount == 1, "Matching pools share one library query per refresh and never share mutable result lists");
+    scanCatalog.CreateRefreshReader()(scanPool);
+    Check(queryCount == 2, "A later refresh scans again so newly added media can appear");
     PluginPagesIntegration.Register(typeof(Jellyfin.Plugin.PluginPages.PluginInterface).Assembly);
     var registration = System.Text.Json.JsonDocument.Parse(Jellyfin.Plugin.PluginPages.PluginInterface.Registered!.Json).RootElement;
     Check(registration.GetProperty("id").GetString() == "library-tv-builder" && registration.GetProperty("url").GetString() == "/LibraryTV/builder", "Plugin Pages v3 receives the stable builder route through its reflection interface");
@@ -87,6 +123,32 @@ try
     Check(pageTwo.Items.Count == 0 && pageTwo.TotalRecordCount == 1, "Home folder pagination reports a stable total");
     viewer.SetPermission(PermissionKind.EnableLiveTvAccess, false);
     Check((await folder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id }, default)).Items.Count == 0, "Viewers without Live TV permission cannot list channel items");
+    var preservedId = Guid.NewGuid();
+    var startAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+    var seededState = new Dictionary<string, ChannelState> { ["home-channel"] = new ChannelState {
+        Guide = Enumerable.Range(0, 2000).Select(n => new Airing("home-channel", preservedId, "Program " + n, "test.mkv", startAt.AddMinutes(n), startAt.AddMinutes(n + 1), false)).ToList(),
+        Rotations = new() { ["default"] = new Rotation { Last = preservedId, Seen = [preservedId] } }
+    } };
+    await File.WriteAllTextAsync(scheduler.StatePath, System.Text.Json.JsonSerializer.Serialize(seededState));
+    var restarted = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
+    await restarted.Refresh(default);
+    Check(restarted.Current("home-channel", startAt.AddMinutes(1500))?.Title == "Program 1500" && restarted.Current("home-channel", startAt.AddMinutes(2000)) is null, "Indexed current-program lookup handles interior entries and exclusive end boundaries");
+    var indexedProvider = new LiveTvService(restarted);
+    var indexedGuide = (await indexedProvider.GetProgramsAsync("home-channel", startAt.AddMinutes(1500).UtcDateTime, startAt.AddMinutes(1501).UtcDateTime, default)).ToArray();
+    Check(indexedGuide.Length == 1 && indexedGuide[0].Name == "Program 1500", "Live TV program queries use the channel index and exclusive time boundaries");
+    var guideController = new Jellyfin.Plugin.LibraryTV.Controller(catalog, restarted, null!);
+    Check(((System.Collections.IEnumerable)guideController.Guide("home-channel")).Cast<object>().Count() == 40 && ((System.Collections.IEnumerable)guideController.Guide("home-channel", -10, 10000)).Cast<object>().Count() == 200, "Guide previews have a small default and enforce an upper response limit");
+    var editedConfig = plugin.Configuration;
+    editedConfig.Channels[0].Enabled = false;
+    await restarted.SaveConfiguration(editedConfig, default);
+    await restarted.Refresh(default);
+    var dormant = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, ChannelState>>(await File.ReadAllTextAsync(restarted.StatePath))!;
+    Check(dormant["home-channel"].Rotations["default"].Last == preservedId && restarted.GuideFor("home-channel").Count == 0 && restarted.Current("home-channel", startAt.AddMinutes(1500)) is null, "Disabling a channel retains progress but removes its streams and published guide");
+    editedConfig.Channels[0].Enabled = true;
+    editedConfig.Channels[0].Number = "7.2";
+    await restarted.SaveConfiguration(editedConfig, default);
+    await restarted.Refresh(default);
+    Check(restarted.Channels.Single().Number == "7.2" && restarted.Current("home-channel", startAt.AddMinutes(1500))?.ItemId == preservedId, "Re-enabling and renumbering preserve the existing schedule and episode cursor");
     try { await folder.GetChannelItemMediaInfo("removed", default); throw new Exception("Removed channel accepted"); }
     catch (ArgumentException) { Check(true, "Removed channels cannot open a new folder stream"); }
     var serializer = new XmlSerializer(typeof(Configuration));

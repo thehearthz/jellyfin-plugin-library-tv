@@ -30,7 +30,7 @@ public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts 
     public object Libraries() => catalog.Libraries();
 
     [HttpGet("status")]
-    public object Status() => new { scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, Programs = scheduler.Guide.Count(p => p.ChannelId == x.Id), Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title }) };
+    public object Status() => new { scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow) }) };
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken ct)
@@ -40,19 +40,18 @@ public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts 
     }
 
     [HttpGet("guide/{id}")]
-    public object Guide(string id) => scheduler.Guide.Where(x => x.ChannelId == id && x.End > DateTimeOffset.UtcNow).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial });
+    public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial });
 
     [HttpGet("configuration")]
     public Configuration Configuration() => Plugin.Instance.Configuration;
 
     [HttpPost("configuration")]
-    public IActionResult Save([FromBody] Configuration config)
+    public async Task<IActionResult> Save([FromBody] Configuration config, CancellationToken ct)
     {
         try
         {
-            Scheduler.Validate(config);
-            Plugin.Instance.UpdateConfiguration(config);
-            return Ok(new { Saved = true });
+            await scheduler.SaveConfiguration(config, ct);
+            return Ok(new { Saved = true, config.AutomaticChannels });
         }
         catch (Exception ex) when (ex is ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException or FormatException) { return BadRequest(new { Error = ex.Message }); }
     }

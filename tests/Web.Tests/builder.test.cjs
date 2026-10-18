@@ -242,6 +242,128 @@ test("invalid server numbers show a readable error before saving", async () => {
   }
 });
 
+test("custom subchannel numbers are saved without changing the channel ID", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    change(
+      w,
+      w.document.querySelector('input[placeholder="e.g. 42, 7.2 or 7-10"]'),
+      "7-10",
+    );
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].Number, "7-10");
+    assert.equal(w.testApi.saved.Channels[0].Id, "evening-tv");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("equivalent duplicate numbers are caught before saving", async () => {
+  const config = fixture.configuration();
+  config.Channels[0].Number = "7.2";
+  const dom = await ready({ config });
+  try {
+    const w = dom.window;
+    click(w, "+ New channel");
+    change(
+      w,
+      w.document.querySelector('input[placeholder="e.g. 42, 7.2 or 7-10"]'),
+      "007-02",
+    );
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved, null);
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /used by both/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("new channels use a free integer instead of treating subchannels as decimals", async () => {
+  const config = fixture.configuration();
+  config.Channels[0].Number = "7.2";
+  const dom = await ready({ config });
+  try {
+    const w = dom.window;
+    click(w, "+ New channel");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[1].Number, "1");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("automatic channels accept custom station names and numbers", async () => {
+  const config = fixture.configuration();
+  config.AutoChannels = true;
+  config.AutoLibraryIds = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  const dom = await ready({ config });
+  try {
+    const w = dom.window;
+    change(
+      w,
+      w.document.querySelector('input[placeholder="TV Shows"]'),
+      "My station",
+    );
+    change(
+      w,
+      w.document.querySelector('input[placeholder="Assigned automatically"]'),
+      "42.1",
+    );
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.AutomaticChannels[0].Name, "My station");
+    assert.equal(w.testApi.saved.AutomaticChannels[0].Number, "42.1");
+    assert.equal(w.testApi.saved.AutoChannelStartNumber, 100);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("sidebar sorts subchannels numerically", async () => {
+  const config = fixture.configuration();
+  const original = config.Channels[0];
+  config.Channels = ["7-10", "7.2", "7"].map((number, i) => ({
+    ...structuredClone(original),
+    Id: "ch" + i,
+    Number: number,
+  }));
+  const dom = await ready({ config });
+  try {
+    assert.deepEqual(
+      [...dom.window.document.querySelectorAll(".ltv-channel strong")].map(
+        (x) => x.textContent.split(" · ")[0],
+      ),
+      ["7", "7.2", "7-10"],
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("channel health checks run on request without starting playback", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const before = w.testApi.calls.length;
+    click(w, "Refresh status");
+    await settle();
+    assert.deepEqual(w.testApi.calls.slice(before), ["status"]);
+    assert.match(
+      w.document.querySelector("[data-ui=health]").textContent,
+      /No enabled channels/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("media names are displayed as text instead of HTML", async () => {
   const original = fixture.content.shows[0].Name;
   fixture.content.shows[0].Name = "<img src=x onerror=alert(1)>";

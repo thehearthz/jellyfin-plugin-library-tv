@@ -5,6 +5,7 @@ using MediaBrowser.Model.Entities;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Model.Querying;
 using Jellyfin.Database.Implementations.Enums;
+using System.Text.Json;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
@@ -38,14 +39,72 @@ public sealed class Catalog(ILibraryManager library)
         item.Overview is { Length: > 240 } overview ? overview[..240] + "…" : item.Overview ?? "");
 
     public object Libraries() => library.GetVirtualFolders().Select(x => new { x.ItemId, x.Name, x.Locations });
+
+    public bool PrepareAutomaticChannels(Configuration config, bool preserveLegacyNumbers = false)
+    {
+        if (!config.AutoChannels) return false;
+        var changed = false;
+        var overrides = config.AutomaticChannels.ToList();
+        var used = config.Channels.Select(x => ChannelNumbers.Key(x.Number)).ToHashSet();
+        foreach (var entry in overrides.Where(x => !string.IsNullOrWhiteSpace(x.Number))) used.Add(ChannelNumbers.Key(entry.Number));
+        var next = config.AutoChannelStartNumber;
+        var selected = config.AutoLibraryIds.Select(Guid.Parse).ToHashSet();
+        var folders = library.GetVirtualFolders().Where(x => selected.Contains(Guid.Parse(x.ItemId))).ToArray();
+        if (preserveLegacyNumbers && overrides.Count == 0)
+        {
+            var legacyNumber = 100 + config.Channels.Count(x => x.Enabled);
+            foreach (var folder in folders)
+            {
+                // v0.2 used these numbers. Retain them on upgrade when available.
+                if (!used.Contains((legacyNumber, -1)))
+                {
+                    overrides.Add(new AutomaticChannel { LibraryId = folder.ItemId, Number = legacyNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+                    used.Add((legacyNumber, -1));
+                    changed = true;
+                }
+                legacyNumber++;
+            }
+        }
+        foreach (var folder in folders.OrderBy(x => x.ItemId, StringComparer.Ordinal))
+        {
+            var entry = overrides.FirstOrDefault(x => Guid.Parse(x.LibraryId) == Guid.Parse(folder.ItemId));
+            if (entry is null) { entry = new AutomaticChannel { LibraryId = folder.ItemId }; overrides.Add(entry); changed = true; }
+            if (!string.IsNullOrWhiteSpace(entry.Number)) continue;
+            while (next <= 999999 && used.Contains((next, -1))) next++;
+            if (next > 999999) throw new ArgumentException("No automatic channel numbers remain. Choose a lower starting number.");
+            entry.Number = next.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            used.Add((next++, -1));
+            changed = true;
+        }
+        if (changed) config.AutomaticChannels = overrides.ToArray();
+        return changed;
+    }
+
     public ChannelDefinition[] Channels(Configuration config)
     {
         var manual = config.Channels.Where(x => x.Enabled).ToList();
         if (config.AutoChannels)
-            foreach (var folder in library.GetVirtualFolders().Where(x => config.AutoLibraryIds.Contains(x.ItemId)))
-                manual.Add(new ChannelDefinition { Id = "auto-" + folder.ItemId, Name = folder.Name, Number = (100 + manual.Count).ToString(), Source = new Pool { LibraryIds = [folder.ItemId] } });
+            foreach (var folder in library.GetVirtualFolders().Where(x => config.AutoLibraryIds.Any(id => Guid.Parse(id) == Guid.Parse(x.ItemId))))
+            {
+                var entry = config.AutomaticChannels.FirstOrDefault(x => Guid.Parse(x.LibraryId) == Guid.Parse(folder.ItemId))
+                    ?? throw new ArgumentException("Automatic channel numbers must be assigned before building channels.");
+                manual.Add(new ChannelDefinition { Id = "auto-" + folder.ItemId, Name = string.IsNullOrWhiteSpace(entry.Name) ? folder.Name : entry.Name.Trim(), Number = entry.Number.Trim(), Source = new Pool { LibraryIds = [folder.ItemId] } });
+            }
         if (manual.Select(x => x.Id).Distinct().Count() != manual.Count) throw new ArgumentException("Channel IDs must be unique.");
-        return manual.ToArray();
+        ChannelNumbers.ValidateUnique(manual);
+        return manual.OrderBy(x => ChannelNumbers.Key(x.Number)).ThenBy(x => x.Name, StringComparer.Ordinal).ToArray();
+    }
+
+    // The cache lives for one refresh only, so the next refresh still sees new media.
+    public Func<Pool, List<Media>> CreateRefreshReader()
+    {
+        var cache = new Dictionary<string, List<Media>>(StringComparer.Ordinal);
+        return pool =>
+        {
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials });
+            if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool);
+            return new List<Media>(media); // Commercial exclusion must not modify cached content.
+        };
     }
 
     public List<Media> Read(Pool pool)

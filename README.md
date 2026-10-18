@@ -1,6 +1,6 @@
 # Library TV for Jellyfin 12.2
 
-Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.2:** includes a visual channel builder and optional Plugin Pages navigation. The plugin compiles against the official 12.2 API, with automated scheduling, integration and browser-interaction checks. Playback transitions have not yet been verified on a real Jellyfin server/client combination. Please test with a small channel first.
+Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.3:** adds stable custom channel numbers, subchannels, automatic channel naming and on-demand schedule health. The plugin compiles against the official 12.2 API, with automated scheduling, integration and browser-interaction checks. Playback transitions have not yet been verified on a real Jellyfin server/client combination. Please test with a small channel first.
 
 ## Install
 
@@ -16,7 +16,7 @@ Build always-on television channels from local media already indexed by Jellyfin
 5. Run Jellyfin's **Refresh Channels** scheduled task. A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
 6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
 
-Upgrading from v0.1: install the v0.2.0.0 update and restart Jellyfin. Existing settings, channel IDs and saved episode rotations are preserved. Run **Refresh Channels** if the folder is missing. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client. The standard Jellyfin home views include this provider as its own folder.
+Upgrading from v0.1 or v0.2: install the v0.3.0.0 update and restart Jellyfin. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
 
 ### Plugin Pages integration
 
@@ -36,6 +36,9 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 
 - A separate **Library TV** home folder, with one playable live item per enabled channel, alongside the existing Live TV guide integration.
 - Manual channels and automatically generated channels for explicitly selected libraries.
+- Custom channel numbers such as **42**, **7.2**, or **7-10**, with conflict detection and numeric subchannel ordering in the builder/provider listings. Individual clients may apply their own display ordering.
+- Automatic channels have custom names and numbers, a configurable starting number for new assignments, and stable assignments when other channels or libraries change.
+- Temporarily disabling a manual channel preserves its saved schedule and episode rotation; it is hidden from the published lineup until re-enabled.
 - Visual show/movie picker with search, library filters, artwork, pagination, selected-content chips, and no ID copying or JSON editing.
 - Channel duplication, day/time block forms, commercial-folder selection, genre/tag filters, saved-guide preview, and Plugin Pages navigation.
 - Rolling 1–7 day schedule, extended periodically from current library metadata.
@@ -44,6 +47,9 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
 - Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
 - One FFmpeg process per actively watched channel shared by viewers. No FFmpeg processes when channels are idle. Bounded viewer queues and a simultaneous channel limit keep resource use controlled.
+- Identical content pools share their library query during each refresh. The cache ends with that refresh, so new files can appear at the next refresh without a persistent media cache.
+- Current-program lookup uses a per-channel index. State is copied without a JSON encode/decode round trip; JSON is used for durable storage. Guide previews return 40 programs by default (maximum 200 per request).
+- **Channel health** checks the saved schedule only when requested and reports channels with no upcoming content without starting playback or polling in the background.
 - Viewers join the program scheduled for the current time. The schedule continues while nobody watches.
 
 ## Low CPU and playback constraints
@@ -64,6 +70,14 @@ Set a channel's `Transcode` to `true` to normalize its output to H.264/AAC at 72
 6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
 This schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full. Selections can include specific shows, movies, indexed folders, or entire libraries. Shows automatically include their available episodes.
+
+### Channel numbers and automatic stations
+
+Edit **Channel number** at the top of a manual channel. Use 1–999999, optionally followed by a dot or hyphen and a 0–9999 subchannel. For example, `7`, `7.2`, and `7-10` are separate channels, ordered by major number then subchannel. `007.02` and `7-2` refer to the same number for conflict checking. Enabled channels need unique numbers across manual and automatic stations. Renumbering keeps the channel ID, existing guide and episode progress.
+
+Under **Automatic channels**, select a library and edit its **Custom channel name** and **Custom channel number**. Leave the name blank to follow the library name; leave the number blank to assign the next free whole number on save. **Starting number** affects new assignments only. Existing assignments remain fixed; reserved assignments for deselected libraries are retained to make reselecting predictable. The global automatic-channel switch can temporarily hide the automatic lineup while keeping selected libraries' schedule progress. Deselecting a library removes its saved schedule; its number/name reservation remains.
+
+New manual channels use the first free positive whole number instead of adding one to the highest subchannel. Duplicate-number errors identify both stations. Disabled manual channels may share a number with an enabled station, but must be given a free number before re-enabling. Their numbers remain reserved for automatic allocation.
 
 Time blocks have **soft boundaries**: a program and its commercial break finish before the next block is evaluated. A long preceding movie can delay or entirely cover a short block. A strict start-time/cutoff system is not implemented. When blocks overlap, the first matching block in the list wins. A block spanning midnight belongs to the day it started. Daily quotas apply to that local start date; daylight-saving changes follow the selected time zone.
 
@@ -105,7 +119,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.2.0.0
+./scripts/package.ps1 -Version 0.3.0.0
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -115,7 +129,7 @@ npm ci --ignore-scripts
 npm test
 ```
 
-CI builds and tests on Linux. Pushing a four-part version tag such as `v0.2.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing a four-part version tag such as `v0.3.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
