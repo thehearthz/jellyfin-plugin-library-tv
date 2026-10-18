@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.2.0.0",
+        "changelog": "Visual channel builder with searchable show/movie selection, time blocks, commercial folders, guide preview, and optional Plugin Pages 3+ integration. Existing channel IDs and saved rotations are preserved.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.2.0.0/library-tv-0.2.0.0.zip",
+        "checksum": "a9a399cbc488585742723ea98d32de3e",
+        "timestamp": "2026-10-18T19:53:31Z"
+      },
+      {
         "version": "0.1.1.0",
         "changelog": "Adds a separate Library TV home folder containing playable channels. Uses the same schedules and shared streams as Live TV. Experimental; validate playback transitions on your clients.",
         "targetAbi": "12.2.0.0",
