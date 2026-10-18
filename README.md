@@ -13,12 +13,16 @@ Build always-on television channels from local media already indexed by Jellyfin
 2. Open the plugin catalog, install **Library TV**, then restart Jellyfin.
 3. Open **Dashboard → Plugins → Library TV**. Set your schedule time zone, such as `America/New_York`.
 4. Enable automatic channels and select libraries, or add a manual channel template and fill in its source IDs. Save and refresh.
-5. Run Jellyfin's **Refresh Guide** scheduled task. Channels appear under **Live TV**. Give viewers normal Jellyfin Live TV access.
+5. Run Jellyfin's **Refresh Internet Channels** scheduled task (the translated task name may differ). A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
+6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
+
+Upgrading from v0.1.0.0: install the v0.1.1.0 update, restart Jellyfin, then run **Refresh Internet Channels**. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; the exact placement depends on the client. The standard Jellyfin home views include this provider as its own folder. The folder's items keep stable names; the current program schedule is available in Live TV's Guide.
 
 Jellyfin's plugin catalog and repository configuration are documented [here](https://jellyfin.org/docs/general/server/plugins/). Release ZIPs contain only the plugin DLL; Jellyfin supplies its own dependencies. Manual installation: extract the DLL into a `Library TV` directory under your Jellyfin plugins directory and restart.
 
 ## What it does
 
+- A separate **Library TV** home folder, with one playable live item per enabled channel, alongside the existing Live TV guide integration.
 - Manual channels and automatically generated channels for explicitly selected libraries.
 - Rolling 1–7 day schedule, extended periodically from current library metadata.
 - Saved rotation state survives restarts. Episodes within each series follow season/episode order, even with shuffle enabled.

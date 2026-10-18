@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0.0",
+    [string]$Version = "0.1.1.0",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
 )
@@ -22,7 +22,7 @@ $entry = [ordered]@{
     category = 'Live TV'
     versions = @([ordered]@{
         version = $Version
-        changelog = 'Initial experimental release. Validate channel transitions on your clients before relying on unattended playback.'
+        changelog = 'Adds a separate Library TV home folder containing playable channels. Uses the same schedules and shared streams as Live TV. Experimental; validate playback transitions on your clients.'
         targetAbi = '12.2.0.0'
         sourceUrl = "https://github.com/$Repository/releases/download/v$Version/library-tv-$Version.zip"
         checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()

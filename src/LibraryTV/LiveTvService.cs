@@ -15,7 +15,7 @@ public sealed class LiveTvService(Scheduler scheduler) : ILiveTvService
         Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Title,
         StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : "From your Jellyfin library"
     }));
-    private static MediaSourceInfo Source(string id)
+    internal static MediaSourceInfo Source(string id)
     {
         var c = Plugin.Instance.Configuration;
         return new MediaSourceInfo { Id = "librarytv-" + id, Path = $"{c.InternalBaseUrl.TrimEnd('/')}/LibraryTV/stream/{Uri.EscapeDataString(id)}?token={Uri.EscapeDataString(c.StreamToken)}", Protocol = MediaProtocol.Http, Container = "ts", IsInfiniteStream = true, SupportsDirectPlay = false, SupportsDirectStream = true, SupportsTranscoding = true, RequiresOpening = false, RequiresClosing = false, BufferMs = 1500 };
