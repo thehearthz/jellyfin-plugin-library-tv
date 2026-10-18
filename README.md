@@ -1,6 +1,6 @@
 # Library TV for Jellyfin 12.2
 
-Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.1:** the plugin compiles against the official 12.2 API, with automated scheduling and integration checks. Playback transitions have not yet been verified on a real Jellyfin server/client combination. Please test with a small channel first.
+Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.2:** includes a visual channel builder and optional Plugin Pages navigation. The plugin compiles against the official 12.2 API, with automated scheduling, integration and browser-interaction checks. Playback transitions have not yet been verified on a real Jellyfin server/client combination. Please test with a small channel first.
 
 ## Install
 
@@ -12,11 +12,23 @@ Build always-on television channels from local media already indexed by Jellyfin
 
 2. Open the plugin catalog, install **Library TV**, then restart Jellyfin.
 3. Open **Dashboard → Plugins → Library TV**. Set your schedule time zone, such as `America/New_York`.
-4. Enable automatic channels and select libraries, or add a manual channel template and fill in its source IDs. Save and refresh.
+4. Click **New channel → Choose shows & movies**. Browse or search your library, select your shows and movies, click **Done**, then **Save channels**. Automatic whole-library channels are also available in the **Automatic channels** section.
 5. Run Jellyfin's **Refresh Channels** scheduled task. A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
 6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
 
-Upgrading from v0.1.0.0: install the v0.1.1.0 update, restart Jellyfin, then run **Refresh Channels**. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; the exact placement depends on the client. The standard Jellyfin home views include this provider as its own folder. The folder's items keep stable names; the current program schedule is available in Live TV's Guide.
+Upgrading from v0.1: install the v0.2.0.0 update and restart Jellyfin. Existing settings, channel IDs and saved episode rotations are preserved. Run **Refresh Channels** if the folder is missing. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client. The standard Jellyfin home views include this provider as its own folder.
+
+### Plugin Pages integration
+
+To reach the builder from Jellyfin's main web navigation:
+
+1. Add the upstream repository `https://www.iamparadox.dev/jellyfin/plugins/manifest.json` under **Dashboard → Plugins → Repositories**.
+2. Install **File Transformation** and **Plugin Pages 3.0+**, using builds compatible with Jellyfin 12.2, then restart Jellyfin.
+3. Refresh the web client. Open **Library TV Builder** in the **Plugin Settings** menu section provided by Plugin Pages.
+
+Library TV registers the page automatically through the [documented Plugin Pages v3 interface](https://github.com/IAmParadox27/jellyfin-plugin-pages#adding-your-pages). No manual JSON or web-file edits are needed. Its connection status appears under **Server settings & Plugin Pages** in the builder. The menu entry can be visible to all signed-in users, but only administrators can browse media or edit channels; other users receive an administrator-access message.
+
+Plugin Pages and File Transformation are optional navigation dependencies and are not bundled in Library TV. The same full builder always remains available at **Dashboard → Plugins → Library TV**. The integration is for Jellyfin Web and compatible web-wrapper clients; native clients may not expose Plugin Pages navigation. The integration is tested against upstream's reflection contract, not a running installation of the companion plugins.
 
 Jellyfin's plugin catalog and repository configuration are documented [here](https://jellyfin.org/docs/general/server/plugins/). Release ZIPs contain only the plugin DLL; Jellyfin supplies its own dependencies. Manual installation: extract the DLL into a `Library TV` directory under your Jellyfin plugins directory and restart.
 
@@ -24,6 +36,8 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 
 - A separate **Library TV** home folder, with one playable live item per enabled channel, alongside the existing Live TV guide integration.
 - Manual channels and automatically generated channels for explicitly selected libraries.
+- Visual show/movie picker with search, library filters, artwork, pagination, selected-content chips, and no ID copying or JSON editing.
+- Channel duplication, day/time block forms, commercial-folder selection, genre/tag filters, saved-guide preview, and Plugin Pages navigation.
 - Rolling 1–7 day schedule, extended periodically from current library metadata.
 - Saved rotation state survives restarts. Episodes within each series follow season/episode order, even with shuffle enabled.
 - A pool airs all its selected content before cycling. New items enter the next unplanned portion of the rotation. Disable `RepeatWhenExhausted` to stop a pool when it runs out.
@@ -40,53 +54,20 @@ Stream copy seeking is keyframe-limited. Joins may begin slightly before the exa
 
 Set a channel's `Transcode` to `true` to normalize its output to H.264/AAC at 720p/30fps using software encoding. This costs materially more CPU and requires Jellyfin's FFmpeg to include libx264. It is a compatibility option, not a promise of seamless transitions. Jellyfin may additionally transcode Live TV for a particular client. Hardware acceleration for the plugin's encoding process is not implemented.
 
-## Manual channel example
+## Build an evening channel
 
-The dashboard shows library IDs. Copy series, episode, or folder IDs from Jellyfin item URLs. `ItemIds` accepts videos or series/folder IDs; `FolderIds` recursively selects videos in an indexed folder. Nothing scans an arbitrary filesystem directory: add the commercial folder to a Jellyfin video library first.
+1. Click **New channel**, enter a name and number, then open **Content → Choose shows & movies**.
+2. In **Movies**, choose movies for the default lineup. Use the search box and library filter to narrow the list. Click **Done**. These movies fill the time outside your scheduled blocks.
+3. Open **Schedule → Add time block**. Choose 18:00–23:00, select the days, and set **Programs per day** to 3.
+4. In that block's content picker, select a show. Disable shuffle if you want series in the order selected. Episode order inside each show is preserved with either setting.
+5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths.
+6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
-```json
-[
-  {
-    "Id": "evening-tv",
-    "Name": "Evening TV",
-    "Number": "1",
-    "Enabled": true,
-    "Source": {
-      "LibraryIds": ["YOUR_MOVIES_LIBRARY_GUID"],
-      "Shuffle": true,
-      "RepeatWhenExhausted": true
-    },
-    "Blocks": [
-      {
-        "Id": "daily-show",
-        "Start": "18:00",
-        "End": "23:00",
-        "Days": [0, 1, 2, 3, 4, 5, 6],
-        "MaxItemsPerDay": 3,
-        "Source": {
-          "ItemIds": ["YOUR_SERIES_GUID"],
-          "Shuffle": false,
-          "IncludeSpecials": false,
-          "RepeatWhenExhausted": true
-        }
-      }
-    ],
-    "Commercials": {
-      "FolderIds": ["YOUR_COMMERCIAL_FOLDER_GUID"],
-      "Shuffle": true,
-      "RepeatWhenExhausted": true
-    },
-    "CommercialCount": 2,
-    "Transcode": false
-  }
-]
-```
-
-This example schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full.
+This schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full. Selections can include specific shows, movies, indexed folders, or entire libraries. Shows automatically include their available episodes.
 
 Time blocks have **soft boundaries**: a program and its commercial break finish before the next block is evaluated. A long preceding movie can delay or entirely cover a short block. A strict start-time/cutoff system is not implemented. When blocks overlap, the first matching block in the list wins. A block spanning midnight belongs to the day it started. Daily quotas apply to that local start date; daylight-saving changes follow the selected time zone.
 
-`Source` fields:
+Advanced source settings (also retained in the configuration API):
 
 | Setting | Meaning |
 | --- | --- |
@@ -124,10 +105,17 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.1.0.0
+./scripts/package.ps1 -Version 0.2.0.0
 ```
 
-CI builds and tests on Linux. Pushing a four-part version tag such as `v0.1.1.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+The visual-builder interaction tests require Node.js 22+:
+
+```text
+npm ci --ignore-scripts
+npm test
+```
+
+CI builds and tests on Linux. Pushing a four-part version tag such as `v0.2.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

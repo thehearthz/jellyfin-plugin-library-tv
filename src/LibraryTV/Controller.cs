@@ -10,11 +10,27 @@ namespace Jellyfin.Plugin.LibraryTV;
 [Authorize(Policy = "RequiresElevation")]
 public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts broadcasts) : ControllerBase
 {
+    [HttpGet("media")]
+    public ActionResult<CatalogPage> Browse([FromQuery] string kind = "shows", [FromQuery] Guid libraryId = default,
+        [FromQuery] string? search = null, [FromQuery] int start = 0, [FromQuery] int limit = 36)
+    {
+        if (search?.Length > 200) return BadRequest(new { Error = "Search must be 200 characters or fewer." });
+        try { return catalog.Browse(kind, libraryId, search, start, limit); }
+        catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+    }
+
+    [HttpPost("media/resolve")]
+    public ActionResult<CatalogItem[]> Resolve([FromBody] Guid[] ids)
+    {
+        try { return catalog.Resolve(ids); }
+        catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+    }
+
     [HttpGet("libraries")]
     public object Libraries() => catalog.Libraries();
 
     [HttpGet("status")]
-    public object Status() => new { scheduler.LastRefresh, scheduler.LastError, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, Programs = scheduler.Guide.Count(p => p.ChannelId == x.Id), Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title }) };
+    public object Status() => new { scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, Programs = scheduler.Guide.Count(p => p.ChannelId == x.Id), Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title }) };
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken ct)

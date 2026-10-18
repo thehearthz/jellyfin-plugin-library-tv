@@ -1,7 +1,7 @@
 name: Release
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
 permissions:
   contents: write
 concurrency:
@@ -16,9 +16,15 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: "10.0.x"
       - run: dotnet run --project tests/Planner.Tests -c Release
       - run: dotnet run --project tests/Integration.Tests -c Release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
       - name: Package
         shell: pwsh
         env:

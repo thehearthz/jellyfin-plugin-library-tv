@@ -28,5 +28,6 @@ public sealed class Services : IPluginServiceRegistrator
         services.AddSingleton<MediaBrowser.Controller.LiveTv.ILiveTvService, LiveTvService>();
         services.AddSingleton<MediaBrowser.Controller.Channels.IChannel, LibraryChannel>();
         services.AddHostedService<RefreshService>();
+        services.AddHostedService<PluginPagesIntegration>();
     }
 }

@@ -12,6 +12,10 @@ using MediaBrowser.Controller.Channels;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Model.Querying;
+using Microsoft.AspNetCore.Authorization;
 
 int checks = 0;
 void Check(bool ok, string label) { if (!ok) throw new Exception(label); checks++; Console.WriteLine("PASS: " + label); }
@@ -27,6 +31,30 @@ try
     Check(services.Any(x => x.ServiceType == typeof(ILiveTvService) && x.ImplementationType == typeof(LiveTvService)), "Plugin registers its native Live TV provider in dependency injection");
     Check(services.Any(x => x.ServiceType == typeof(IChannel) && x.ImplementationType == typeof(LibraryChannel)), "Plugin registers a separate home library folder");
     Check(plugin.Id == new Guid("512a2a0d-5101-4fe8-9651-484f077a601a"), "Plugin GUID matches install catalog");
+    PluginPagesIntegration.Register(typeof(Jellyfin.Plugin.PluginPages.PluginInterface).Assembly);
+    var registration = System.Text.Json.JsonDocument.Parse(Jellyfin.Plugin.PluginPages.PluginInterface.Registered!.Json).RootElement;
+    Check(registration.GetProperty("id").GetString() == "library-tv-builder" && registration.GetProperty("url").GetString() == "/LibraryTV/builder", "Plugin Pages v3 receives the stable builder route through its reflection interface");
+    await new PluginPagesIntegration(NullLogger<PluginPagesIntegration>.Instance).StartAsync(default);
+    Check(PluginPagesIntegration.Status.Contains("Not installed"), "Missing Plugin Pages keeps the dashboard builder available without failing startup");
+    Check(typeof(Jellyfin.Plugin.LibraryTV.Controller).GetCustomAttributes<AuthorizeAttribute>().Single().Policy == "RequiresElevation", "Media browsing and configuration remain protected by the administrator policy");
+    var builderShell = (Microsoft.AspNetCore.Mvc.ContentResult)new BuilderController().Builder();
+    Check(builderShell.Content!.Contains("Library TV Builder") && !builderShell.Content.Contains("data-role=\"page\""), "Plugin Pages receives the builder fragment without a nested Jellyfin page layout");
+    InternalItemsQuery? browseQuery = null;
+    var movie = new Movie { Id = Guid.NewGuid(), Name = "Library movie", ProductionYear = 2024, Overview = new string('a', 300) };
+    var browseLibrary = Proxy<ILibraryManager>.Make((name, args) =>
+    {
+        if (name == "GetItemsResult") { browseQuery = (InternalItemsQuery)args![0]!; return new QueryResult<BaseItem>(0, 120, new BaseItem[] { movie }); }
+        if (name == "GetItemById") return (Guid)args![0]! == movie.Id ? movie : null;
+        throw new NotSupportedException(name);
+    });
+    var browserCatalog = new Catalog(browseLibrary);
+    var libraryId = Guid.NewGuid();
+    var mediaPage = browserCatalog.Browse("movies", libraryId, " Library ", 36, 1000);
+    Check(browseQuery!.ParentId == libraryId && browseQuery.SearchTerm == "Library" && browseQuery.StartIndex == 36 && browseQuery.Limit == 60, "Content picker queries are searchable, paginated, library-scoped and capped");
+    Check(mediaPage.TotalRecordCount == 120 && mediaPage.Items[0].Name == movie.Name && mediaPage.Items[0].Type == "Movie" && mediaPage.Items[0].Overview.Length <= 241, "Content picker returns lightweight titles, types and bounded descriptions");
+    Check(browserCatalog.Resolve([movie.Id, movie.Id, Guid.NewGuid()]).Length == 1, "Existing selections resolve names while ignoring duplicates and deleted media");
+    try { browserCatalog.Browse("anything", default, null, 0, 20); throw new Exception("Unsupported media kind accepted"); }
+    catch (ArgumentException) { Check(true, "Unknown content types are rejected"); }
     foreach (var page in plugin.GetPages())
         Check(plugin.GetType().Assembly.GetManifestResourceStream(page.EmbeddedResourcePath) is not null, "Dashboard HTML is embedded at the declared resource name");
     var library = Proxy<ILibraryManager>.Make((name, _) => name == "GetVirtualFolders" ? new List<VirtualFolderInfo>() : throw new NotSupportedException(name));

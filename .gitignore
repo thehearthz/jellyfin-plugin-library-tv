@@ -4,3 +4,4 @@ artifacts/
 *.user
 .vs/
 .build-home/
+node_modules/

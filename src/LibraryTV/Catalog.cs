@@ -3,11 +3,40 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Jellyfin.Data.Enums;
+using MediaBrowser.Model.Querying;
+using Jellyfin.Database.Implementations.Enums;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
 public sealed class Catalog(ILibraryManager library)
 {
+    public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit)
+    {
+        BaseItemKind[] types = kind switch
+        {
+            "shows" => [BaseItemKind.Series], "movies" => [BaseItemKind.Movie],
+            "folders" => [BaseItemKind.Folder], "videos" => [BaseItemKind.Video],
+            _ => throw new ArgumentException("Choose shows, movies, folders, or videos.")
+        };
+        var result = library.GetItemsResult(new InternalItemsQuery
+        {
+            ParentId = libraryId, Recursive = true, IsVirtualItem = false, IncludeItemTypes = types,
+            SearchTerm = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            StartIndex = Math.Max(0, start), Limit = Math.Clamp(limit, 1, 60), EnableTotalRecordCount = true,
+            OrderBy = [(ItemSortBy.SortName, SortOrder.Ascending)]
+        });
+        return new CatalogPage(result.Items.Select(Describe).ToArray(), result.TotalRecordCount);
+    }
+
+    public CatalogItem[] Resolve(Guid[] ids)
+    {
+        if (ids.Length > 500) throw new ArgumentException("Resolve at most 500 selected items at a time.");
+        return ids.Distinct().Select(id => library.GetItemById(id)).Where(x => x is not null).Select(x => Describe(x!)).ToArray();
+    }
+
+    private static CatalogItem Describe(BaseItem item) => new(item.Id.ToString("N"), item.Name, item.GetBaseItemKind().ToString(), item.ProductionYear,
+        item.Overview is { Length: > 240 } overview ? overview[..240] + "…" : item.Overview ?? "");
+
     public object Libraries() => library.GetVirtualFolders().Select(x => new { x.ItemId, x.Name, x.Locations });
     public ChannelDefinition[] Channels(Configuration config)
     {
@@ -42,3 +71,6 @@ public sealed class Catalog(ILibraryManager library)
                 x is Episode episode ? episode.SeriesId.ToString("N") : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0)).ToList();
     }
 }
+
+public sealed record CatalogItem(string Id, string Name, string Type, int? Year, string Overview);
+public sealed record CatalogPage(CatalogItem[] Items, int TotalRecordCount);

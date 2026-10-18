@@ -1,37 +1,1585 @@
-<!DOCTYPE html>
-<html><head><title>Library TV</title></head><body>
-<div id="LibraryTVPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
-<div data-role="content"><div class="content-primary">
-<h1>Library TV</h1><p>Virtual channels advance with the clock. No video processing runs when nobody is watching.</p>
-<form id="LibraryTVForm">
-<label class="checkboxContainer"><input is="emby-checkbox" type="checkbox" id="AutoChannels"><span>Create channels automatically from selected libraries</span></label>
-<div id="libraries"></div>
-<div class="inputContainer"><label for="TimeZone">Schedule time zone</label><input is="emby-input" id="TimeZone" placeholder="America/New_York" required></div>
-<div class="inputContainer"><label for="BaseUrl">Internal Jellyfin URL (loopback, include base path)</label><input is="emby-input" id="BaseUrl" required></div>
-<div class="inputContainer"><label for="GuideDays">Days in rolling guide (1–7)</label><input is="emby-input" id="GuideDays" type="number" min="1" max="7" required></div>
-<div class="inputContainer"><label for="RefreshMinutes">Library refresh interval in minutes</label><input is="emby-input" id="RefreshMinutes" type="number" min="5" max="1440" required></div>
-<div class="inputContainer"><label for="MaxActive">Maximum channels streaming at once</label><input is="emby-input" id="MaxActive" type="number" min="1" max="16" required></div>
-<h2>Manual channels</h2><p>Use the library IDs below in Source.LibraryIds. For an exact episode order, add episode IDs to Source.ItemIds and set Shuffle to false. Episodes are ordered by season and episode within each series.</p>
-<button is="emby-button" type="button" id="AddChannel" class="raised">Add channel template</button>
-<label for="Channels">Channel settings (JSON)</label><textarea id="Channels" spellcheck="false" style="width:100%;min-height:26rem;font-family:monospace;box-sizing:border-box" aria-label="Manual channels JSON"></textarea>
-<p>Blocks are checked in listed order. Times use HH:mm; Days uses Sunday=0 through Saturday=6. A block may cross midnight. MaxItemsPerDay=3 schedules three episodes, then uses the channel's default source. Programs finish before the next block begins. CommercialCount inserts ads between programs; Commercials.FolderIds selects a library folder. Transcode=false uses low CPU stream copy; true encodes compatible 720p video and uses more CPU.</p>
-<p>Saved guide entries remain fixed until they air. New media enters the rolling tail automatically. Changing a channel ID starts a new schedule and episode rotation. Repeats start only after the selected pool is exhausted; RepeatWhenExhausted=false disables that.</p>
-<button is="emby-button" type="submit" class="raised button-submit block"><span>Save and refresh guide</span></button>
-</form><button is="emby-button" type="button" id="Refresh" class="raised">Refresh guide and status</button><pre id="Status" style="white-space:pre-wrap" aria-live="polite"></pre>
-<script>
-(function(){
- const page=document.querySelector('#LibraryTVPage'); let config;
- const el=id=>page.querySelector('#'+id);
- function request(path,method='GET',body){return ApiClient.ajax({type:method,url:ApiClient.getUrl('LibraryTV/'+path),dataType:'json',contentType:'application/json',...(body?{data:JSON.stringify(body)}:{})});}
- function status(value){el('Status').textContent=JSON.stringify(value,null,2);}
- async function load(){try{
-  const values=await Promise.all([request('configuration'),request('libraries'),request('status')]);config=values[0];
-  el('AutoChannels').checked=config.AutoChannels;el('TimeZone').value=config.TimeZoneId;el('BaseUrl').value=config.InternalBaseUrl;el('GuideDays').value=config.GuideDays;el('RefreshMinutes').value=config.RefreshMinutes;el('MaxActive').value=config.MaxActiveChannels;el('Channels').value=JSON.stringify(config.Channels,null,2);
-  el('libraries').replaceChildren();values[1].forEach(l=>{const label=document.createElement('label');label.style.display='block';const input=document.createElement('input');input.type='checkbox';input.value=l.ItemId;input.checked=config.AutoLibraryIds.includes(l.ItemId);label.append(input,document.createTextNode(' '+l.Name+' — '+l.ItemId));el('libraries').append(label);});status(values[2]);
- }catch(e){status({Error:String(e)});}}
- page.addEventListener('pageshow',load);
- el('AddChannel').addEventListener('click',()=>{try{const channels=JSON.parse(el('Channels').value);channels.push({Id:'channel-'+Date.now(),Name:'My channel',Number:String(channels.length+1),Enabled:true,Source:{LibraryIds:[],ItemIds:[],Shuffle:false,RepeatWhenExhausted:true},Blocks:[{Id:'evening',Start:'18:00',End:'21:00',Days:[0,1,2,3,4,5,6],MaxItemsPerDay:3,Source:{LibraryIds:[],ItemIds:[],Shuffle:false,RepeatWhenExhausted:true}}],Commercials:{FolderIds:[],Shuffle:true,RepeatWhenExhausted:true},CommercialCount:0,Transcode:false});el('Channels').value=JSON.stringify(channels,null,2);}catch(e){status({Error:String(e)});}});
- el('LibraryTVForm').addEventListener('submit',async e=>{e.preventDefault();try{config.Channels=JSON.parse(el('Channels').value);config.AutoChannels=el('AutoChannels').checked;config.AutoLibraryIds=Array.from(el('libraries').querySelectorAll('input:checked')).map(x=>x.value);config.TimeZoneId=el('TimeZone').value;config.InternalBaseUrl=el('BaseUrl').value;config.GuideDays=Number(el('GuideDays').value);config.RefreshMinutes=Number(el('RefreshMinutes').value);config.MaxActiveChannels=Number(el('MaxActive').value);await request('configuration','POST',config);status(await request('refresh','POST'));}catch(e){status({Error:'Could not save or refresh. Check JSON, IDs, and time zone. '+String(e)});}});
- el('Refresh').addEventListener('click',async()=>{try{status(await request('refresh','POST'));}catch(e){status({Error:String(e)});}});
-})();
-</script></div></div></div></body></html>
+<div
+  id="LibraryTVPage"
+  data-role="page"
+  class="page type-interior pluginConfigurationPage ltv-app"
+  data-title="Library TV Builder"
+>
+  <style>
+    .ltv-app {
+      --ltv-accent: #6ddac2;
+      --ltv-panel: rgba(128, 128, 128, 0.08);
+      --ltv-border: rgba(128, 128, 128, 0.25);
+      color: inherit;
+      font: inherit;
+    }
+    .ltv-app * {
+      box-sizing: border-box;
+    }
+    .ltv-shell {
+      max-width: 1400px;
+      margin: auto;
+      padding: 32px 4% 90px;
+    }
+    .ltv-app h1 {
+      font-size: 2rem;
+      margin: 0 0 6px;
+    }
+    .ltv-app h2 {
+      font-size: 1.2rem;
+      margin: 0 0 16px;
+    }
+    .ltv-app h3 {
+      font-size: 1rem;
+      margin: 0;
+    }
+    .ltv-muted {
+      opacity: 0.7;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .ltv-top,
+    .ltv-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .ltv-top {
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+    .ltv-app button {
+      font: inherit;
+      cursor: pointer;
+      color: inherit;
+      background: var(--ltv-panel);
+      border: 1px solid var(--ltv-border);
+      border-radius: 9px;
+      padding: 10px 15px;
+      min-height: 42px;
+    }
+    .ltv-app button:hover {
+      border-color: var(--ltv-accent);
+    }
+    .ltv-app button:focus-visible,
+    .ltv-app input:focus-visible,
+    .ltv-app select:focus-visible,
+    .ltv-app summary:focus-visible {
+      outline: 2px solid var(--ltv-accent);
+      outline-offset: 3px;
+    }
+    .ltv-app button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .ltv-app .ltv-primary {
+      background: var(--ltv-accent);
+      border-color: transparent;
+      color: #112b25;
+      font-weight: 700;
+    }
+    .ltv-app .ltv-danger {
+      color: #ffaaa7;
+    }
+    .ltv-app input:not([type="checkbox"]),
+    .ltv-app select {
+      background: rgba(128, 128, 128, 0.1);
+      border: 1px solid var(--ltv-border);
+      border-radius: 8px;
+      color: inherit;
+      padding: 11px;
+      width: 100%;
+      min-height: 44px;
+      font: inherit;
+    }
+    .ltv-app select option {
+      color: #111;
+    }
+    .ltv-app input[type="checkbox"] {
+      accent-color: var(--ltv-accent);
+      width: 18px;
+      height: 18px;
+    }
+    .ltv-field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-bottom: 15px;
+      min-width: 0;
+    }
+    .ltv-field > span {
+      font-size: 0.88rem;
+      font-weight: 600;
+    }
+    .ltv-check {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 12px 0;
+      line-height: 1.4;
+    }
+    .ltv-layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 24px;
+    }
+    .ltv-panel {
+      border: 1px solid var(--ltv-border);
+      border-radius: 15px;
+      background: var(--ltv-panel);
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+    .ltv-sidebar {
+      padding: 16px;
+    }
+    .ltv-sidebar button.ltv-channel {
+      display: block;
+      text-align: left;
+      width: 100%;
+      margin: 8px 0;
+      padding: 14px;
+    }
+    .ltv-channel[aria-current="true"] {
+      border-color: var(--ltv-accent);
+      background: rgba(109, 218, 194, 0.1);
+    }
+    .ltv-channel small {
+      display: block;
+      opacity: 0.65;
+      margin-top: 5px;
+    }
+    .ltv-sidebar .ltv-primary {
+      width: 100%;
+      margin-top: 12px;
+    }
+    .ltv-empty {
+      text-align: center;
+      padding: 70px 24px;
+      border: 1px dashed var(--ltv-border);
+      border-radius: 15px;
+    }
+    .ltv-empty p {
+      max-width: 400px;
+      margin: 12px auto 24px;
+      line-height: 1.6;
+    }
+    .ltv-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 20px 0;
+    }
+    .ltv-tabs button[aria-selected="true"],
+    .ltv-tabs button[aria-pressed="true"] {
+      border-color: var(--ltv-accent);
+      color: var(--ltv-accent);
+    }
+    .ltv-cols {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+    .ltv-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0;
+    }
+    .ltv-chip {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+      border: 1px solid var(--ltv-border);
+      border-radius: 20px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      max-width: 100%;
+    }
+    .ltv-chip span {
+      overflow-wrap: anywhere;
+    }
+    .ltv-chip button {
+      min-height: 25px;
+      padding: 0 6px;
+      border: 0;
+      background: none;
+    }
+    .ltv-status {
+      border-radius: 9px;
+      padding: 12px 15px;
+      margin-bottom: 20px;
+      border: 1px solid var(--ltv-border);
+      line-height: 1.5;
+    }
+    .ltv-status:empty {
+      display: none;
+    }
+    .ltv-status[data-tone="error"] {
+      border-color: #e38b83;
+    }
+    .ltv-status[data-tone="success"] {
+      border-color: var(--ltv-accent);
+    }
+    .ltv-app details > summary {
+      cursor: pointer;
+      padding: 6px 0;
+      font-weight: 600;
+    }
+    .ltv-app details > div {
+      margin-top: 20px;
+    }
+    .ltv-badge {
+      border-radius: 20px;
+      background: var(--ltv-panel);
+      padding: 6px 11px;
+      font-size: 0.8rem;
+    }
+    .ltv-block {
+      padding: 18px;
+      border: 1px solid var(--ltv-border);
+      border-radius: 12px;
+      margin: 16px 0;
+    }
+    .ltv-days {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .ltv-days label {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      font-size: 0.85rem;
+    }
+    .ltv-app dialog {
+      width: min(940px, 95vw);
+      max-height: 90vh;
+      border: 1px solid #555;
+      border-radius: 17px;
+      background: #181d22;
+      color: #f3f5f7;
+      padding: 24px;
+    }
+    .ltv-app dialog::backdrop {
+      background: rgba(0, 0, 0, 0.72);
+    }
+    .ltv-picker-head {
+      position: sticky;
+      top: -24px;
+      background: #181d22;
+      padding: 0 0 16px;
+      z-index: 1;
+    }
+    .ltv-results {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .ltv-media {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #42484e;
+      border-radius: 11px;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .ltv-media[data-selected="true"] {
+      border-color: var(--ltv-accent);
+      background: rgba(109, 218, 194, 0.09);
+    }
+    .ltv-art {
+      position: relative;
+      height: 110px;
+      background: linear-gradient(130deg, #294347, #30303c);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+    }
+    .ltv-art img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .ltv-media-body {
+      padding: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+    }
+    .ltv-media-body strong {
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .ltv-media-body button {
+      margin-top: auto;
+    }
+    .ltv-picker-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding-top: 18px;
+    }
+    .ltv-guide {
+      list-style: none;
+      padding: 0;
+      margin: 15px 0;
+    }
+    .ltv-guide li {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--ltv-border);
+    }
+    .ltv-guide time {
+      display: block;
+      opacity: 0.65;
+      font-size: 0.85rem;
+      margin-bottom: 4px;
+    }
+    .ltv-app [hidden] {
+      display: none !important;
+    }
+    .ltv-unsaved {
+      color: var(--ltv-accent);
+    }
+    @media (max-width: 760px) {
+      .ltv-shell {
+        padding: 20px 16px 70px;
+      }
+      .ltv-layout {
+        grid-template-columns: 1fr;
+      }
+      .ltv-cols {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+      .ltv-results {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .ltv-sidebar {
+        margin-bottom: 0;
+      }
+      .ltv-top h1 {
+        font-size: 1.6rem;
+      }
+      .ltv-app dialog {
+        padding: 16px;
+      }
+      .ltv-picker-head {
+        top: -16px;
+      }
+      .ltv-panel {
+        padding: 17px;
+      }
+    }
+    @media (max-width: 430px) {
+      .ltv-results {
+        grid-template-columns: 1fr;
+      }
+      .ltv-art {
+        height: 100px;
+      }
+    }
+  </style>
+  <div class="ltv-shell">
+    <header class="ltv-top">
+      <div>
+        <h1>Library TV Builder</h1>
+        <div class="ltv-muted">Your library. Your lineup. Always on.</div>
+      </div>
+      <div class="ltv-row">
+        <span data-ui="dirty" class="ltv-badge">Loading…</span
+        ><button type="button" class="ltv-primary" data-action="save" disabled>
+          Save channels
+        </button>
+      </div>
+    </header>
+    <div
+      data-ui="status"
+      class="ltv-status"
+      role="status"
+      aria-live="polite"
+    ></div>
+    <div data-ui="body" hidden>
+      <div class="ltv-layout">
+        <aside class="ltv-panel ltv-sidebar">
+          <h2>Your channels</h2>
+          <nav data-ui="channels" aria-label="Channel selection"></nav>
+          <button type="button" class="ltv-primary" data-action="add-channel">
+            + New channel
+          </button>
+          <p class="ltv-muted">
+            Choose a channel to edit its content and schedule.
+          </p>
+        </aside>
+        <main data-ui="editor"></main>
+      </div>
+      <details class="ltv-panel">
+        <summary>Automatic channels</summary>
+        <div>
+          <label class="ltv-check"
+            ><input type="checkbox" data-setting="AutoChannels" />Make a channel
+            for each selected library</label
+          >
+          <div data-ui="auto-libraries"></div>
+          <p class="ltv-muted">
+            Automatic channels use the whole library. Use the channel builder
+            above for a hand-picked lineup.
+          </p>
+        </div>
+      </details>
+      <details class="ltv-panel">
+        <summary>Server settings &amp; Plugin Pages</summary>
+        <div>
+          <p data-ui="plugin-pages" class="ltv-muted"></p>
+          <p>
+            <a
+              href="https://github.com/IAmParadox27/jellyfin-plugin-pages"
+              target="_blank"
+              rel="noopener"
+              >Plugin Pages setup</a
+            >
+          </p>
+          <div class="ltv-cols">
+            <label class="ltv-field"
+              ><span>Schedule time zone</span
+              ><input
+                data-setting="TimeZoneId"
+                placeholder="America/New_York" /></label
+            ><label class="ltv-field"
+              ><span>Days in guide</span
+              ><input
+                type="number"
+                min="1"
+                max="7"
+                data-setting="GuideDays" /></label
+            ><label class="ltv-field"
+              ><span>Library refresh interval (minutes)</span
+              ><input
+                type="number"
+                min="5"
+                max="1440"
+                data-setting="RefreshMinutes" /></label
+            ><label class="ltv-field"
+              ><span>Maximum channels streaming at once</span
+              ><input
+                type="number"
+                min="1"
+                max="16"
+                data-setting="MaxActiveChannels"
+            /></label>
+          </div>
+          <details>
+            <summary>Advanced connection settings</summary>
+            <div>
+              <label class="ltv-field"
+                ><span>Internal Jellyfin URL</span
+                ><input
+                  data-setting="InternalBaseUrl"
+                  placeholder="http://127.0.0.1:8096"
+              /></label>
+              <p class="ltv-muted">
+                Use a loopback address reachable by Jellyfin itself, including
+                its base path if configured.
+              </p>
+            </div>
+          </details>
+        </div>
+      </details>
+      <p class="ltv-muted">
+        Channels appear in the Library TV home folder. Run Jellyfin’s Refresh
+        Channels task after adding or removing channels, and Refresh Guide to
+        update the Live TV guide.
+      </p>
+    </div>
+    <dialog data-ui="picker" aria-labelledby="ltv-picker-title">
+      <div class="ltv-picker-head">
+        <div class="ltv-top">
+          <div>
+            <h2 id="ltv-picker-title">Choose content</h2>
+            <span data-ui="picker-count" class="ltv-muted"></span>
+          </div>
+          <button type="button" data-action="close-picker">Done</button>
+        </div>
+        <div class="ltv-row">
+          <label class="ltv-field" style="flex: 2; margin: 0"
+            ><span>Search your library</span
+            ><input
+              type="search"
+              data-ui="search"
+              maxlength="200"
+              placeholder="Search shows or movies…" /></label
+          ><label class="ltv-field" style="flex: 1; margin: 0"
+            ><span>Library</span
+            ><select data-ui="library-filter"></select
+          ></label>
+        </div>
+        <div
+          class="ltv-tabs"
+          data-ui="picker-tabs"
+          aria-label="Content type"
+        ></div>
+      </div>
+      <div data-ui="picker-message" role="status" aria-live="polite"></div>
+      <div data-ui="results" class="ltv-results"></div>
+      <div class="ltv-picker-foot">
+        <button type="button" data-action="previous">Previous</button
+        ><span data-ui="page-label" class="ltv-muted"></span
+        ><button type="button" data-action="next">Next</button>
+      </div>
+    </dialog>
+  </div>
+  <script>
+    (function () {
+      "use strict";
+      const page =
+        (document.currentScript &&
+          document.currentScript.closest(".ltv-app")) ||
+        document.getElementById("LibraryTVPage");
+      if (!page || page.dataset.initialized) return;
+      page.dataset.initialized = "true";
+      const ui = (name) => page.querySelector('[data-ui="' + name + '"]');
+      const state = {
+        config: null,
+        libraries: [],
+        items: new Map(),
+        channel: null,
+        tab: "content",
+        dirty: false,
+        busy: false,
+        picker: null,
+        request: 0,
+        revision: 0,
+        loaded: false,
+      };
+      const id = () =>
+        globalThis.crypto && crypto.randomUUID
+          ? crypto.randomUUID().replace(/-/g, "")
+          : "id" +
+            Date.now().toString(36) +
+            Math.random().toString(36).slice(2);
+      const canonical = (value) =>
+        String(value).replace(/-/g, "").toLowerCase();
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const pool = () => ({
+        LibraryIds: [],
+        ItemIds: [],
+        FolderIds: [],
+        Genres: [],
+        Tags: [],
+        Shuffle: true,
+        IncludeSpecials: false,
+        RepeatWhenExhausted: true,
+      });
+      function normalize(p) {
+        p = p || pool();
+        for (const key of [
+          "LibraryIds",
+          "ItemIds",
+          "FolderIds",
+          "Genres",
+          "Tags",
+        ])
+          p[key] = p[key] || [];
+        return p;
+      }
+      function node(tag, attrs, ...children) {
+        const e = document.createElement(tag);
+        for (const [key, value] of Object.entries(attrs || {})) {
+          if (key.startsWith("on"))
+            e.addEventListener(key.slice(2).toLowerCase(), value);
+          else if (key === "class") e.className = value;
+          else if (key === "text") e.textContent = value;
+          else if (key === "checked") e.checked = value;
+          else if (key === "value") e.value = value;
+          else if (value !== undefined && value !== null)
+            e.setAttribute(key, String(value));
+        }
+        for (const child of children.flat())
+          if (child !== undefined && child !== null)
+            e.append(
+              typeof child === "string"
+                ? document.createTextNode(child)
+                : child,
+            );
+        return e;
+      }
+      const button = (text, fn, cls = "") =>
+        node("button", { type: "button", class: cls, onClick: fn }, text);
+      function notice(text, tone = "") {
+        ui("status").textContent = text;
+        ui("status").dataset.tone = tone;
+      }
+      function dirty() {
+        state.dirty = true;
+        state.revision++;
+        ui("dirty").textContent = "Unsaved changes";
+        ui("dirty").classList.add("ltv-unsaved");
+      }
+      function saved() {
+        state.dirty = false;
+        ui("dirty").textContent = "All changes saved";
+        ui("dirty").classList.remove("ltv-unsaved");
+      }
+      function errorMessage(e) {
+        let result = e && e.responseJSON;
+        if (!result && e && e.responseText) {
+          try {
+            result = JSON.parse(e.responseText);
+          } catch (_) {}
+        }
+        return (
+          (result && (result.Error || result.Message)) ||
+          (e && e.message) ||
+          "The request failed. Check your connection and try again."
+        );
+      }
+      function api(path, method = "GET", data) {
+        return ApiClient.ajax({
+          type: method,
+          url: ApiClient.getUrl("LibraryTV/" + path),
+          dataType: "json",
+          contentType: "application/json",
+          ...(data !== undefined ? { data: JSON.stringify(data) } : {}),
+        });
+      }
+      function current() {
+        return state.config.Channels.find((c) => c.Id === state.channel);
+      }
+      function field(label, value, change, type = "text", attrs = {}) {
+        return node(
+          "label",
+          { class: "ltv-field" },
+          node("span", {}, label),
+          node("input", {
+            type,
+            value,
+            ...attrs,
+            onChange: (e) => {
+              change(
+                type === "number" ? Number(e.target.value) : e.target.value,
+              );
+              dirty();
+            },
+          }),
+        );
+      }
+      function check(label, value, change) {
+        return node(
+          "label",
+          { class: "ltv-check" },
+          node("input", {
+            type: "checkbox",
+            checked: !!value,
+            onChange: (e) => {
+              change(e.target.checked);
+              dirty();
+            },
+          }),
+          label,
+        );
+      }
+      function titleFor(key, value) {
+        const library = state.libraries.find(
+          (x) => canonical(x.ItemId) === canonical(value),
+        );
+        if (key === "LibraryIds")
+          return library ? library.Name : "Unavailable library";
+        const item = state.items.get(canonical(value));
+        return item
+          ? item.Name
+          : "Unavailable selection (" + String(value).slice(0, 8) + ")";
+      }
+      function selectedCount(p) {
+        return p.LibraryIds.length + p.ItemIds.length + p.FolderIds.length;
+      }
+      function chips(p) {
+        const list = node("div", { class: "ltv-chips" });
+        for (const key of ["LibraryIds", "ItemIds", "FolderIds"])
+          for (const value of p[key]) {
+            const remove = button("×", () => {
+              p[key] = p[key].filter((x) => canonical(x) !== canonical(value));
+              dirty();
+              renderEditor();
+            });
+            remove.setAttribute("aria-label", "Remove " + titleFor(key, value));
+            list.append(
+              node(
+                "div",
+                { class: "ltv-chip" },
+                node(
+                  "span",
+                  {},
+                  titleFor(key, value) +
+                    (key === "LibraryIds" ? " · entire library" : ""),
+                ),
+                remove,
+              ),
+            );
+          }
+        return list;
+      }
+      function poolEditor(p, label, ads = false) {
+        normalize(p);
+        const box = node("div", {});
+        box.append(
+          node(
+            "div",
+            { class: "ltv-row" },
+            node("h3", {}, label),
+            node(
+              "span",
+              { class: "ltv-badge" },
+              selectedCount(p) + " selected",
+            ),
+          ),
+          chips(p),
+          button(
+            ads
+              ? "Choose commercial folders or clips"
+              : "Choose shows & movies",
+            () => openPicker(p, ads),
+          ),
+        );
+        if (!selectedCount(p))
+          box.append(
+            node(
+              "p",
+              { class: "ltv-muted" },
+              ads
+                ? "Choose an indexed video folder containing your commercial clips."
+                : "Pick specific shows, movies, or an entire library. Shows include their available episodes automatically.",
+            ),
+          );
+        box.append(
+          check(
+            "Shuffle shows and movies between cycles",
+            p.Shuffle !== false,
+            (v) => (p.Shuffle = v),
+          ),
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Episodes within each show always follow season and episode order.",
+          ),
+          check(
+            "Repeat after all selected content has aired",
+            p.RepeatWhenExhausted !== false,
+            (v) => (p.RepeatWhenExhausted = v),
+          ),
+          check(
+            "Include TV specials (season zero)",
+            p.IncludeSpecials,
+            (v) => (p.IncludeSpecials = v),
+          ),
+        );
+        const advanced = node(
+          "details",
+          {},
+          node("summary", {}, "Genre & tag filters"),
+        );
+        advanced.append(
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field(
+              "Genres (comma separated)",
+              p.Genres.join(", "),
+              (v) =>
+                (p.Genres = v
+                  .split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean)),
+            ),
+            field(
+              "Tags (comma separated)",
+              p.Tags.join(", "),
+              (v) =>
+                (p.Tags = v
+                  .split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean)),
+            ),
+          ),
+        );
+        box.append(advanced);
+        return box;
+      }
+      function renderChannels() {
+        const nav = ui("channels");
+        nav.replaceChildren();
+        for (const c of state.config.Channels) {
+          const b = button(
+            "",
+            () => {
+              state.channel = c.Id;
+              renderChannels();
+              renderEditor();
+            },
+            "ltv-channel",
+          );
+          b.setAttribute("aria-current", String(c.Id === state.channel));
+          b.append(
+            node("strong", {}, c.Number + " · " + c.Name),
+            node(
+              "small",
+              {},
+              c.Enabled === false
+                ? "Disabled"
+                : selectedCount(normalize(c.Source)) + " content selections",
+            ),
+          );
+          nav.append(b);
+        }
+        if (!state.config.Channels.length)
+          nav.append(
+            node("p", { class: "ltv-muted" }, "No manual channels yet."),
+          );
+      }
+      function renderEditor() {
+        const area = ui("editor"),
+          c = current();
+        area.replaceChildren();
+        if (!c) {
+          area.append(
+            node(
+              "section",
+              { class: "ltv-empty" },
+              node("h2", {}, "Build your first channel"),
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "Choose shows and movies you love, give them a time slot, and let Library TV keep the lineup moving.",
+              ),
+              button("+ Create a channel", addChannel, "ltv-primary"),
+            ),
+          );
+          return;
+        }
+        const head = node("section", { class: "ltv-panel" });
+        head.append(
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field("Channel name", c.Name, (v) => {
+              c.Name = v;
+              renderChannels();
+            }),
+            field("Channel number", c.Number, (v) => {
+              c.Number = v;
+              renderChannels();
+            }),
+          ),
+          check("Channel enabled", c.Enabled !== false, (v) => {
+            c.Enabled = v;
+            renderChannels();
+          }),
+        );
+        head.append(
+          node(
+            "div",
+            { class: "ltv-row" },
+            button("Duplicate", () => {
+              const copy = clone(c);
+              copy.Id = id();
+              copy.Name += " copy";
+              copy.Number = nextNumber();
+              copy.Blocks.forEach((b) => (b.Id = id()));
+              state.config.Channels.push(copy);
+              state.channel = copy.Id;
+              dirty();
+              renderChannels();
+              renderEditor();
+            }),
+            button(
+              "Delete channel",
+              () => {
+                if (
+                  !confirm(
+                    "Delete “" + c.Name + "”? This takes effect when you save.",
+                  )
+                )
+                  return;
+                state.config.Channels = state.config.Channels.filter(
+                  (x) => x.Id !== c.Id,
+                );
+                state.channel = state.config.Channels[0]?.Id || null;
+                dirty();
+                renderChannels();
+                renderEditor();
+              },
+              "ltv-danger",
+            ),
+          ),
+        );
+        area.append(head);
+        const tabs = node("div", {
+          class: "ltv-tabs",
+          role: "tablist",
+          "aria-label": "Channel editor",
+        });
+        for (const [key, label] of [
+          ["content", "Content"],
+          ["schedule", "Schedule"],
+          ["commercials", "Commercials"],
+          ["preview", "Guide preview"],
+        ]) {
+          const b = button(label, () => {
+            state.tab = key;
+            renderEditor();
+          });
+          b.setAttribute("role", "tab");
+          b.setAttribute("aria-selected", String(state.tab === key));
+          tabs.append(b);
+        }
+        area.append(tabs);
+        const body = node("section", { class: "ltv-panel", role: "tabpanel" });
+        area.append(body);
+        if (state.tab === "content") {
+          body.append(
+            node("h2", {}, "Default lineup"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "This content fills the day whenever no scheduled block is active.",
+            ),
+            poolEditor(c.Source, "Channel content"),
+            check(
+              "Compatibility encoding (uses more CPU)",
+              c.Transcode,
+              (v) => (c.Transcode = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Leave encoding off for low CPU usage. Stream copy works best with matching video and audio formats.",
+            ),
+          );
+        }
+        if (state.tab === "schedule") {
+          body.append(
+            node("h2", {}, "Time blocks"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Give selected shows a regular time slot. The current program finishes before a new block begins. When blocks overlap, the first matching block wins.",
+            ),
+          );
+          c.Blocks.forEach((block, index) =>
+            body.append(blockEditor(c, block, index)),
+          );
+          body.append(
+            button("+ Add time block", () => {
+              c.Blocks.push({
+                Id: id(),
+                Start: "18:00",
+                End: "21:00",
+                Days: [0, 1, 2, 3, 4, 5, 6],
+                MaxItemsPerDay: 3,
+                Source: pool(),
+              });
+              dirty();
+              renderEditor();
+            }),
+          );
+        }
+        if (state.tab === "commercials") {
+          body.append(
+            node("h2", {}, "Commercial breaks"),
+            field(
+              "Clips to play between programs",
+              c.CommercialCount || 0,
+              (v) => (c.CommercialCount = v),
+              "number",
+              { min: 0, max: 20 },
+            ),
+            poolEditor(c.Commercials, "Commercial content", true),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Commercials play between programs, never in the middle of an episode. Selected clips are excluded from the main lineup.",
+            ),
+          );
+        }
+        if (state.tab === "preview") {
+          body.append(
+            node("h2", {}, "Upcoming programs"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "This is the saved rolling guide. Unsaved edits are not included. Existing programs stay fixed; new selections enter the unplanned tail.",
+            ),
+            button("Load guide", () => loadGuide(c, body)),
+            node("div", { "data-guide": "" }),
+          );
+        }
+      }
+      function blockEditor(c, b, index) {
+        normalize(b.Source);
+        const box = node("section", { class: "ltv-block" });
+        box.append(
+          node(
+            "div",
+            { class: "ltv-top" },
+            node("h3", {}, "Block " + (index + 1)),
+            node(
+              "div",
+              { class: "ltv-row" },
+              button("↑", () => moveBlock(c, index, -1)),
+              button("↓", () => moveBlock(c, index, 1)),
+              button("Remove", () => {
+                c.Blocks.splice(index, 1);
+                dirty();
+                renderEditor();
+              }),
+            ),
+          ),
+        );
+        box.append(
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field("Starts", b.Start, (v) => (b.Start = v), "time"),
+            field("Ends", b.End, (v) => (b.End = v), "time"),
+          ),
+        );
+        const days = node("div", { class: "ltv-days" }),
+          names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        b.Days = (b.Days || []).map((x) =>
+          typeof x === "number"
+            ? x
+            : [
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+              ].indexOf(x),
+        );
+        names.forEach((name, n) =>
+          days.append(
+            node(
+              "label",
+              {},
+              node("input", {
+                type: "checkbox",
+                checked: b.Days.includes(n),
+                onChange: (e) => {
+                  b.Days = e.target.checked
+                    ? [...b.Days, n]
+                    : b.Days.filter((x) => x !== n);
+                  dirty();
+                },
+              }),
+              name,
+            ),
+          ),
+        );
+        box.append(
+          days,
+          field(
+            "Programs per day (0 = fill the time slot)",
+            b.MaxItemsPerDay || 0,
+            (v) => (b.MaxItemsPerDay = v),
+            "number",
+            { min: 0 },
+          ),
+          poolEditor(b.Source, "Content for this block"),
+        );
+        return box;
+      }
+      function moveBlock(c, index, direction) {
+        const to = index + direction;
+        if (to < 0 || to >= c.Blocks.length) return;
+        [c.Blocks[index], c.Blocks[to]] = [c.Blocks[to], c.Blocks[index]];
+        dirty();
+        renderEditor();
+      }
+      function nextNumber() {
+        return String(
+          Math.max(
+            0,
+            ...state.config.Channels.map((c) => Number(c.Number) || 0),
+          ) + 1,
+        );
+      }
+      function addChannel() {
+        const c = {
+          Id: id(),
+          Name: "New channel",
+          Number: nextNumber(),
+          Enabled: true,
+          Source: pool(),
+          Blocks: [],
+          Commercials: pool(),
+          CommercialCount: 0,
+          Transcode: false,
+        };
+        state.config.Channels.push(c);
+        state.channel = c.Id;
+        state.tab = "content";
+        dirty();
+        renderChannels();
+        renderEditor();
+      }
+      async function loadGuide(c, body) {
+        const target = body.querySelector("[data-guide]");
+        target.textContent = "Loading guide…";
+        try {
+          const entries = await api("guide/" + encodeURIComponent(c.Id));
+          target.replaceChildren();
+          if (!entries.length)
+            target.append(
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "No programs are scheduled yet. Add content, save, and refresh the guide.",
+              ),
+            );
+          else {
+            const list = node("ol", { class: "ltv-guide" });
+            for (const item of entries.slice(0, 40))
+              list.append(
+                node(
+                  "li",
+                  {},
+                  node(
+                    "time",
+                    {},
+                    new Date(item.Start).toLocaleString() +
+                      " — " +
+                      new Date(item.End).toLocaleTimeString(),
+                  ),
+                  node("strong", {}, item.Title),
+                  item.Commercial
+                    ? node("span", { class: "ltv-badge" }, "Commercial")
+                    : null,
+                ),
+              );
+            target.append(list);
+          }
+        } catch (e) {
+          target.textContent = errorMessage(e);
+        }
+      }
+      function pickerCount() {
+        ui("picker-count").textContent =
+          selectedCount(state.picker.pool) +
+          " selected · selections are saved with the channel";
+      }
+      function pickerTabs() {
+        const tabs = ui("picker-tabs");
+        tabs.replaceChildren();
+        const options = state.picker.ads
+          ? [
+              ["folders", "Folders"],
+              ["videos", "Clips"],
+              ["movies", "Movies"],
+              ["libraries", "Whole libraries"],
+            ]
+          : [
+              ["shows", "Shows"],
+              ["movies", "Movies"],
+              ["folders", "Folders"],
+              ["libraries", "Whole libraries"],
+            ];
+        for (const [key, label] of options) {
+          const b = button(label, () => {
+            state.picker.kind = key;
+            state.picker.start = 0;
+            pickerTabs();
+            browse();
+          });
+          b.setAttribute("aria-pressed", String(state.picker.kind === key));
+          tabs.append(b);
+        }
+      }
+      function openPicker(p, ads) {
+        state.picker = {
+          pool: p,
+          ads,
+          kind: ads ? "folders" : "shows",
+          start: 0,
+          total: 0,
+        };
+        ui("search").value = "";
+        ui("library-filter").replaceChildren(
+          node("option", { value: "" }, "All libraries"),
+          ...state.libraries.map((x) =>
+            node("option", { value: x.ItemId }, x.Name),
+          ),
+        );
+        ui("picker").showModal();
+        pickerTabs();
+        pickerCount();
+        browse();
+        ui("search").focus();
+      }
+      function closePicker() {
+        state.request++;
+        state.picker = null;
+        ui("picker").close();
+        renderChannels();
+        renderEditor();
+      }
+      async function browse() {
+        if (!state.picker) return;
+        const generation = ++state.request,
+          p = state.picker;
+        ui("results").replaceChildren();
+        ui("picker-message").textContent = "Loading your library…";
+        ui("page-label").textContent = "";
+        page.querySelector("[data-action=next]").disabled = true;
+        page.querySelector("[data-action=previous]").disabled = true;
+        try {
+          let result;
+          if (p.kind === "libraries") {
+            const text = ui("search").value.trim().toLowerCase();
+            const filtered = state.libraries.filter(
+              (x) =>
+                (!ui("library-filter").value ||
+                  x.ItemId === ui("library-filter").value) &&
+                x.Name.toLowerCase().includes(text),
+            );
+            result = {
+              Items: filtered.map((x) => ({
+                Id: x.ItemId,
+                Name: x.Name,
+                Type: "Library",
+                Overview: "Include all available media in this library.",
+              })),
+              TotalRecordCount: filtered.length,
+            };
+          } else {
+            const query = new URLSearchParams({
+              kind: p.kind,
+              search: ui("search").value.trim(),
+              start: String(p.start),
+              limit: "36",
+            });
+            if (ui("library-filter").value)
+              query.set("libraryId", ui("library-filter").value);
+            result = await api("media?" + query);
+          }
+          if (generation !== state.request || !state.picker) return;
+          p.total = result.TotalRecordCount;
+          ui("picker-message").textContent = result.Items.length
+            ? ""
+            : "No matches. Try a different search or library.";
+          for (const item of result.Items) {
+            state.items.set(canonical(item.Id), item);
+            ui("results").append(mediaCard(item, p));
+          }
+          const end = Math.min(p.start + result.Items.length, p.total);
+          ui("page-label").textContent = p.total
+            ? p.start + 1 + "–" + end + " of " + p.total
+            : "0 results";
+          page.querySelector("[data-action=previous]").disabled =
+            p.start === 0 || p.kind === "libraries";
+          page.querySelector("[data-action=next]").disabled =
+            end >= p.total || p.kind === "libraries";
+        } catch (e) {
+          if (generation === state.request)
+            ui("picker-message").textContent = errorMessage(e);
+        }
+      }
+      function mediaCard(item, p) {
+        const key =
+          p.kind === "libraries"
+            ? "LibraryIds"
+            : p.kind === "folders"
+              ? "FolderIds"
+              : "ItemIds";
+        const selected = () =>
+          p.pool[key].some((x) => canonical(x) === canonical(item.Id));
+        const card = node("article", {
+            class: "ltv-media",
+            "data-selected": String(selected()),
+          }),
+          art = node(
+            "div",
+            { class: "ltv-art", "aria-hidden": "true" },
+            item.Type === "Series"
+              ? "TV"
+              : item.Type === "Folder" || item.Type === "Library"
+                ? "▤"
+                : "▶",
+          );
+        if (item.Type !== "Library" && ApiClient.getImageUrl) {
+          const img = node("img", {
+            alt: "",
+            loading: "lazy",
+            src: ApiClient.getImageUrl(item.Id, {
+              type: "Primary",
+              maxHeight: 220,
+              quality: 80,
+            }),
+            onError: (e) => e.target.remove(),
+          });
+          art.append(img);
+        }
+        const toggle = button(selected() ? "✓ Selected" : "+ Select", () => {
+          if (selected())
+            p.pool[key] = p.pool[key].filter(
+              (x) => canonical(x) !== canonical(item.Id),
+            );
+          else p.pool[key].push(item.Id);
+          toggle.textContent = selected() ? "✓ Selected" : "+ Select";
+          toggle.setAttribute("aria-pressed", String(selected()));
+          card.dataset.selected = String(selected());
+          dirty();
+          pickerCount();
+        });
+        toggle.setAttribute("aria-pressed", String(selected()));
+        toggle.setAttribute("aria-label", "Select " + item.Name);
+        card.append(
+          art,
+          node(
+            "div",
+            { class: "ltv-media-body" },
+            node("strong", {}, item.Name),
+            node(
+              "span",
+              { class: "ltv-muted" },
+              (item.Type === "Series" ? "Show" : item.Type) +
+                (item.Year ? " · " + item.Year : ""),
+            ),
+            toggle,
+          ),
+        );
+        return card;
+      }
+      function validate() {
+        if (!state.config.TimeZoneId.trim())
+          throw new Error("Choose a schedule time zone.");
+        for (const [key, min, max, label] of [
+          ["GuideDays", 1, 7, "Days in guide"],
+          ["RefreshMinutes", 5, 1440, "Refresh interval"],
+          ["MaxActiveChannels", 1, 16, "Maximum active channels"],
+        ]) {
+          if (
+            !Number.isInteger(state.config[key]) ||
+            state.config[key] < min ||
+            state.config[key] > max
+          )
+            throw new Error(
+              label +
+                " must be a whole number from " +
+                min +
+                " to " +
+                max +
+                ".",
+            );
+        }
+        const ids = new Set();
+        for (const c of state.config.Channels) {
+          if (!c.Name.trim()) throw new Error("Every channel needs a name.");
+          if (ids.has(c.Id)) throw new Error("Channel IDs must be unique.");
+          ids.add(c.Id);
+          if (
+            !Number.isInteger(c.CommercialCount) ||
+            c.CommercialCount < 0 ||
+            c.CommercialCount > 20
+          )
+            throw new Error("Use 0–20 commercial clips per break.");
+          for (const b of c.Blocks) {
+            if (!Number.isInteger(b.MaxItemsPerDay) || b.MaxItemsPerDay < 0)
+              throw new Error(
+                "Programs per day must be a whole number of zero or more.",
+              );
+            if (!b.Days.length)
+              throw new Error("Choose at least one day for each time block.");
+            if (!b.Start || !b.End || b.Start === b.End)
+              throw new Error(
+                "Choose different start and end times for each block.",
+              );
+          }
+        }
+      }
+      async function save() {
+        if (state.busy || !state.config) return;
+        try {
+          validate();
+        } catch (e) {
+          notice(e.message, "error");
+          return;
+        }
+        state.busy = true;
+        const revision = state.revision;
+        page.querySelector("[data-action=save]").disabled = true;
+        notice("Saving your channels…");
+        try {
+          await api("configuration", "POST", state.config);
+          if (state.revision === revision) saved();
+          try {
+            const result = await api("refresh", "POST");
+            ui("plugin-pages").textContent = result.PluginPages || "";
+            notice(
+              state.dirty
+                ? "Earlier changes were saved. You made more edits while saving; save again to apply those."
+                : "Channels saved. The rolling guide has been refreshed. Run Jellyfin’s Refresh Channels task if you added or removed channels.",
+              "success",
+            );
+          } catch (e) {
+            notice(
+              "Your settings were saved, but the guide could not refresh: " +
+                errorMessage(e),
+              "error",
+            );
+          }
+        } catch (e) {
+          notice(
+            "Your changes have not been saved: " + errorMessage(e),
+            "error",
+          );
+        } finally {
+          state.busy = false;
+          page.querySelector("[data-action=save]").disabled = false;
+        }
+      }
+      async function load() {
+        if (state.loaded) return;
+        state.loaded = true;
+        try {
+          if (ApiClient.getCurrentUser) {
+            const user = await ApiClient.getCurrentUser();
+            if (!user.Policy || !user.Policy.IsAdministrator) {
+              notice(
+                "Only Jellyfin administrators can build or change channels. Sign in with an administrator account.",
+                "error",
+              );
+              ui("dirty").textContent = "Administrator access required";
+              return;
+            }
+          }
+          const [config, libraries, status] = await Promise.all([
+            api("configuration"),
+            api("libraries"),
+            api("status"),
+          ]);
+          state.config = config;
+          state.config.Channels = state.config.Channels || [];
+          state.libraries = libraries;
+          for (const c of state.config.Channels) {
+            c.Source = normalize(c.Source);
+            c.Commercials = normalize(c.Commercials);
+            c.Blocks = c.Blocks || [];
+            for (const b of c.Blocks) b.Source = normalize(b.Source);
+          }
+          const selected = new Set();
+          for (const c of config.Channels)
+            for (const p of [
+              c.Source,
+              c.Commercials,
+              ...c.Blocks.map((x) => x.Source),
+            ])
+              for (const key of ["ItemIds", "FolderIds"])
+                for (const value of p[key]) selected.add(value);
+          const ids = Array.from(selected);
+          for (let offset = 0; offset < ids.length; offset += 500) {
+            const items = await api(
+              "media/resolve",
+              "POST",
+              ids.slice(offset, offset + 500),
+            );
+            for (const item of items) state.items.set(canonical(item.Id), item);
+          }
+          state.channel = config.Channels[0]?.Id || null;
+          for (const input of page.querySelectorAll("[data-setting]")) {
+            const key = input.dataset.setting;
+            if (input.type === "checkbox") input.checked = !!config[key];
+            else input.value = config[key];
+            input.addEventListener("change", () => {
+              config[key] =
+                input.type === "checkbox"
+                  ? input.checked
+                  : input.type === "number"
+                    ? Number(input.value)
+                    : input.value;
+              dirty();
+            });
+          }
+          for (const library of libraries)
+            ui("auto-libraries").append(
+              check(
+                library.Name,
+                config.AutoLibraryIds.some(
+                  (x) => canonical(x) === canonical(library.ItemId),
+                ),
+                (value) => {
+                  config.AutoLibraryIds = value
+                    ? [...config.AutoLibraryIds, library.ItemId]
+                    : config.AutoLibraryIds.filter(
+                        (x) => canonical(x) !== canonical(library.ItemId),
+                      );
+                },
+              ),
+            );
+          ui("plugin-pages").textContent =
+            status.PluginPages || "Plugin Pages status unavailable.";
+          ui("body").hidden = false;
+          page.querySelector("[data-action=save]").disabled = false;
+          saved();
+          renderChannels();
+          renderEditor();
+          if (status.LastError)
+            notice(
+              "The last schedule refresh failed: " + status.LastError,
+              "error",
+            );
+          else notice("Choose a channel to start building.");
+        } catch (e) {
+          state.loaded = false;
+          notice("Could not load the builder: " + errorMessage(e), "error");
+          ui("dirty").textContent = "Unable to load";
+        }
+      }
+      page.querySelector("[data-action=save]").addEventListener("click", save);
+      page
+        .querySelector("[data-action=add-channel]")
+        .addEventListener("click", addChannel);
+      page
+        .querySelector("[data-action=close-picker]")
+        .addEventListener("click", closePicker);
+      ui("picker").addEventListener("cancel", (e) => {
+        e.preventDefault();
+        closePicker();
+      });
+      let searchTimer;
+      ui("search").addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        state.request++;
+        searchTimer = setTimeout(() => {
+          if (state.picker) {
+            state.picker.start = 0;
+            browse();
+          }
+        }, 250);
+      });
+      ui("library-filter").addEventListener("change", () => {
+        state.picker.start = 0;
+        browse();
+      });
+      page.querySelector("[data-action=next]").addEventListener("click", () => {
+        state.picker.start += 36;
+        browse();
+      });
+      page
+        .querySelector("[data-action=previous]")
+        .addEventListener("click", () => {
+          state.picker.start = Math.max(0, state.picker.start - 36);
+          browse();
+        });
+      page.addEventListener("pageshow", load);
+      load();
+    })();
+  </script>
+</div>
