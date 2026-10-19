@@ -16,7 +16,7 @@ Build always-on television channels from local media already indexed by Jellyfin
 5. Run Jellyfin's **Refresh Channels** scheduled task. A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
 6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
 
-Upgrading from v0.1 or v0.2: install the v0.3.0.0 update and restart Jellyfin. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
+Upgrading from v0.1 or v0.2: install the v0.3.1.0 update and restart Jellyfin. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
 
 ### Plugin Pages integration
 
@@ -53,6 +53,18 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Viewers join the program scheduled for the current time. The schedule continues while nobody watches.
 
 ## Low CPU and playback constraints
+
+### Deferred startup
+
+Library TV's background workers return from host startup immediately. They wait for **both** the host's `ApplicationStarted` signal and Jellyfin's `CoreStartupHasCompleted` flag, then share a **30-second settling delay** before initializing the scheduler or registering the Plugin Pages entry. Library scanning, guide loading/generation, schedule writes and heavy service resolution are deferred. Early calls to the channel providers return no content without resolving library/user services. No FFmpeg process starts automatically.
+
+The wait uses a startup notification, a one-second asynchronous readiness check only while core startup is unfinished, and one settling timer shared by both workers. It ends after readiness and cancels if the server shuts down. There is no blocking sleep and no ongoing startup polling after the wait finishes.
+
+During this brief period the builder reports that Library TV is waiting and offers **Retry loading builder**. Manual library/refresh requests receive HTTP 503 with a retry hint, so they cannot bypass the startup gate. Channels and the Plugin Pages entry become available after the wait and the first schedule refresh. Refresh the web client; if a Jellyfin guide/channel import ran earlier, run **Refresh Channels** and **Refresh Guide** after Library TV is ready.
+
+Jellyfin still discovers the plugin assembly and registers its lightweight services during normal plugin discovery. This does not force assembly loading to be last, nor guarantee that every third-party plugin has finished arbitrary background work. The readiness signals and settling delay keep Library TV's heavy work outside Jellyfin's core startup path. Real-server startup timings have not been benchmarked.
+
+### Playback
 
 Default playback uses FFmpeg **stream copy**: it remuxes local video/audio into MPEG-TS without encoding. Choose consistent video and audio codecs, resolution, audio layout and frame rate across programs and ads. H.264 video with AAC audio is a useful starting point. Files must be locally readable by the Jellyfin process and contain a video stream. Remote streams, DRM, images, music-only channels, subtitles and live inputs are not supported.
 
@@ -119,7 +131,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.3.0.0
+./scripts/package.ps1 -Version 0.3.1.0
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -129,7 +141,7 @@ npm ci --ignore-scripts
 npm test
 ```
 
-CI builds and tests on Linux. Pushing a four-part version tag such as `v0.3.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing a four-part version tag such as `v0.3.1.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

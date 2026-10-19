@@ -3,12 +3,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.3.0.0</Version>
+    <Version>0.3.1.0</Version>
     <AssemblyName>Jellyfin.Plugin.LibraryTV</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.LibraryTV</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Integration.Tests" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Jellyfin.Controller" Version="12.2.0" ExcludeAssets="runtime" />
     <PackageReference Include="Jellyfin.Model" Version="12.2.0" ExcludeAssets="runtime" />

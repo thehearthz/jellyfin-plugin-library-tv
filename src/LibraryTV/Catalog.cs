@@ -9,10 +9,11 @@ using System.Text.Json;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Catalog(ILibraryManager library)
+public sealed class Catalog(ILibraryManager library, StartupGate? startup = null)
 {
     public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit)
     {
+        startup?.RequireReady();
         BaseItemKind[] types = kind switch
         {
             "shows" => [BaseItemKind.Series], "movies" => [BaseItemKind.Movie],
@@ -31,6 +32,7 @@ public sealed class Catalog(ILibraryManager library)
 
     public CatalogItem[] Resolve(Guid[] ids)
     {
+        startup?.RequireReady();
         if (ids.Length > 500) throw new ArgumentException("Resolve at most 500 selected items at a time.");
         return ids.Distinct().Select(id => library.GetItemById(id)).Where(x => x is not null).Select(x => Describe(x!)).ToArray();
     }
@@ -38,10 +40,15 @@ public sealed class Catalog(ILibraryManager library)
     private static CatalogItem Describe(BaseItem item) => new(item.Id.ToString("N"), item.Name, item.GetBaseItemKind().ToString(), item.ProductionYear,
         item.Overview is { Length: > 240 } overview ? overview[..240] + "…" : item.Overview ?? "");
 
-    public object Libraries() => library.GetVirtualFolders().Select(x => new { x.ItemId, x.Name, x.Locations });
+    public object Libraries()
+    {
+        startup?.RequireReady();
+        return library.GetVirtualFolders().Select(x => new { x.ItemId, x.Name, x.Locations });
+    }
 
     public bool PrepareAutomaticChannels(Configuration config, bool preserveLegacyNumbers = false)
     {
+        startup?.RequireReady();
         if (!config.AutoChannels) return false;
         var changed = false;
         var overrides = config.AutomaticChannels.ToList();
@@ -109,6 +116,7 @@ public sealed class Catalog(ILibraryManager library)
 
     public List<Media> Read(Pool pool)
     {
+        startup?.RequireReady();
         // An empty selector deliberately means no content, never every library.
         if (pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length == 0) return [];
         var items = new Dictionary<Guid, BaseItem>();

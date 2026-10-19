@@ -23,6 +23,7 @@ public sealed class Services : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
         services.AddSingleton<Catalog>();
+        services.AddSingleton<StartupGate>();
         services.AddSingleton<Scheduler>();
         services.AddSingleton<Broadcasts>();
         services.AddSingleton<MediaBrowser.Controller.LiveTv.ILiveTvService, LiveTvService>();

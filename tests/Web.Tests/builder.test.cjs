@@ -364,6 +364,40 @@ test("channel health checks run on request without starting playback", async () 
   }
 });
 
+test("builder can retry after the server's startup settling period", async () => {
+  const dom = new JSDOM(html, {
+    runScripts: "dangerously",
+    url: "http://localhost/",
+    beforeParse: (window) => {
+      fixture.install(window);
+      window.testApi.starting = true;
+    },
+  });
+  try {
+    await settle();
+    const w = dom.window;
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /waiting for Jellyfin startup/,
+    );
+    assert.equal(w.document.querySelector("[data-ui=body]").hidden, true);
+    assert.equal(
+      w.document.querySelector("[data-action=retry-load]").hidden,
+      false,
+    );
+    w.testApi.starting = false;
+    click(w, "Retry loading builder");
+    await settle();
+    assert.equal(w.document.querySelector("[data-ui=body]").hidden, false);
+    assert.equal(
+      w.document.querySelector("[data-action=retry-load]").hidden,
+      true,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("media names are displayed as text instead of HTML", async () => {
   const original = fixture.content.shows[0].Name;
   fixture.content.shows[0].Name = "<img src=x onerror=alert(1)>";

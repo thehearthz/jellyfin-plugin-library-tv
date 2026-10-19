@@ -2,11 +2,13 @@ using System.Text.Json;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log)
+public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null)
 {
+    public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
     private Dictionary<string, ChannelState>? states;
     private PublishedSchedule published = new([], [], new Dictionary<string, Airing[]>());
@@ -73,6 +75,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
 
     public async Task SaveConfiguration(Configuration config, CancellationToken ct)
     {
+        startup?.RequireReady();
         await gate.WaitAsync(ct);
         try
         {
@@ -86,6 +89,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
 
     public async Task Refresh(CancellationToken ct)
     {
+        startup?.RequireReady();
         await gate.WaitAsync(ct);
         try
         {
@@ -154,10 +158,13 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
     };
 }
 
-public sealed class RefreshService(Scheduler scheduler, ILogger<RefreshService> log) : BackgroundService
+public sealed class RefreshService(IServiceProvider services, ILogger<RefreshService> log, StartupGate startup) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        try { await startup.WaitAsync(stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        var scheduler = services.GetRequiredService<Scheduler>();
         while (!stoppingToken.IsCancellationRequested)
         {
             try { await scheduler.Refresh(stoppingToken); }

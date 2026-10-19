@@ -406,6 +406,9 @@
       role="status"
       aria-live="polite"
     ></div>
+    <button type="button" data-action="retry-load" hidden>
+      Retry loading builder
+    </button>
     <div data-ui="body" hidden>
       <div class="ltv-layout">
         <aside class="ltv-panel ltv-sidebar">
@@ -1642,6 +1645,7 @@
       async function load() {
         if (state.loaded) return;
         state.loaded = true;
+        page.querySelector('[data-action="retry-load"]').hidden = true;
         try {
           if (ApiClient.getCurrentUser) {
             const user = await ApiClient.getCurrentUser();
@@ -1723,8 +1727,12 @@
           state.loaded = false;
           notice("Could not load the builder: " + errorMessage(e), "error");
           ui("dirty").textContent = "Unable to load";
+          page.querySelector('[data-action="retry-load"]').hidden = false;
         }
       }
+      page
+        .querySelector('[data-action="retry-load"]')
+        .addEventListener("click", load);
       page.querySelector("[data-action=save]").addEventListener("click", save);
       page
         .querySelector("[data-action=health]")

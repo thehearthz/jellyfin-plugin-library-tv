@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.3.0.0",
+    [string]$Version = "0.3.1.0",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
 )
@@ -22,7 +22,7 @@ $entry = [ordered]@{
     category = 'Live TV'
     versions = @([ordered]@{
         version = $Version
-        changelog = 'Custom manual and automatic channel numbers and names, subchannel sorting and conflict checks, stable automatic assignments, progress retention for disabled channels, on-demand schedule health, bounded guide previews, and per-refresh query reuse.'
+        changelog = 'Defers schedule work and Plugin Pages registration until the host has started, Jellyfin core startup has completed, and a shared 30-second settling period has elapsed. Heavy service resolution is lazy; startup requests report waiting and the builder offers retry.'
         targetAbi = '12.2.0.0'
         sourceUrl = "https://github.com/$Repository/releases/download/v$Version/library-tv-$Version.zip"
         checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()

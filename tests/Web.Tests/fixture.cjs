@@ -107,6 +107,12 @@ function install(window, options = {}) {
         return { Saved: true };
       }
       if (path === "configuration") return structuredClone(data.config);
+      if (path === "libraries" && data.starting)
+        throw {
+          responseJSON: {
+            Error: "Library TV is waiting for Jellyfin startup to finish.",
+          },
+        };
       if (path === "libraries")
         return [
           { ItemId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "TV Shows" },

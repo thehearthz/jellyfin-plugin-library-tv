@@ -7,23 +7,30 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.LibraryTV;
 
 // Upstream's v3 reflection interface keeps Plugin Pages an optional dependency.
-public sealed class PluginPagesIntegration(ILogger<PluginPagesIntegration> log) : IHostedService
+public sealed class PluginPagesIntegration(ILogger<PluginPagesIntegration> log, StartupGate startup) : BackgroundService
 {
     public const string PageId = "library-tv-builder";
-    public static string Status { get; private set; } = "Not checked";
+    public static string Status { get; private set; } = "Waiting for Jellyfin startup to finish.";
     public static string RegistrationJson => JsonSerializer.Serialize(new
     {
         id = PageId, url = "/LibraryTV/builder", displayText = "Library TV Builder", icon = "live_tv"
     });
 
-    public Task StartAsync(CancellationToken ct)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try { await startup.WaitAsync(stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        Connect();
+    }
+
+    internal void Connect()
     {
         var assembly = AssemblyLoadContext.All.SelectMany(x => x.Assemblies)
             .FirstOrDefault(x => x.GetName().Name == "Jellyfin.Plugin.PluginPages");
         if (assembly is null)
         {
             Status = "Not installed. Install Plugin Pages 3+ and File Transformation, then restart Jellyfin.";
-            return Task.CompletedTask;
+            return;
         }
         try { Register(assembly); Status = "Connected — Library TV Builder is registered in Plugin Pages."; }
         catch (Exception ex)
@@ -31,7 +38,6 @@ public sealed class PluginPagesIntegration(ILogger<PluginPagesIntegration> log) 
             Status = "Registration failed. Use Dashboard → Plugins → Library TV and check Plugin Pages compatibility.";
             log.LogWarning(ex, "Could not register Library TV Builder with Plugin Pages");
         }
-        return Task.CompletedTask;
     }
 
     public static void Register(Assembly assembly)
@@ -45,5 +51,4 @@ public sealed class PluginPagesIntegration(ILogger<PluginPagesIntegration> log) 
         register.Invoke(null, [parse.Invoke(null, [RegistrationJson])]);
     }
 
-    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 }

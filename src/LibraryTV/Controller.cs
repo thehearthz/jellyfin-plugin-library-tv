@@ -8,6 +8,7 @@ namespace Jellyfin.Plugin.LibraryTV;
 [ApiController]
 [Route("LibraryTV")]
 [Authorize(Policy = "RequiresElevation")]
+[TypeFilter(typeof(StartupExceptionFilter))]
 public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts broadcasts) : ControllerBase
 {
     [HttpGet("media")]
@@ -30,7 +31,7 @@ public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts 
     public object Libraries() => catalog.Libraries();
 
     [HttpGet("status")]
-    public object Status() => new { scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow) }) };
+    public object Status() => new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow) }) };
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken ct)

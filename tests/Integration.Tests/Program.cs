@@ -26,6 +26,7 @@ try
     var paths = Proxy<IApplicationPaths>.Make((name, _) => name.StartsWith("get_") ? directory : null);
     var xml = Proxy<IXmlSerializer>.Make((name, _) => name.StartsWith("Deserialize") ? new Configuration() : null);
     var plugin = new Plugin(paths, xml);
+    await StartupTests.Run(Check, paths);
     var services = new ServiceCollection();
     new Services().RegisterServices(services, null!);
     Check(services.Any(x => x.ServiceType == typeof(ILiveTvService) && x.ImplementationType == typeof(LiveTvService)), "Plugin registers its native Live TV provider in dependency injection");
@@ -70,7 +71,9 @@ try
     PluginPagesIntegration.Register(typeof(Jellyfin.Plugin.PluginPages.PluginInterface).Assembly);
     var registration = System.Text.Json.JsonDocument.Parse(Jellyfin.Plugin.PluginPages.PluginInterface.Registered!.Json).RootElement;
     Check(registration.GetProperty("id").GetString() == "library-tv-builder" && registration.GetProperty("url").GetString() == "/LibraryTV/builder", "Plugin Pages v3 receives the stable builder route through its reflection interface");
-    await new PluginPagesIntegration(NullLogger<PluginPagesIntegration>.Instance).StartAsync(default);
+    using var pagesLifetime = new TestLifetime();
+    var pagesGate = new StartupGate(pagesLifetime, Proxy<MediaBrowser.Controller.IServerApplicationHost>.Make((_, _) => true), (_, _) => Task.CompletedTask);
+    new PluginPagesIntegration(NullLogger<PluginPagesIntegration>.Instance, pagesGate).Connect();
     Check(PluginPagesIntegration.Status.Contains("Not installed"), "Missing Plugin Pages keeps the dashboard builder available without failing startup");
     Check(typeof(Jellyfin.Plugin.LibraryTV.Controller).GetCustomAttributes<AuthorizeAttribute>().Single().Policy == "RequiresElevation", "Media browsing and configuration remain protected by the administrator policy");
     var builderShell = (Microsoft.AspNetCore.Mvc.ContentResult)new BuilderController().Builder();
