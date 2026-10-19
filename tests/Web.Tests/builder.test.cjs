@@ -398,6 +398,127 @@ test("builder can retry after the server's startup settling period", async () =>
   }
 });
 
+test("saved channel guide can rebuild future slots through the explicit action", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Guide preview");
+    click(w, "Rebuild future slots");
+    await settle();
+    assert.equal(w.testApi.rebuilt, "rebuild/evening-tv");
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /Future slots rebuilt/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+test("rebuilding never silently discards unsaved channel edits", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "+ New channel");
+    click(w, "Guide preview");
+    click(w, "Rebuild future slots");
+    await settle();
+    assert.equal(w.testApi.rebuilt, undefined);
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /Save your changes/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+test("health view explains source and runtime problems without starting streams", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    w.testApi.healthChannels = [
+      {
+        Name: "Test",
+        Number: "42",
+        Transcode: false,
+        HasUpcomingPrograms: false,
+        Warnings: ["No readable commercial clips were found."],
+        Runtime: {
+          Viewers: 0,
+          Recoveries: 2,
+          LastProblem: "A scheduled file is missing.",
+        },
+      },
+    ];
+    click(w, "Refresh status");
+    await settle();
+    const text = w.document.querySelector("[data-ui=health]").textContent;
+    assert.match(text, /commercial clips/);
+    assert.match(text, /file is missing/);
+    assert.match(text, /2 automatic recoveries/);
+    assert.ok(!w.testApi.calls.some((x) => x.startsWith("stream/")));
+  } finally {
+    dom.window.close();
+  }
+});
+test("backup review and restore preserves connection settings and reloads cleanly", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const draft = { FormatVersion: 1, ...fixture.configuration() };
+    delete draft.StreamToken;
+    delete draft.InternalBaseUrl;
+    draft.Channels[0].Name = "Restored station";
+    const file = { size: 1000, text: async () => JSON.stringify(draft) };
+    const input = w.document.querySelector("[data-ui=backup-file]");
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new w.Event("change", { bubbles: true }));
+    await settle();
+    assert.match(
+      w.document.querySelector("[data-ui=backup-preview]").textContent,
+      /Restored station/,
+    );
+    click(w, "Restore reviewed settings");
+    await settle();
+    assert.equal(
+      w.testApi.config.StreamToken,
+      fixture.configuration().StreamToken,
+    );
+    assert.equal(
+      w.document.querySelector("main input[type=text]").value,
+      "Restored station",
+    );
+    change(w, w.document.querySelector("[data-setting=GuideDays]"), "2");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.GuideDays, 2);
+  } finally {
+    dom.window.close();
+  }
+});
+test("oversized or unsupported backup files cannot be restored", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const input = w.document.querySelector("[data-ui=backup-file]");
+    Object.defineProperty(input, "files", {
+      value: [{ size: 1048577, text: async () => "{}" }],
+    });
+    input.dispatchEvent(new w.Event("change", { bubbles: true }));
+    await settle();
+    assert.match(
+      w.document.querySelector("[data-ui=backup-preview]").textContent,
+      /smaller than 1 MB/,
+    );
+    assert.equal(
+      w.document.querySelector("[data-action=import-backup]").disabled,
+      true,
+    );
+    assert.equal(w.testApi.imported, undefined);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("media names are displayed as text instead of HTML", async () => {
   const original = fixture.content.shows[0].Name;
   fixture.content.shows[0].Name = "<img src=x onerror=alert(1)>";

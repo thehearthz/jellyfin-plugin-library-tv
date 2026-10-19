@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
@@ -9,8 +10,28 @@ namespace Jellyfin.Plugin.LibraryTV;
 [Route("LibraryTV")]
 [Authorize(Policy = "RequiresElevation")]
 [TypeFilter(typeof(StartupExceptionFilter))]
-public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts broadcasts) : ControllerBase
+public sealed class Controller : ControllerBase
 {
+    private readonly StartupGate? startup;
+    private readonly Lazy<Catalog> catalogService;
+    private readonly Lazy<Scheduler> schedulerService;
+    private readonly Lazy<Broadcasts?> broadcastService;
+    public Controller(IServiceProvider services, StartupGate startup)
+    {
+        this.startup = startup;
+        catalogService = new(() => services.GetRequiredService<Catalog>());
+        schedulerService = new(() => services.GetRequiredService<Scheduler>());
+        broadcastService = new(() => services.GetRequiredService<Broadcasts>());
+    }
+    internal Controller(Catalog catalog, Scheduler scheduler, Broadcasts? broadcasts)
+    {
+        catalogService = new(() => catalog);
+        schedulerService = new(() => scheduler);
+        broadcastService = new(() => broadcasts);
+    }
+    private Catalog catalog { get { startup?.RequireReady(); return catalogService.Value; } }
+    private Scheduler scheduler { get { startup?.RequireReady(); return schedulerService.Value; } }
+    private Broadcasts? broadcasts { get { startup?.RequireReady(); return broadcastService.Value; } }
     [HttpGet("media")]
     public ActionResult<CatalogPage> Browse([FromQuery] string kind = "shows", [FromQuery] Guid libraryId = default,
         [FromQuery] string? search = null, [FromQuery] int start = 0, [FromQuery] int limit = 36)
@@ -31,7 +52,31 @@ public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts 
     public object Libraries() => catalog.Libraries();
 
     [HttpGet("status")]
-    public object Status() => new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow) }) };
+    public object Status() => startup?.IsReady == false
+        ? new { IsReady = false, LastRefresh = (DateTimeOffset?)null, LastRefreshMilliseconds = (double?)null, LastError = (string?)null, PluginPages = PluginPagesIntegration.Status, Channels = Array.Empty<object>() }
+        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.Transcode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
+
+    [HttpPost("rebuild/{id}")]
+    public async Task<IActionResult> Rebuild(string id, CancellationToken ct)
+    {
+        try { return Ok(new { AppliedFrom = await scheduler.RebuildFuture(id, ct) }); }
+        catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+    }
+
+    [HttpGet("backup")]
+    public SettingsBackup Backup() => SettingsBackup.Export(Plugin.Instance.Configuration);
+
+    [HttpPost("backup/import")]
+    [RequestSizeLimit(1048576)]
+    public async Task<IActionResult> Import([FromBody] SettingsBackup backup, CancellationToken ct)
+    {
+        try
+        {
+            await scheduler.SaveConfiguration(backup.ApplyTo(Plugin.Instance.Configuration), ct);
+            return Ok(new { Saved = true });
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException) { return BadRequest(new { Error = ex.Message }); }
+    }
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken ct)
@@ -68,7 +113,7 @@ public sealed class Controller(Catalog catalog, Scheduler scheduler, Broadcasts 
         if (scheduler.Current(id, DateTimeOffset.UtcNow) is null) { Response.StatusCode = 404; return; }
         Response.ContentType = "video/mp2t";
         Response.Headers.CacheControl = "no-store";
-        try { await broadcasts.Watch(id, Response.Body, ct); }
+        try { await broadcasts!.Watch(id, Response.Body, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (InvalidOperationException) when (!Response.HasStarted) { Response.StatusCode = 503; }
     }

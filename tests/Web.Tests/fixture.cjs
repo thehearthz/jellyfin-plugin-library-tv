@@ -107,6 +107,25 @@ function install(window, options = {}) {
         return { Saved: true };
       }
       if (path === "configuration") return structuredClone(data.config);
+      if (path === "backup") {
+        const { StreamToken, InternalBaseUrl, ...settings } = structuredClone(
+          data.saved || data.config,
+        );
+        data.exported = { FormatVersion: 1, ...settings };
+        return data.exported;
+      }
+      if (path === "backup/import") {
+        const draft = JSON.parse(request.data);
+        data.imported = draft;
+        const { FormatVersion, StreamToken, InternalBaseUrl, ...settings } =
+          draft;
+        data.config = { ...data.config, ...settings };
+        return { Saved: true };
+      }
+      if (path.startsWith("rebuild/")) {
+        data.rebuilt = path;
+        return { AppliedFrom: "2026-10-19T20:00:00Z" };
+      }
       if (path === "libraries" && data.starting)
         throw {
           responseJSON: {
@@ -122,7 +141,7 @@ function install(window, options = {}) {
         return {
           PluginPages:
             "Connected — Library TV Builder is registered in Plugin Pages.",
-          Channels: [],
+          Channels: data.healthChannels || [],
         };
       if (path === "media/resolve")
         return Object.values(content)

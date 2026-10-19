@@ -15,7 +15,11 @@ jobs:
           dotnet-version: "10.0.x"
       - run: dotnet build src/LibraryTV/LibraryTV.csproj -c Release
       - run: dotnet run --project tests/Planner.Tests -c Release
+      - name: Install transport test tools
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
       - run: dotnet run --project tests/Integration.Tests -c Release
+        env:
+          LIBRARY_TV_FFMPEG: /usr/bin/ffmpeg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

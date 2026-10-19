@@ -1,0 +1,37 @@
+using System.Text.Json;
+
+namespace Jellyfin.Plugin.LibraryTV;
+
+// Explicit allowlist: no stream token, server URL, filesystem paths, or playback history.
+public sealed class SettingsBackup
+{
+    public int FormatVersion { get; set; } = 1;
+    public ChannelDefinition[] Channels { get; set; } = [];
+    public bool AutoChannels { get; set; }
+    public string[] AutoLibraryIds { get; set; } = [];
+    public AutomaticChannel[] AutomaticChannels { get; set; } = [];
+    public int AutoChannelStartNumber { get; set; } = 100;
+    public string TimeZoneId { get; set; } = "UTC";
+    public int GuideDays { get; set; } = 3;
+    public int RefreshMinutes { get; set; } = 60;
+    public int MaxActiveChannels { get; set; } = 2;
+
+    public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
+
+    public Configuration ApplyTo(Configuration current)
+    {
+        if (FormatVersion != 1) throw new ArgumentException("This backup format is not supported. Use a Library TV settings backup with FormatVersion 1.");
+        var config = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(current))!;
+        config.Channels = Channels;
+        config.AutoChannels = AutoChannels;
+        config.AutoLibraryIds = AutoLibraryIds;
+        config.AutomaticChannels = AutomaticChannels;
+        config.AutoChannelStartNumber = AutoChannelStartNumber;
+        config.TimeZoneId = TimeZoneId;
+        config.GuideDays = GuideDays;
+        config.RefreshMinutes = RefreshMinutes;
+        config.MaxActiveChannels = MaxActiveChannels;
+        Scheduler.Validate(config);
+        return config;
+    }
+}

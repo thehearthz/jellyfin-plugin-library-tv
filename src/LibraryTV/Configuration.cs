@@ -60,7 +60,8 @@ public sealed class TimeBlock
 }
 
 public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode);
-public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial);
+public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null);
+public sealed record PlanningUndo(string PoolKey, Guid PreviousLast, Guid[] AddedIds, bool Swapped, Guid[]? PreviousSeen, string? QuotaKey = null);
 public sealed class Rotation
 {
     public List<Guid> Remaining { get; set; } = [];

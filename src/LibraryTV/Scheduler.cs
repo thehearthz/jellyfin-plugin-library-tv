@@ -11,8 +11,63 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
     public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
     private Dictionary<string, ChannelState>? states;
-    private PublishedSchedule published = new([], [], new Dictionary<string, Airing[]>());
+    private PublishedSchedule published = new([], [], new Dictionary<string, Airing[]>(), new Dictionary<string, string[]>());
+
+    public async Task<bool> SkipFailed(Airing failed, DateTimeOffset now, CancellationToken ct)
+    {
+        startup?.RequireReady();
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (states is null || !states.TryGetValue(failed.ChannelId, out var saved)) return false;
+            var current = Current(failed.ChannelId, now);
+            if (current is null) return false;
+            if (current.ItemId != failed.ItemId || current.Start != failed.Start) return true;
+            var state = CopyState(saved);
+            var next = state.Guide.FirstOrDefault(x => x.Start >= failed.End);
+            if (next is null) return false;
+            var delta = next.Start - now;
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(Plugin.Instance.Configuration.TimeZoneId);
+            state.Guide = state.Guide.Select(Shift).Where(x => x.End > x.Start).ToList();
+            var working = new Dictionary<string, ChannelState>(states) { [failed.ChannelId] = state };
+            Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+            await File.WriteAllTextAsync(StatePath + ".tmp", JsonSerializer.Serialize(working), ct);
+            File.Move(StatePath + ".tmp", StatePath, true);
+            states = working;
+            var previous = Volatile.Read(ref published);
+            var index = new Dictionary<string, Airing[]>(previous.ByChannel) { [failed.ChannelId] = state.Guide.ToArray() };
+            Volatile.Write(ref published, new PublishedSchedule(previous.Channels, index.Values.SelectMany(x => x).OrderBy(x => x.Start).ToArray(), index, previous.Warnings));
+            return true;
+            Airing Shift(Airing item)
+            {
+                if (item.Start == failed.Start && item.ItemId == failed.ItemId) return item with { End = now };
+                if (item.Start < next.Start) return item;
+                var shifted = item with { Start = item.Start - delta, End = item.End - delta };
+                if (item.Undo?.QuotaKey is { } oldKey)
+                {
+                    var date = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(shifted.Start, zone).DateTime);
+                    var definition = Plugin.Instance.Configuration.Channels.FirstOrDefault(x => x.Id == item.ChannelId)?.Blocks.FirstOrDefault(x => x.Id == item.Undo.PoolKey);
+                    if (definition is not null)
+                    {
+                        var onlyBlock = new ChannelDefinition { Blocks = [definition] };
+                        date = Planner.ActiveBlock(onlyBlock, shifted.Start, zone)?.Date ?? date;
+                    }
+                    var newKey = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) + ":" + item.Undo.PoolKey;
+                    if (newKey != oldKey)
+                    {
+                        var previousCount = state.DailyCounts.GetValueOrDefault(oldKey);
+                        if (previousCount <= 1) state.DailyCounts.Remove(oldKey); else state.DailyCounts[oldKey] = previousCount - 1;
+                        state.DailyCounts[newKey] = state.DailyCounts.GetValueOrDefault(newKey) + 1;
+                        shifted = shifted with { Undo = item.Undo with { QuotaKey = newKey } };
+                    }
+                }
+                return shifted;
+            }
+        }
+        finally { gate.Release(); }
+    }
     public string? LastError { get; private set; }
+    public double? LastRefreshMilliseconds { get; private set; }
     public DateTimeOffset? LastRefresh { get; private set; }
     public IReadOnlyList<ChannelDefinition> Channels => Volatile.Read(ref published).Channels;
     public Airing[] Guide => Volatile.Read(ref published).Guide;
@@ -87,12 +142,17 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         finally { gate.Release(); }
     }
 
-    public async Task Refresh(CancellationToken ct)
+    public async Task Refresh(CancellationToken ct) => await RefreshInternal(ct, null);
+
+    public async Task<DateTimeOffset?> RebuildFuture(string channelId, CancellationToken ct) => await RefreshInternal(ct, channelId);
+
+    private async Task<DateTimeOffset?> RefreshInternal(CancellationToken ct, string? rebuildChannel)
     {
         startup?.RequireReady();
         await gate.WaitAsync(ct);
         try
         {
+            var began = System.Diagnostics.Stopwatch.GetTimestamp();
             var config = Plugin.Instance.Configuration;
             Validate(config);
             var assignedNumbers = catalog.PrepareAutomaticChannels(config, preserveLegacyNumbers: File.Exists(StatePath));
@@ -103,9 +163,12 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             // Work on a copy, so failed scans/writes cannot partially advance cursors.
             var working = states.ToDictionary(x => x.Key, x => CopyState(x.Value));
             var definitions = catalog.Channels(config);
+            if (rebuildChannel is not null && !definitions.Any(x => x.Id == rebuildChannel)) throw new ArgumentException("Choose an enabled channel to rebuild.");
             if (assignedNumbers || LastRefresh is null) Plugin.Instance.SaveConfiguration();
             var now = DateTimeOffset.UtcNow;
             var read = catalog.CreateRefreshReader();
+            DateTimeOffset? rebuiltFrom = null;
+            var warnings = new Dictionary<string, string[]>();
             foreach (var channel in definitions)
             {
                 ct.ThrowIfCancellationRequested();
@@ -115,7 +178,15 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 pools["commercials"] = read(channel.Commercials);
                 var adIds = pools["commercials"].Select(x => x.Id).ToHashSet();
                 foreach (var key in pools.Keys.Where(x => x != "commercials").ToArray()) pools[key].RemoveAll(x => adIds.Contains(x.Id));
-                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId));
+                if (channel.Id == rebuildChannel) rebuiltFrom = Planner.RewindFuture(state, now);
+                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null);
+                var notes = new List<string>();
+                if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
+                foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
+                if (channel.CommercialCount > 0 && pools["commercials"].Count == 0) notes.Add("Commercial breaks are enabled but no readable commercial clips were found.");
+                if (!state.Guide.Any(x => x.End > now)) notes.Add("No programs are queued. Check content selections, missing files, time blocks, and repeat settings.");
+                if (state.Guide.Count >= Planner.MaxGuideEntries) notes.Add("This channel reached the 10,000-program guide limit. Use longer clips or a shorter guide horizon to keep memory and refresh costs low.");
+                warnings[channel.Id] = notes.ToArray();
             }
             var retained = config.Channels.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var selectedLibraries = config.AutoLibraryIds.Select(Guid.Parse).ToHashSet();
@@ -130,9 +201,11 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             states = working;
             var byChannel = definitions.ToDictionary(x => x.Id, x => working[x.Id].Guide.OrderBy(p => p.Start).ToArray());
             var guide = byChannel.Values.SelectMany(x => x).OrderBy(x => x.Start).ToArray();
-            Volatile.Write(ref published, new PublishedSchedule(definitions, guide, byChannel));
+            Volatile.Write(ref published, new PublishedSchedule(definitions, guide, byChannel, warnings));
             LastRefresh = now;
+            LastRefreshMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             LastError = null;
+            return rebuiltFrom;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -143,7 +216,8 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         finally { gate.Release(); }
     }
 
-    private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel);
+    public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
+    private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);
 
     private static ChannelState CopyState(ChannelState state) => new()
     {

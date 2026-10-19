@@ -1,17 +1,27 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Globalization;
 using System.Threading.Channels;
-using MediaBrowser.Controller.MediaEncoding;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-// One remuxer per watched channel; bounded queues disconnect slow viewers.
-public sealed class Broadcasts(Scheduler scheduler, IMediaEncoder encoder, ILogger<Broadcasts> log) : IDisposable
+public sealed record RuntimeStatus(int Viewers, int Recoveries, string? LastProblem, DateTimeOffset? LastProblemAt);
+
+// One process per watched channel; no timer, media scan, or process while idle.
+public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log) : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Broadcast> active = [];
+    private readonly Dictionary<string, RuntimeStatus> history = [];
+    private bool disposed;
+
+    public RuntimeStatus StatusFor(string id)
+    {
+        lock (gate)
+        {
+            var status = history.GetValueOrDefault(id) ?? new RuntimeStatus(0, 0, null, null);
+            return status with { Viewers = active.TryGetValue(id, out var live) ? live.Viewers.Count : 0 };
+        }
+    }
 
     public async Task Watch(string id, Stream output, CancellationToken ct)
     {
@@ -20,6 +30,7 @@ public sealed class Broadcasts(Scheduler scheduler, IMediaEncoder encoder, ILogg
         var key = Guid.NewGuid();
         lock (gate)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             if (!active.TryGetValue(id, out broadcast!))
             {
                 if (active.Count >= Plugin.Instance.Configuration.MaxActiveChannels) throw new InvalidOperationException("Active channel limit reached.");
@@ -55,50 +66,50 @@ public sealed class Broadcasts(Scheduler scheduler, IMediaEncoder encoder, ILogg
     private async Task Run(string id, Broadcast broadcast)
     {
         Exception? failure = null;
-        var token = broadcast.Stop.Token;
+        var ct = broadcast.Stop.Token;
+        var consecutiveFailures = 0;
         try
         {
-            while (!token.IsCancellationRequested)
+            while (!ct.IsCancellationRequested)
             {
-                var now = DateTimeOffset.UtcNow;
-                var item = scheduler.Current(id, now) ?? throw new InvalidOperationException("No program scheduled. Check source folders and refresh the guide.");
-                if (!File.Exists(item.Path)) throw new FileNotFoundException("Scheduled media is no longer available.");
-                var channel = scheduler.Channels.First(x => x.Id == id);
-                var start = new ProcessStartInfo(encoder.EncoderPath) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-                void Args(params string[] values) { foreach (var value in values) start.ArgumentList.Add(value); }
-                string Num(double x) => x.ToString("0.000", CultureInfo.InvariantCulture);
-                Args("-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-ss", Num(Math.Max(0, (now - item.Start).TotalSeconds)), "-i", item.Path,
-                    "-t", Num((item.End - now).TotalSeconds), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn");
-                if (channel.Transcode) Args("-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60", "-c:a", "aac", "-ar", "48000", "-ac", "2");
-                else Args("-c", "copy");
-                Args("-output_ts_offset", Num(now.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
-                using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not launch Jellyfin FFmpeg.");
-                using var registration = token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } });
-                // Drain stderr without retaining media paths or unbounded output in memory.
-                var errors = Task.Run(async () => { while (await process.StandardError.ReadLineAsync(token) is not null) { } }, token);
-                var buffer = new byte[188 * 64];
-                int count;
-                while ((count = await process.StandardOutput.BaseStream.ReadAsync(buffer, token)) > 0)
+                var item = scheduler.Current(id, DateTimeOffset.UtcNow) ?? throw new InvalidOperationException("No program is scheduled. Check channel health.");
+                var channel = scheduler.Channels.FirstOrDefault(x => x.Id == id) ?? throw new InvalidOperationException("Channel is disabled.");
+                try
                 {
-                    var chunk = buffer.AsSpan(0, count).ToArray();
-                    foreach (var viewer in broadcast.Viewers)
-                        if (!viewer.Value.Writer.TryWrite(chunk))
-                        {
-                            viewer.Value.Writer.TryComplete(new IOException("Viewer could not keep up with the live stream."));
-                            broadcast.Viewers.TryRemove(viewer.Key, out _);
-                        }
-                    if (broadcast.Viewers.IsEmpty) { broadcast.Stop.Cancel(); token.ThrowIfCancellationRequested(); }
+                    await streamer.Stream(item, channel.Transcode, chunk =>
+                    {
+                        foreach (var viewer in broadcast.Viewers)
+                            if (!viewer.Value.Writer.TryWrite(chunk))
+                            {
+                                viewer.Value.Writer.TryComplete(new IOException("Viewer could not keep up with the live stream."));
+                                broadcast.Viewers.TryRemove(viewer.Key, out _);
+                            }
+                        if (broadcast.Viewers.IsEmpty) { broadcast.Stop.Cancel(); ct.ThrowIfCancellationRequested(); }
+                        return Task.CompletedTask;
+                    }, ct);
+                    consecutiveFailures = 0;
+                    var delay = item.End - DateTimeOffset.UtcNow;
+                    if (delay > TimeSpan.Zero) await Task.Delay(delay, ct);
                 }
-                await process.WaitForExitAsync(token);
-                await errors;
-                if (process.ExitCode != 0) throw new IOException("FFmpeg could not play this file. Try compatibility transcoding or check codecs.");
-                // Fast keyframe seeking/remuxing may finish before the next program's wall-clock start.
-                var delay = item.End - DateTimeOffset.UtcNow;
-                if (delay > TimeSpan.Zero) await Task.Delay(delay, token);
+                catch (IOException ex)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var problem = ex is FileNotFoundException ? "A scheduled file is missing. Check the library or its storage mount." : "A scheduled item could not play. Check file access and media formats; compatibility encoding may help.";
+                    Report(id, problem, false);
+                    log.LogWarning("Library TV channel {Channel}: {Problem}", id, problem);
+                    if (++consecutiveFailures >= 3 || !await scheduler.SkipFailed(item, DateTimeOffset.UtcNow, ct))
+                        throw new IOException("Channel stopped after unavailable media. See Channel health for details.");
+                    Report(id, problem + " The next scheduled program was brought forward.", true);
+                }
             }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception ex) { failure = ex; log.LogWarning(ex, "Library TV channel {Channel} stopped", id); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            failure = ex;
+            if (ex is EncoderUnavailableException) Report(id, ex.Message, false);
+            log.LogWarning(ex, "Library TV channel {Channel} stopped", id);
+        }
         finally
         {
             lock (gate)
@@ -109,7 +120,17 @@ public sealed class Broadcasts(Scheduler scheduler, IMediaEncoder encoder, ILogg
         }
     }
 
-    public void Dispose() { lock (gate) foreach (var b in active.Values) b.Stop.Cancel(); }
+    private void Report(string id, string problem, bool recovered)
+    {
+        lock (gate)
+        {
+            if (!history.ContainsKey(id) && history.Count >= 100) history.Remove(history.OrderBy(x => x.Value.LastProblemAt).First().Key);
+            var old = history.GetValueOrDefault(id);
+            history[id] = new RuntimeStatus(0, (old?.Recoveries ?? 0) + (recovered ? 1 : 0), problem, DateTimeOffset.UtcNow);
+        }
+    }
+
+    public void Dispose() { lock (gate) { disposed = true; foreach (var b in active.Values) b.Stop.Cancel(); } }
     private sealed class Broadcast
     {
         public CancellationTokenSource Stop { get; } = new();

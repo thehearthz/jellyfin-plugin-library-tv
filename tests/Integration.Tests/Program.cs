@@ -27,6 +27,8 @@ try
     var xml = Proxy<IXmlSerializer>.Make((name, _) => name.StartsWith("Deserialize") ? new Configuration() : null);
     var plugin = new Plugin(paths, xml);
     await StartupTests.Run(Check, paths);
+    await PlaybackTests.Run(Check, directory);
+    await TransportTests.Run(Check, directory);
     var services = new ServiceCollection();
     new Services().RegisterServices(services, null!);
     Check(services.Any(x => x.ServiceType == typeof(ILiveTvService) && x.ImplementationType == typeof(LiveTvService)), "Plugin registers its native Live TV provider in dependency injection");
@@ -159,6 +161,19 @@ try
     serializer.Serialize(writer, new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock()] }] });
     var roundtrip = (Configuration)serializer.Deserialize(new StringReader(writer.ToString()))!;
     Check(roundtrip.Channels.Length == 1 && roundtrip.Channels[0].Blocks.Length == 1 && roundtrip.StreamToken.Length >= 32, "Configuration survives Jellyfin XML storage");
+    var privateConfig = new Configuration { StreamToken = new string('x', 64), InternalBaseUrl = "http://127.0.0.1:18096/private", Channels = [new ChannelDefinition { Id = "backup-channel", Name = "Backed up", Number = "42.1" }] };
+    var backup = SettingsBackup.Export(privateConfig);
+    var exported = System.Text.Json.JsonSerializer.Serialize(backup);
+    Check(!exported.Contains("StreamToken") && !exported.Contains("InternalBaseUrl") && !exported.Contains(privateConfig.StreamToken) && !exported.Contains("18096"), "Settings backups exclude private transport tokens and server connection addresses");
+    var destination = new Configuration { StreamToken = new string('y',64), InternalBaseUrl = "http://127.0.0.1:28096" };
+    var imported = backup.ApplyTo(destination);
+    Check(imported.Channels.Single().Number == "42.1" && imported.Channels.Single().Id == "backup-channel" && imported.StreamToken == destination.StreamToken && imported.InternalBaseUrl == destination.InternalBaseUrl, "Restoring settings retains channel IDs while preserving this server's token and connection address");
+    backup.FormatVersion = 99;
+    try { backup.ApplyTo(destination); throw new Exception("Unknown backup format accepted"); }
+    catch (ArgumentException) { Check(destination.Channels.Length == 0, "Unsupported backups are rejected without changing current settings"); }
+    backup.FormatVersion = 1; backup.Channels = [new ChannelDefinition { Number = "bad number" }];
+    try { backup.ApplyTo(destination); throw new Exception("Invalid backup settings accepted"); }
+    catch (ArgumentException) { Check(true, "Restored settings pass the same numbering and schedule validation as normal saves"); }
     var invalid = new Configuration { InternalBaseUrl = "https://example.com" };
     try { Scheduler.Validate(invalid); throw new Exception("Non-loopback transport accepted"); }
     catch (ArgumentException) { Check(true, "Remote transport URLs are rejected"); }

@@ -457,6 +457,30 @@
         </div>
       </details>
       <details class="ltv-panel">
+        <summary>Backup &amp; restore settings</summary>
+        <div>
+          <p class="ltv-muted">
+            Download your saved channel settings before making major changes.
+            Backups exclude private stream tokens, connection addresses, and
+            episode progress. Media selections use this server’s library IDs.
+          </p>
+          <button type="button" data-action="export-backup">
+            Download settings backup
+          </button>
+          <label class="ltv-field"
+            ><span>Review a settings backup (maximum 1 MB)</span
+            ><input
+              type="file"
+              accept="application/json,.json"
+              data-ui="backup-file"
+          /></label>
+          <div data-ui="backup-preview" aria-live="polite"></div>
+          <button type="button" data-action="import-backup" disabled>
+            Restore reviewed settings
+          </button>
+        </div>
+      </details>
+      <details class="ltv-panel">
         <summary>Server settings &amp; Plugin Pages</summary>
         <div>
           <p data-ui="plugin-pages" class="ltv-muted"></p>
@@ -579,6 +603,7 @@
         request: 0,
         revision: 0,
         loaded: false,
+        backupDraft: null,
       };
       const id = () =>
         globalThis.crypto && crypto.randomUUID
@@ -673,6 +698,143 @@
       }
       function current() {
         return state.config.Channels.find((c) => c.Id === state.channel);
+      }
+      async function exportBackup() {
+        try {
+          const backup = await api("backup");
+          const url = URL.createObjectURL(
+            new Blob([JSON.stringify(backup, null, 2)], {
+              type: "application/json",
+            }),
+          );
+          const link = node("a", {
+            href: url,
+            download: "library-tv-settings.json",
+          });
+          page.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          notice(
+            "Saved settings downloaded. Unsaved edits and episode progress are not included.",
+            "success",
+          );
+        } catch (e) {
+          notice("Could not download the backup: " + errorMessage(e), "error");
+        }
+      }
+      async function reviewBackup() {
+        state.backupDraft = null;
+        page.querySelector('[data-action="import-backup"]').disabled = true;
+        const file = ui("backup-file").files[0];
+        if (!file) return;
+        try {
+          if (file.size > 1048576)
+            throw new Error("Choose a settings backup smaller than 1 MB.");
+          const backup = JSON.parse(await file.text());
+          if (
+            !backup ||
+            backup.FormatVersion !== 1 ||
+            !Array.isArray(backup.Channels) ||
+            backup.Channels.length > 100
+          )
+            throw new Error(
+              "Choose a supported Library TV settings backup (FormatVersion 1, up to 100 channels).",
+            );
+          const target = ui("backup-preview");
+          target.replaceChildren(
+            node(
+              "p",
+              {},
+              "Restore " +
+                backup.Channels.length +
+                " manual channels and their automatic channel settings?",
+            ),
+          );
+          for (const channel of backup.Channels)
+            target.append(
+              node(
+                "p",
+                { class: "ltv-muted" },
+                String(channel.Number || "") +
+                  " · " +
+                  String(channel.Name || "Unnamed"),
+              ),
+            );
+          state.backupDraft = backup;
+          page.querySelector('[data-action="import-backup"]').disabled = false;
+        } catch (e) {
+          ui("backup-preview").textContent = errorMessage(e);
+        }
+      }
+      async function importBackup() {
+        if (!state.backupDraft || state.busy) return;
+        if (
+          !confirm(
+            "Replace your saved channel settings with this backup? Unsaved edits will be discarded. Export your current settings first if needed. Matching channel IDs keep their saved episode progress.",
+          )
+        )
+          return;
+        state.busy = true;
+        ui("body").inert = true;
+        try {
+          await api("backup/import", "POST", state.backupDraft);
+          state.backupDraft = null;
+          page.querySelector('[data-action="import-backup"]').disabled = true;
+          state.loaded = false;
+          await load();
+          try {
+            await api("refresh", "POST");
+            notice(
+              "Settings restored and the guide refreshed. Existing planned programs are preserved.",
+              "success",
+            );
+          } catch (e) {
+            notice(
+              "Settings were restored, but the schedule could not refresh: " +
+                errorMessage(e),
+              "error",
+            );
+          }
+        } catch (e) {
+          notice("Settings were not restored: " + errorMessage(e), "error");
+        } finally {
+          state.busy = false;
+          ui("body").inert = false;
+        }
+      }
+      async function rebuildFuture(channel, body) {
+        if (state.dirty) {
+          notice("Save your changes before rebuilding future slots.", "error");
+          return;
+        }
+        if (state.busy) return;
+        if (
+          !confirm(
+            "Rebuild future slots for “" +
+              channel.Name +
+              "”? The current program will finish. Older guide entries that cannot safely be rewound remain protected.",
+          )
+        )
+          return;
+        state.busy = true;
+        try {
+          const result = await api(
+            "rebuild/" + encodeURIComponent(channel.Id),
+            "POST",
+          );
+          await loadGuide(channel, body);
+          notice(
+            "Future slots rebuilt from " +
+              new Date(result.AppliedFrom).toLocaleString() +
+              ". The current program and any protected older guide entries were kept. Run Jellyfin’s Refresh Guide to import the changes.",
+            "success",
+          );
+        } catch (e) {
+          notice("The schedule was not rebuilt: " + errorMessage(e), "error");
+        } finally {
+          state.busy = false;
+        }
       }
       function numberParts(value) {
         const text = String(value || "").trim();
@@ -778,6 +940,31 @@
                       : "Waiting for the next scheduled program."
                     : "No upcoming programs. Check source selections, deleted files, and repeat settings.",
                 ),
+                node(
+                  "p",
+                  { class: "ltv-muted" },
+                  channel.Transcode
+                    ? "Compatibility encoding enabled — higher CPU use while watched."
+                    : "Stream copy selected — no video encoding by the plugin.",
+                ),
+                ...(channel.Warnings || []).map((text) => node("p", {}, text)),
+                channel.Runtime
+                  ? node(
+                      "p",
+                      { class: "ltv-muted" },
+                      channel.Runtime.Viewers +
+                        " active viewers · " +
+                        channel.Runtime.Recoveries +
+                        " automatic recoveries",
+                    )
+                  : null,
+                channel.Runtime?.LastProblem
+                  ? node(
+                      "p",
+                      {},
+                      "Last playback issue: " + channel.Runtime.LastProblem,
+                    )
+                  : null,
               ),
             );
           if (!(result.Channels || []).length)
@@ -1167,6 +1354,7 @@
               "This is the saved rolling guide. Unsaved edits are not included. Existing programs stay fixed; new selections enter the unplanned tail.",
             ),
             button("Load guide", () => loadGuide(c, body)),
+            button("Rebuild future slots", () => rebuildFuture(c, body)),
             node("div", { "data-guide": "" }),
           );
         }
@@ -1699,7 +1887,7 @@
             const key = input.dataset.setting;
             if (input.type === "checkbox") input.checked = !!config[key];
             else input.value = config[key];
-            input.addEventListener("change", () => {
+            input.onchange = () => {
               config[key] =
                 input.type === "checkbox"
                   ? input.checked
@@ -1707,7 +1895,7 @@
                     ? Number(input.value)
                     : input.value;
               dirty();
-            });
+            };
           }
           renderAutomaticChannels();
           ui("plugin-pages").textContent =
@@ -1734,6 +1922,13 @@
         .querySelector('[data-action="retry-load"]')
         .addEventListener("click", load);
       page.querySelector("[data-action=save]").addEventListener("click", save);
+      page
+        .querySelector('[data-action="export-backup"]')
+        .addEventListener("click", exportBackup);
+      page
+        .querySelector('[data-action="import-backup"]')
+        .addEventListener("click", importBackup);
+      ui("backup-file").addEventListener("change", reviewBackup);
       page
         .querySelector("[data-action=health]")
         .addEventListener("click", refreshHealth);

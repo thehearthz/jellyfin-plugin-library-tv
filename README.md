@@ -1,6 +1,8 @@
 # Library TV for Jellyfin 12.2
 
-Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.3:** adds stable custom channel numbers, subchannels, automatic channel naming and on-demand schedule health. The plugin compiles against the official 12.2 API, with automated scheduling, integration and browser-interaction checks. Playback transitions have not yet been verified on a real Jellyfin server/client combination. Please test with a small channel first.
+Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.4** bundles the visual builder, custom numbering, deferred startup, playback recovery, future-slot rebuilding, diagnostics and settings backups. It compiles against the official 12.2 API and passes automated scheduling, integration, UI and real FFmpeg transport tests. Real Jellyfin client compatibility still needs validation; start with a small channel.
+
+This is a cumulative release. You can skip earlier versions and install **v0.4.0.0** in one update/restart when ready. You do not need to restart the server for subsequent channel-setting changes, guide rebuilds, or settings restores.
 
 ## Install
 
@@ -16,7 +18,7 @@ Build always-on television channels from local media already indexed by Jellyfin
 5. Run Jellyfin's **Refresh Channels** scheduled task. A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
 6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
 
-Upgrading from v0.1 or v0.2: install the v0.3.1.0 update and restart Jellyfin. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
+Upgrading from earlier versions: install v0.4.0.0 and restart Jellyfin once when convenient. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
 
 ### Plugin Pages integration
 
@@ -50,6 +52,9 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Identical content pools share their library query during each refresh. The cache ends with that refresh, so new files can appear at the next refresh without a persistent media cache.
 - Current-program lookup uses a per-channel index. State is copied without a JSON encode/decode round trip; JSON is used for durable storage. Guide previews return 40 programs by default (maximum 200 per request).
 - **Channel health** checks the saved schedule only when requested and reports channels with no upcoming content without starting playback or polling in the background.
+- Bounded playback recovery advances to the next scheduled item when a media file is missing or unreadable. An unavailable FFmpeg configuration stops playback without consuming episodes.
+- **Rebuild future slots** applies saved changes after the current program without resetting episode order or daily quotas. Legacy entries without rewind metadata are explicitly protected.
+- Reviewed settings backup/restore excludes private stream tokens and the server connection address.
 - Viewers join the program scheduled for the current time. The schedule continues while nobody watches.
 
 ## Low CPU and playback constraints
@@ -109,13 +114,31 @@ Library, folder and item selectors are combined. An empty source selects nothing
 
 ## Updating schedules
 
-Saving settings refreshes the plugin schedule. New guide entries extend the unplanned tail; existing planned entries remain fixed so that refreshing cannot consume episodes twice or change an in-progress broadcast. New media can therefore take up to the configured guide horizon to appear. For a completely new lineup, use a new channel ID, save, then run Jellyfin's **Refresh Guide** task.
+Saving settings refreshes the plugin schedule and extends its unplanned tail. To apply saved content or schedule changes sooner, open **Guide preview → Rebuild future slots**. The current program finishes, then reversible future entries are rebuilt from the saved settings. Episode progress, movie rotation and daily quotas are rewound only for discarded future selections. Newly generated entries carry compact undo metadata; no complete rotation snapshot is stored for every program.
+
+Schedules created before v0.4 do not contain enough information to safely rewind every selection. Their existing future entries stay protected until they air; any newer tail can be rebuilt. The builder reports the actual **Applied from** time. This preserves episode progress instead of guessing at an older cursor. A failed scan or write keeps the previous published schedule and saved state.
+
+Each channel's new guide generation is capped at 10,000 program/ad entries. Very short clips can hit that cap before filling the requested horizon; Channel health explains the limit. Existing older guide entries are not silently truncated on upgrade.
 
 The plugin refresh and Jellyfin's guide import are separate. Jellyfin imports updated programs through its standard guide refresh task. Schedule that task more frequently if needed. Automatic channel creation is per selected library; automatic genre-based channels and a visual drag-and-drop schedule editor are not implemented.
 
 Schedule and rotation state are stored in `<Jellyfin data directory>/library-tv/schedule.json`. Include this file and the plugin XML configuration in backups. Don't delete state to fix a playback issue: doing so resets progress. Downtime of up to seven days beyond the last planned entry is advanced in bounded catch-up; longer downtime resumes at the saved rotation rather than simulating every missed day.
 
-Missing/unsupported files stop a watched stream; automatic failover/reconnection is not implemented. Refresh removes deleted items from future rotation, while already planned entries remain fixed. If a pool is empty or exhausted with repeats disabled, its time block falls back to the default source. If both are unavailable, the guide has a gap rather than silently repeating episodes. Recordings are not supported by this provider.
+### Playback recovery and diagnostics
+
+If a watched program is missing, unreadable or fails to produce a transport stream, the plugin brings the next scheduled item forward and shifts the later guide times by the same amount. Rotation selections remain consumed once; stale recovery requests cannot skip twice. Recovery is limited to three consecutive failed items per viewing session (two advances, then stop), with no background retry loop. Successful playback resets the consecutive-failure count. If FFmpeg itself cannot start, playback stops with a configuration message and the schedule is not advanced.
+
+Channel health shows source/schedule warnings, active viewers, recovery count, stream-copy/compatibility mode and the most recent playback issue. It does not probe media or run FFmpeg. Playback diagnostics are kept in bounded memory, not a growing history file. A refresh records its elapsed time; this is a diagnostic measurement, not a server-wide CPU benchmark.
+
+FFmpeg is killed and awaited on cancellation or output failure. No media process runs when nobody is watching. Recovery does not guarantee seamless playback on every client, normalize mixed codecs in copy mode, reconnect clients that independently disconnect, or detect every stalled network filesystem read. Real FFmpeg tests validate compatible program/commercial transitions and cleanup; real client testing is still needed.
+
+If a pool is empty or exhausted with repeats disabled, its time block falls back to the default source. If both are unavailable, the guide has a gap rather than silently repeating episodes. Recordings are not supported by this provider.
+
+### Settings backups
+
+Open **Backup & restore settings → Download settings backup** to export saved channel definitions and general scheduling settings. Unsaved edits, private stream tokens, server connection addresses, guide files and episode progress are excluded. Select a JSON backup to review its channel names/numbers, then choose **Restore reviewed settings** and confirm replacement. The import limit is 1 MB and 100 manual channels; imported settings receive the same validation as normal saves. The current server's connection address and token are preserved, and matching channel IDs retain their schedule state. Library/item GUIDs are server-specific, so this is not an automatic media-ID migration to another server.
+
+For a full disaster-recovery backup, also preserve the plugin XML configuration and `library-tv/schedule.json` privately. The downloadable settings backup intentionally contains no playback history or episode cursor.
 
 ## Server networking
 
@@ -131,7 +154,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.3.1.0
+./scripts/package.ps1 -Version 0.4.0.0
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -141,7 +164,9 @@ npm ci --ignore-scripts
 npm test
 ```
 
-CI builds and tests on Linux. Pushing a four-part version tag such as `v0.3.1.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
+
+CI builds and tests on Linux. Pushing a four-part version tag such as `v0.4.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

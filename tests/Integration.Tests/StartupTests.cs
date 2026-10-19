@@ -61,6 +61,10 @@ public static class StartupTests
         await pages.StartAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
         check(queries == 0 && resolutions == 0 && !scheduler.IsReady && !File.Exists(scheduler.StatePath), "Both hosted services return from startup without resolving heavy services, scanning libraries or writing a schedule");
         check(!(await deferredTv.GetChannelsAsync(default)).Any() && !(await deferredTv.GetProgramsAsync("test", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), default)).Any() && deferredFolder.DataVersion == "starting" && !deferredFolder.IsEnabledFor(Guid.NewGuid().ToString()) && resolutions == 0, "Early channel-provider calls do not resolve scheduler, library or user services");
+        var controller = new Jellyfin.Plugin.LibraryTV.Controller(deferredServices, pendingGate);
+        _ = controller.Status();
+        try { controller.Libraries(); throw new Exception("Controller bypassed startup gate"); }
+        catch(StartupPendingException) { check(resolutions == 0,"Startup status and early HTTP requests do not resolve library, scheduler, broadcaster or encoder services"); }
         try { catalog.Libraries(); throw new Exception("Catalog bypassed startup gate"); }
         catch (StartupPendingException) { check(queries == 0, "Requests during startup cannot trigger early library queries"); }
         try { await scheduler.Refresh(default); throw new Exception("Refresh bypassed startup gate"); }
