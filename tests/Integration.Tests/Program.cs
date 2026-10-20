@@ -109,6 +109,7 @@ try
     ILiveTvService tv = new LiveTvService(scheduler);
     Check(!(await tv.GetChannelsAsync(default)).Any(), "Native Live TV provider works against the real Jellyfin 12.2 interface");
     var source = await tv.GetChannelStream("test", "", default);
+    Check(source.AnalyzeDurationMs == 3000, "Live playback bounds input analysis to three seconds instead of Jellyfin's long fallback");
     Check(source.IsInfiniteStream && source.Path.StartsWith("http://127.0.0.1:8096/LibraryTV/stream/test?token="), "Live TV transport uses authenticated loopback URL");
     var viewer = new User("viewer", "test", "test") { Id = Guid.NewGuid() };
     viewer.SetPermission(PermissionKind.EnableLiveTvAccess, true);
@@ -122,6 +123,7 @@ try
     Check(listing.Items.Count == 1 && listing.Items[0].Id == "home-channel" && listing.Items[0].IsLiveStream && listing.Items[0].Name.Contains("My channel"), "Home folder contains a stable playable item for each enabled channel");
     Check(before != folder.DataVersion, "Changing channel definitions invalidates Jellyfin's folder listing cache");
     var folderSource = (await folder.GetChannelItemMediaInfo("home-channel", default)).Single();
+    Check(folderSource.AnalyzeDurationMs == 3000, "Home folder playback uses the same bounded input analysis as Live TV");
     var tvSource = await tv.GetChannelStream("home-channel", "", default);
     Check(folderSource.Path == tvSource.Path && folderSource.IsInfiniteStream && !folderSource.SupportsDirectPlay, "Home folder reuses the existing protected live stream");
     var pageTwo = await folder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id, StartIndex = 1, Limit = 1 }, default);

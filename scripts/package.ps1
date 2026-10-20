@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.4.0.0",
+    [string]$Version = "0.4.1.0",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
 )
@@ -22,7 +22,7 @@ $entry = [ordered]@{
     category = 'Live TV'
     versions = @([ordered]@{
         version = $Version
-        changelog = 'Consolidated update: bounded missing-media recovery, hardened FFmpeg cleanup, safe future-slot rebuilding, private-token-free settings backup/restore, detailed channel diagnostics, guide size limits, and real transport tests. Includes all previous builder, numbering and deferred-startup improvements.'
+        changelog = 'Request three seconds of live input analysis for Library TV folder and Live TV playback, overriding the long server fallback that can delay channel tuning. Includes all 0.4.0 features. Actual startup time also depends on media, storage and client buffering.'
         targetAbi = '12.2.0.0'
         sourceUrl = "https://github.com/$Repository/releases/download/v$Version/library-tv-$Version.zip"
         checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()

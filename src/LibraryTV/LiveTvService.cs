@@ -28,7 +28,9 @@ public sealed class LiveTvService : ILiveTvService
     internal static MediaSourceInfo Source(string id)
     {
         var c = Plugin.Instance.Configuration;
-        return new MediaSourceInfo { Id = "librarytv-" + id, Path = $"{c.InternalBaseUrl.TrimEnd('/')}/LibraryTV/stream/{Uri.EscapeDataString(id)}?token={Uri.EscapeDataString(c.StreamToken)}", Protocol = MediaProtocol.Http, Container = "ts", IsInfiniteStream = true, SupportsDirectPlay = false, SupportsDirectStream = true, SupportsTranscoding = true, RequiresOpening = false, RequiresClosing = false, BufferMs = 1500 };
+        // Bound input analysis for the real-time transport. Jellyfin's fallback is
+        // 200 seconds, which can make an otherwise healthy channel take minutes to tune.
+        return new MediaSourceInfo { Id = "librarytv-" + id, Path = $"{c.InternalBaseUrl.TrimEnd('/')}/LibraryTV/stream/{Uri.EscapeDataString(id)}?token={Uri.EscapeDataString(c.StreamToken)}", Protocol = MediaProtocol.Http, Container = "ts", IsInfiniteStream = true, SupportsDirectPlay = false, SupportsDirectStream = true, SupportsTranscoding = true, RequiresOpening = false, RequiresClosing = false, BufferMs = 1500, AnalyzeDurationMs = 3000 };
     }
     public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken ct) { startup?.RequireReady(); return Task.FromResult(Source(channelId)); }
     public Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken ct) { startup?.RequireReady(); return Task.FromResult(new List<MediaSourceInfo> { Source(channelId) }); }
