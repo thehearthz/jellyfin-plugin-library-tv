@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.4.2.0",
+        "changelog": "Rotate between shows with a configurable episodes-in-a-row setting\n\n- Pools now air \"Episodes in a row\" episodes of one series (2 by default) before the next series takes a turn, spreading each series evenly through the cycle. Movies take one turn each and every item still airs once per cycle. Set it to 0 to keep the previous straight-through order. Existing rotations are reordered once and keep their place.\n- Daily limits keep their quotas on servers with non-Gregorian locales.\n- The guide still reaches the current time after long downtime.\n- Joining a channel while its stream is stopping now starts a fresh stream.\n- Malformed saved settings return 400, and unplayable channels return 503, instead of unhandled errors.\n- Jellyfin's Refresh Guide task is queued once after recovery shifts program times.\n- Library refreshes check each media folder once instead of per file.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.4.2.0/library-tv-0.4.2.0.zip",
+        "checksum": "b2a535a015a66940c2e7e1483abd6def",
+        "timestamp": "2026-10-20T11:15:39Z"
+      },
+      {
         "version": "0.4.1.0",
         "changelog": "Request three seconds of live input analysis for Library TV folder and Live TV playback, overriding the long server fallback that can delay channel tuning. Includes all 0.4.0 features. Actual startup time also depends on media, storage and client buffering.",
         "targetAbi": "12.2.0.0",
