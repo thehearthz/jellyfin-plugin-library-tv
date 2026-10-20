@@ -2,7 +2,7 @@
 
 Build always-on television channels from local media already indexed by Jellyfin. **Experimental v0.4** bundles the visual builder, custom numbering, deferred startup, playback recovery, future-slot rebuilding, diagnostics and settings backups. It compiles against the official 12.2 API and passes automated scheduling, integration, UI and real FFmpeg transport tests. Real Jellyfin client compatibility still needs validation; start with a small channel.
 
-This is a cumulative release. You can skip earlier versions and install **v0.4.0.0** in one update/restart when ready. You do not need to restart the server for subsequent channel-setting changes, guide rebuilds, or settings restores.
+This is a cumulative release. You can skip earlier versions and install the latest version from the catalog in one update/restart when ready. You do not need to restart the server for subsequent channel-setting changes, guide rebuilds, or settings restores.
 
 ## Install
 
@@ -18,7 +18,7 @@ This is a cumulative release. You can skip earlier versions and install **v0.4.0
 5. Run Jellyfin's **Refresh Channels** scheduled task. A separate **Library TV** folder appears under **My Media** on the home screen, alongside your movie and show libraries. Open it and play a channel to join its current program. You do not need to create a filesystem library or add `.strm` files.
 6. Run Jellyfin's **Refresh Guide** task to also show channels and schedules under **Live TV**. Give viewers normal Jellyfin Live TV access.
 
-Upgrading from earlier versions: install v0.4.0.0 and restart Jellyfin once when convenient. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
+Upgrading from earlier versions: install the latest version and restart Jellyfin once when convenient. Existing channel IDs and saved episode rotations are preserved. Previous automatic channel numbers are retained on the first refresh when available, then saved permanently. If older channels share a number, the builder asks you to resolve the conflict. Run **Refresh Channels** and **Refresh Guide** after changing channel numbers or names so Jellyfin imports them. If your home screen is customized, enable **Library TV** in the user's home-screen settings and refresh the client. Some clients group plugin channel folders differently; placement depends on the client.
 
 ### Plugin Pages integration
 
@@ -49,7 +49,7 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
 - Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
 - One FFmpeg process per actively watched channel shared by viewers. No FFmpeg processes when channels are idle. Bounded viewer queues and a simultaneous channel limit keep resource use controlled.
-- Identical content pools share their library query during each refresh. The cache ends with that refresh, so new files can appear at the next refresh without a persistent media cache.
+- Identical content pools share their library query during each refresh. The cache ends with that refresh, so new files can appear at the next refresh without a persistent media cache. Each media folder is checked once per refresh rather than every file, which skips an offline mount cheaply; files deleted between Jellyfin library scans are skipped by playback recovery.
 - Current-program lookup uses a per-channel index. State is copied without a JSON encode/decode round trip; JSON is used for durable storage. Guide previews return 40 programs by default (maximum 200 per request).
 - **Channel health** checks the saved schedule only when requested and reports channels with no upcoming content without starting playback or polling in the background.
 - Bounded playback recovery advances to the next scheduled item when a media file is missing or unreadable. An unavailable FFmpeg configuration stops playback without consuming episodes.
@@ -126,7 +126,7 @@ Schedule and rotation state are stored in `<Jellyfin data directory>/library-tv/
 
 ### Playback recovery and diagnostics
 
-If a watched program is missing, unreadable or fails to produce a transport stream, the plugin brings the next scheduled item forward and shifts the later guide times by the same amount. Rotation selections remain consumed once; stale recovery requests cannot skip twice. Recovery is limited to three consecutive failed items per viewing session (two advances, then stop), with no background retry loop. Successful playback resets the consecutive-failure count. If FFmpeg itself cannot start, playback stops with a configuration message and the schedule is not advanced.
+If a watched program is missing, unreadable or fails to produce a transport stream, the plugin brings the next scheduled item forward and shifts the later guide times by the same amount. Rotation selections remain consumed once; stale recovery requests cannot skip twice. Recovery is limited to three consecutive failed items per viewing session (two advances, then stop), with no background retry loop. Successful playback resets the consecutive-failure count. If FFmpeg itself cannot start, playback stops with a configuration message and the schedule is not advanced. Because Jellyfin keeps its own copy of the guide, a recovery queues Jellyfin's **Refresh Guide** task once so the shifted times appear; it is skipped if that task is already running or queued.
 
 Channel health shows source/schedule warnings, active viewers, recovery count, stream-copy/compatibility mode and the most recent playback issue. It does not probe media or run FFmpeg. Playback diagnostics are kept in bounded memory, not a growing history file. A refresh records its elapsed time; this is a diagnostic measurement, not a server-wide CPU benchmark.
 
@@ -154,7 +154,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.4.0.0
+./scripts/package.ps1 -Version 0.4.1.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -166,7 +166,7 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing a four-part version tag such as `v0.4.0.0` tests, packages and publishes release assets, then updates the catalog on `main`. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.4.2.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

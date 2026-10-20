@@ -29,17 +29,28 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - name: Read release notes from the tag message
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Checkout can leave a lightweight copy of the tag; fetch the annotated tag itself.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "$TAG")" != tag ]; then echo "Use an annotated tag: git tag -a $TAG -m 'What changed'"; exit 1; fi
+          git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN PGP SIGNATURE-----/,$d' > "$RUNNER_TEMP/changelog.txt"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/changelog.txt"; then echo "The tag message is empty"; exit 1; fi
       - name: Package
         shell: pwsh
         env:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-        run: ./scripts/package.ps1 -Version $env:TAG.Substring(1) -Repository $env:REPO
+        run: ./scripts/package.ps1 -Version $env:TAG.Substring(1) -Repository $env:REPO -Changelog (Get-Content "$env:RUNNER_TEMP/changelog.txt" -Raw)
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" artifacts/* --title "Library TV $TAG (experimental)" --notes "Experimental release for Jellyfin 12.2. Read the README for setup, codec constraints, and known limitations."
+        run: |
+          printf '\n\nExperimental release for Jellyfin 12.2. Read the README for setup, codec constraints, and known limitations.\n' >> "$RUNNER_TEMP/changelog.txt"
+          gh release create "$TAG" artifacts/* --title "Library TV $TAG (experimental)" --notes-file "$RUNNER_TEMP/changelog.txt"
       - name: Update install catalog
         shell: pwsh
         env:

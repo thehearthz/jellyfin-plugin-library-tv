@@ -106,15 +106,16 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
     public Func<Pool, List<Media>> CreateRefreshReader()
     {
         var cache = new Dictionary<string, List<Media>>(StringComparer.Ordinal);
+        var folders = new Dictionary<string, bool>(StringComparer.Ordinal);
         return pool =>
         {
             var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials });
-            if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool);
+            if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, folders);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
     }
 
-    public List<Media> Read(Pool pool)
+    public List<Media> Read(Pool pool, Dictionary<string, bool>? folders = null)
     {
         startup?.RequireReady();
         // An empty selector deliberately means no content, never every library.
@@ -129,7 +130,16 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                 foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = item.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) items[child.Id] = child;
             else if (item is not null) items[item.Id] = item;
         }
-        return items.Values.Where(x => x.RunTimeTicks > 0 && !string.IsNullOrEmpty(x.Path) && File.Exists(x.Path))
+        // Check each media folder once, not every file: this catches an offline mount cheaply.
+        // Jellyfin's library scan removes deleted files, and playback recovery skips stragglers.
+        folders ??= new(StringComparer.Ordinal);
+        bool Available(string path)
+        {
+            var folder = Path.GetDirectoryName(path) ?? "";
+            if (!folders.TryGetValue(folder, out var exists)) folders[folder] = exists = Directory.Exists(folder);
+            return exists;
+        }
+        return items.Values.Where(x => x.RunTimeTicks > 0 && !string.IsNullOrEmpty(x.Path) && Available(x.Path))
             .Where(x => pool.Genres.Length == 0 || x.Genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any())
             .Where(x => pool.Tags.Length == 0 || x.Tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any())
             .Where(x => pool.IncludeSpecials || x is not Episode ep || ep.ParentIndexNumber > 0)

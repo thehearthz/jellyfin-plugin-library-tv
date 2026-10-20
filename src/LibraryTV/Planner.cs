@@ -100,11 +100,14 @@ public static class Planner
     {
         var at = state.Guide.Count > 0 ? state.Guide[^1].End : now;
         if (startAt > at) at = startAt.Value;
-        state.Guide.RemoveAll(x => x.End < now.AddHours(-6));
+        var cutoff = now.AddHours(-6);
+        state.Guide.RemoveAll(x => x.End < cutoff);
         // Preserve continuity through server downtime, with bounded catch-up work.
         if (at < now.AddDays(-7)) at = now;
+        // Catch-up entries that already ended are pruned below; they must not use the guide cap.
+        var stale = 0;
         var iterations = 0;
-        while (at < until && state.Guide.Count < MaxGuideEntries && iterations++ < 100000)
+        while (at < until && state.Guide.Count - stale < MaxGuideEntries && iterations++ < 100000)
         {
             var active = ActiveBlock(channel, at, zone);
             var key = "default";
@@ -130,19 +133,21 @@ public static class Planner
             if (!state.Rotations.TryGetValue("commercials", out var ads)) state.Rotations["commercials"] = ads = new();
             for (var i = 0; i < channel.CommercialCount; i++)
             {
-                if (state.Guide.Count >= MaxGuideEntries) break;
+                if (state.Guide.Count - stale >= MaxGuideEntries) break;
                 var ad = Next(pools["commercials"], channel.Commercials, ads, channel.Id + "ads", out var adUndo);
                 if (ad is null) break;
                 Add(ad, true, adUndo! with { PoolKey = "commercials" });
             }
         }
+        if (stale > 0) state.Guide.RemoveAll(x => x.End < cutoff);
         // Daily quota entries only need to survive the current planning horizon.
-        var keep = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now.AddDays(-1), zone).DateTime).ToString("yyyy-MM-dd");
+        var keep = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now.AddDays(-1), zone).DateTime).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         foreach (var key in state.DailyCounts.Keys.Where(k => string.CompareOrdinal(k[..10], keep) < 0).ToArray()) state.DailyCounts.Remove(key);
         void Add(Media item, bool commercial, PlanningUndo undo)
         {
             var end = at.AddSeconds(item.Seconds);
             state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo));
+            if (end < cutoff) stale++;
             at = end;
         }
     }

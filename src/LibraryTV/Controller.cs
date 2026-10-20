@@ -60,7 +60,7 @@ public sealed class Controller : ControllerBase
     public async Task<IActionResult> Rebuild(string id, CancellationToken ct)
     {
         try { return Ok(new { AppliedFrom = await scheduler.RebuildFuture(id, ct) }); }
-        catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+        catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }
 
     [HttpGet("backup")]
@@ -75,14 +75,14 @@ public sealed class Controller : ControllerBase
             await scheduler.SaveConfiguration(backup.ApplyTo(Plugin.Instance.Configuration), ct);
             return Ok(new { Saved = true });
         }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException) { return BadRequest(new { Error = ex.Message }); }
+        catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken ct)
     {
         try { await scheduler.Refresh(ct); return Ok(Status()); }
-        catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+        catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }
 
     [HttpGet("guide/{id}")]
@@ -99,8 +99,10 @@ public sealed class Controller : ControllerBase
             await scheduler.SaveConfiguration(config, ct);
             return Ok(new { Saved = true, config.AutomaticChannels });
         }
-        catch (Exception ex) when (ex is ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException or FormatException) { return BadRequest(new { Error = ex.Message }); }
+        catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }
+
+    private static bool IsInvalidSettings(Exception ex) => ex is ArgumentException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException;
 
     [AllowAnonymous]
     [HttpGet("stream/{id}")]
@@ -115,6 +117,10 @@ public sealed class Controller : ControllerBase
         Response.Headers.CacheControl = "no-store";
         try { await broadcasts!.Watch(id, Response.Body, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (InvalidOperationException) when (!Response.HasStarted) { Response.StatusCode = 503; }
+        // Playback failures are already logged and shown in Channel health.
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            if (Response.HasStarted) HttpContext.Abort(); else Response.StatusCode = 503;
+        }
     }
 }

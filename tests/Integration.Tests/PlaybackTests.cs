@@ -72,6 +72,30 @@ public static class PlaybackTests
                 await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 check(live.StatusFor("playback").Viewers == 0, "The final viewer disconnect stops the media worker with no idle playback");
             }
+            var stopping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finishStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            DelegateStreamer restart = null!;
+            restart = new DelegateStreamer(async (_, _, write, ct) =>
+            {
+                if (restart.Calls > 1) { await write(new byte[188]); await Task.Delay(Timeout.Infinite, ct); }
+                // The first worker drops its slow viewer, then takes time to exit like a killed FFmpeg process.
+                try { while (true) await write(new byte[188]); }
+                finally { stopping.TrySetResult(); await finishStop.Task; }
+            });
+            using (var live = new Broadcasts(scheduler, restart, NullLogger<Broadcasts>.Instance))
+            using (var slowStop = new CancellationTokenSource())
+            using (var lateStop = new CancellationTokenSource())
+            {
+                var slow = live.Watch("playback", new StalledStream(), slowStop.Token);
+                await stopping.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var lateOutput = new SignalStream();
+                var late = live.Watch("playback", lateOutput, lateStop.Token);
+                var received = await Task.WhenAny(lateOutput.Received.Task, late, Task.Delay(TimeSpan.FromSeconds(5))) == lateOutput.Received.Task;
+                finishStop.TrySetResult();
+                check(received && restart.Calls == 2, "A viewer joining while the previous worker shuts down starts a fresh worker instead of receiving an empty stream");
+                slowStop.Cancel(); lateStop.Cancel();
+                await IgnoreCancellation(slow); await IgnoreCancellation(late);
+            }
             scheduler = await Fresh();
             check(scheduler.LastRefreshMilliseconds >= 0 && scheduler.WarningsFor("playback").Length == 0, "Refresh timing and source diagnostics are captured during normal refresh without another library scan");
             var failure = new DelegateStreamer(async (item, _, write, ct) =>
@@ -79,13 +103,23 @@ public static class PlaybackTests
                 if (item.ItemId == items[0].Id) throw new FileNotFoundException();
                 await write(new byte[188]); await Task.Delay(Timeout.Infinite, ct);
             });
-            using (var live = new Broadcasts(scheduler, failure, NullLogger<Broadcasts>.Instance))
+            var guideImports = 0;
+            var guideTask = Proxy<MediaBrowser.Model.Tasks.IScheduledTask>.Make((name, _) => name == "get_Key" ? "RefreshGuide" : null);
+            var guideWorker = Proxy<MediaBrowser.Model.Tasks.IScheduledTaskWorker>.Make((name, _) => name switch { "get_ScheduledTask" => guideTask, "get_State" => MediaBrowser.Model.Tasks.TaskState.Idle, _ => null });
+            var taskManager = Proxy<MediaBrowser.Model.Tasks.ITaskManager>.Make((name, args) =>
+            {
+                if (name == "get_ScheduledTasks") return new[] { guideWorker };
+                if (name == "QueueScheduledTask" && args![0] == guideTask) { guideImports++; return null; }
+                throw new NotSupportedException(name);
+            });
+            using (var live = new Broadcasts(scheduler, failure, NullLogger<Broadcasts>.Instance, taskManager))
             using (var stop = new CancellationTokenSource())
             {
                 var output = new SignalStream();
                 var watch = live.Watch("playback", output, stop.Token);
                 await output.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 check(failure.Calls == 2 && scheduler.Current("playback", DateTimeOffset.UtcNow)!.ItemId == items[1].Id && live.StatusFor("playback").Recoveries == 1, "A missing program brings the next scheduled item forward without breaking the viewer stream");
+                check(guideImports == 1, "Recovery asks Jellyfin to re-import the shifted guide once");
                 var after = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
                 await scheduler.SkipFailed(initial, DateTimeOffset.UtcNow, default);
                 check(scheduler.Current("playback", DateTimeOffset.UtcNow)!.Start == after.Start, "A stale recovery request cannot shift the same channel twice");
@@ -98,6 +132,14 @@ public static class PlaybackTests
                 try { await live.Watch("playback", new MemoryStream(), default).WaitAsync(TimeSpan.FromSeconds(5)); throw new Exception("Repeated failures did not stop playback"); }
                 catch (IOException) { }
                 check(broken.Calls == 3 && live.StatusFor("playback").Recoveries == 2, "Three consecutive bad items stop recovery rather than creating an unbounded retry loop");
+            }
+            scheduler = await Fresh();
+            using (var live = new Broadcasts(scheduler, broken, NullLogger<Broadcasts>.Instance))
+            {
+                var transport = new Controller(catalog, scheduler, live) { ControllerContext = new() { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+                transport.HttpContext.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+                await transport.Stream("playback", Plugin.Instance.Configuration.StreamToken, default).WaitAsync(TimeSpan.FromSeconds(5));
+                check(transport.Response.StatusCode == 503, "A channel that cannot play returns a clean unavailable response instead of an unhandled server error");
             }
             scheduler = await Fresh();
             var before = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
@@ -118,6 +160,10 @@ public static class PlaybackTests
         private int calls;
         public int Calls => Volatile.Read(ref calls);
         public Task Stream(Airing program, bool transcode, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); return stream(program, transcode, output, ct); }
+    }
+    private sealed class StalledStream : MemoryStream
+    {
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => await Task.Delay(Timeout.Infinite, ct);
     }
     private sealed class SignalStream : MemoryStream
     {

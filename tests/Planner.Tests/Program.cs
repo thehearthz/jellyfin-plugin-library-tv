@@ -91,4 +91,16 @@ var tiny = new Media(Guid.NewGuid(),"Short clip","short.mp4",1,"",0,0);
 var capped = new ChannelState();
 Planner.Extend(tinyChannel,capped,new Dictionary<string,List<Media>>{["default"]=[tiny],["commercials"]=[tiny with {Id=Guid.NewGuid()}]},now,now.AddDays(7),TimeZoneInfo.Utc);
 Check(capped.Guide.Count==Planner.MaxGuideEntries,"Very short clips and large commercial breaks cannot create an unbounded guide");
+var downtime = new ChannelState { Guide = [new("tiny", tiny.Id, "Before downtime", "short.mp4", now.AddDays(-6).AddMinutes(-1), now.AddDays(-6), false)] };
+Planner.Extend(new ChannelDefinition { Id = "tiny" }, downtime, new Dictionary<string,List<Media>>{["default"]=[tiny with { Seconds = 60 }],["commercials"]=[]}, now, now.AddDays(1), TimeZoneInfo.Utc);
+Check(downtime.Guide.Any(x => x.Start <= now && x.End > now) && downtime.Guide[^1].End >= now.AddDays(1) && downtime.Guide.All(x => x.End >= now.AddHours(-6)), "Catch-up after downtime still reaches the current time instead of spending the guide limit on the past");
+var serverCulture = System.Globalization.CultureInfo.CurrentCulture;
+try
+{
+    System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("th-TH");
+    var localized = new ChannelState();
+    Planner.Extend(new ChannelDefinition { Id = "localized", Blocks = [new TimeBlock { Id = "evening", Start = "18:00", End = "23:59", MaxItemsPerDay = 3 }] }, localized, pools, now, now.AddDays(1), TimeZoneInfo.Utc);
+    Check(localized.DailyCounts.Count > 0, "Daily limits survive refreshes on servers whose locale uses a non-Gregorian calendar");
+}
+finally { System.Globalization.CultureInfo.CurrentCulture = serverCulture; }
 Console.WriteLine($"{passed} scheduling checks passed.");

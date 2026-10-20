@@ -101,6 +101,11 @@ try
     var library = Proxy<ILibraryManager>.Make((name, _) => name == "GetVirtualFolders" ? new List<VirtualFolderInfo>() : throw new NotSupportedException(name));
     var catalog = new Catalog(library);
     Check(catalog.Read(new Pool()).Count == 0, "Empty selectors do not expose the entire library");
+    var mounted = new Video { Id = Guid.NewGuid(), Name = "Mounted", Path = Path.Combine(directory, "mounted.mp4"), RunTimeTicks = TimeSpan.FromMinutes(5).Ticks };
+    var offlineMedia = new Video { Id = Guid.NewGuid(), Name = "Offline", Path = Path.Combine(directory, "offline-mount", "offline.mp4"), RunTimeTicks = TimeSpan.FromMinutes(5).Ticks };
+    var mountCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name == "GetItemById" ? new[] { mounted, offlineMedia }.FirstOrDefault(x => x.Id == (Guid)args![0]!) : throw new NotSupportedException(name)));
+    var mountReader = mountCatalog.CreateRefreshReader();
+    Check(mountReader(new Pool { ItemIds = [mounted.Id.ToString(), offlineMedia.Id.ToString()] }).Select(x => x.Title).SequenceEqual(["Mounted"]), "Refresh skips media whose storage folder is unavailable without checking every file");
     var scheduler = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
     await scheduler.Refresh(default);
     Check(scheduler.LastError is null && scheduler.LastRefresh is not null && File.Exists(scheduler.StatePath), "Schedule refresh persists state atomically");
@@ -158,6 +163,12 @@ try
     Check(restarted.Channels.Single().Number == "7.2" && restarted.Current("home-channel", startAt.AddMinutes(1500))?.ItemId == preservedId, "Re-enabling and renumbering preserve the existing schedule and episode cursor");
     try { await folder.GetChannelItemMediaInfo("removed", default); throw new Exception("Removed channel accepted"); }
     catch (ArgumentException) { Check(true, "Removed channels cannot open a new folder stream"); }
+    var workingConfig = plugin.Configuration;
+    plugin.UpdateConfiguration(new Configuration { AutoLibraryIds = ["not-a-library-id"] });
+    var malformedRefresh = await guideController.Refresh(default);
+    var malformedRebuild = await guideController.Rebuild("home-channel", default);
+    plugin.UpdateConfiguration(workingConfig);
+    Check(malformedRefresh is Microsoft.AspNetCore.Mvc.BadRequestObjectResult && malformedRebuild is Microsoft.AspNetCore.Mvc.BadRequestObjectResult, "Malformed saved settings return a readable bad-request error from refresh and rebuild");
     var serializer = new XmlSerializer(typeof(Configuration));
     using var writer = new StringWriter();
     serializer.Serialize(writer, new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock()] }] });

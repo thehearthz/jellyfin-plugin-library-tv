@@ -1,10 +1,12 @@
 param(
     [string]$Version = "0.4.1.0",
+    [string]$Changelog = "Local development build.",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
 )
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'Use a four-part numeric version.' }
+if ([string]::IsNullOrWhiteSpace($Changelog)) { throw 'Provide a changelog for the catalog entry.' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $output = [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
 New-Item -ItemType Directory -Path $output -Force | Out-Null
@@ -22,7 +24,7 @@ $entry = [ordered]@{
     category = 'Live TV'
     versions = @([ordered]@{
         version = $Version
-        changelog = 'Request three seconds of live input analysis for Library TV folder and Live TV playback, overriding the long server fallback that can delay channel tuning. Includes all 0.4.0 features. Actual startup time also depends on media, storage and client buffering.'
+        changelog = $Changelog.Trim()
         targetAbi = '12.2.0.0'
         sourceUrl = "https://github.com/$Repository/releases/download/v$Version/library-tv-$Version.zip"
         checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()

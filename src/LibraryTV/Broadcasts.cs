@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.LibraryTV;
@@ -7,7 +8,7 @@ namespace Jellyfin.Plugin.LibraryTV;
 public sealed record RuntimeStatus(int Viewers, int Recoveries, string? LastProblem, DateTimeOffset? LastProblemAt);
 
 // One process per watched channel; no timer, media scan, or process while idle.
-public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log) : IDisposable
+public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log, ITaskManager? tasks = null) : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Broadcast> active = [];
@@ -31,7 +32,8 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            if (!active.TryGetValue(id, out broadcast!))
+            // A stopping worker may still be listed briefly; never attach a viewer to it.
+            if (!active.TryGetValue(id, out broadcast!) || broadcast.Stop.IsCancellationRequested)
             {
                 if (active.Count >= Plugin.Instance.Configuration.MaxActiveChannels) throw new InvalidOperationException("Active channel limit reached.");
                 broadcast = new Broadcast();
@@ -100,6 +102,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     if (++consecutiveFailures >= 3 || !await scheduler.SkipFailed(item, DateTimeOffset.UtcNow, ct))
                         throw new IOException("Channel stopped after unavailable media. See Channel health for details.");
                     Report(id, problem + " The next scheduled program was brought forward.", true);
+                    RequestGuideImport();
                 }
             }
         }
@@ -128,6 +131,18 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             var old = history.GetValueOrDefault(id);
             history[id] = new RuntimeStatus(0, (old?.Recoveries ?? 0) + (recovered ? 1 : 0), problem, DateTimeOffset.UtcNow);
         }
+    }
+
+    // Jellyfin keeps its own copy of the guide. Re-import it once after recovery shifts
+    // program times; a refresh that is already running or queued covers this request.
+    private void RequestGuideImport()
+    {
+        try
+        {
+            var worker = tasks?.ScheduledTasks.FirstOrDefault(x => x.ScheduledTask.Key == "RefreshGuide");
+            if (worker is { State: TaskState.Idle }) tasks!.QueueScheduledTask(worker.ScheduledTask, new TaskOptions());
+        }
+        catch (Exception ex) { log.LogWarning(ex, "Could not queue Jellyfin's guide refresh after Library TV recovery"); }
     }
 
     public void Dispose() { lock (gate) { disposed = true; foreach (var b in active.Values) b.Stop.Cancel(); } }
