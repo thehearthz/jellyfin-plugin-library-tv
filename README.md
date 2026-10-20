@@ -156,7 +156,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.4.1.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.4.2.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:

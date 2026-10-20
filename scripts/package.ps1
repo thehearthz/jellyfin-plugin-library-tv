@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.4.1.0",
+    [string]$Version = "0.4.2.0",
     [string]$Changelog = "Local development build.",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
