@@ -103,4 +103,32 @@ try
     Check(localized.DailyCounts.Count > 0, "Daily limits survive refreshes on servers whose locale uses a non-Gregorian calendar");
 }
 finally { System.Globalization.CultureInfo.CurrentCulture = serverCulture; }
+List<Media> Show(string name, int offset, int count) => Enumerable.Range(offset + 1, count).Select(n => Episode(n, name) with { Episode = n - offset }).ToList();
+string Code(Media m) => m.Series + m.Episode;
+// Selection order is A, B, C; episodes are listed backwards to prove they are sorted.
+var mixed = new[] { "A", "B", "C" }.SelectMany((name, i) => Show(name, 100 * (i + 1), 6).AsEnumerable().Reverse()).ToList();
+var mixedRotation = new Rotation();
+var pairs = Enumerable.Range(0, 18).Select(_ => Code(Planner.Next(mixed, new Pool { Shuffle = false }, mixedRotation, "mix")!)).ToArray();
+Check(string.Join(" ", pairs.Take(8)) == "A1 A2 B1 B2 C1 C2 A3 A4" && pairs.Distinct().Count() == 18, "Shows air two episodes at a time in turn and every episode still airs once per cycle");
+var straight = new Rotation();
+Check(string.Join(" ", Enumerable.Range(0, 7).Select(_ => Code(Planner.Next(mixed, new Pool { Shuffle = false, EpisodesInARow = 0 }, straight, "mix")!))) == "A1 A2 A3 A4 A5 A6 B1", "Zero episodes in a row keeps each show running straight through");
+var uneven = Show("A", 100, 10).Concat(Show("B", 200, 2)).ToList();
+var unevenRotation = new Rotation();
+var unevenOrder = Enumerable.Range(0, 12).Select(_ => Planner.Next(uneven, new Pool { Shuffle = false }, unevenRotation, "uneven")!).ToArray();
+var shortShow = Array.FindIndex(unevenOrder, x => x.Series == "B");
+Check(shortShow > 0 && shortShow < 10 && unevenOrder[shortShow + 1].Series == "B" && unevenOrder.Where(x => x.Series == "A").Select(x => x.Episode).SequenceEqual(Enumerable.Range(1, 10)), "A short show is placed inside a long show's run, keeping each show in episode order");
+var shuffledRotation = new Rotation();
+var shuffledOrder = Enumerable.Range(0, 18).Select(_ => Planner.Next(mixed, new Pool(), shuffledRotation, "shuffle")!).ToArray();
+Check(shuffledOrder.Chunk(2).All(turn => turn[0].Series == turn[1].Series && turn[1].Episode == turn[0].Episode + 1) && shuffledOrder.GroupBy(x => x.Series).All(g => g.Select(x => x.Episode).SequenceEqual(Enumerable.Range(1, 6))), "Shuffled shows still air in pairs with episodes in order");
+var saved = new Rotation { Last = mixed.Single(x => Code(x) == "A2").Id, Seen = mixed.Where(x => Code(x) is "A1" or "A2").Select(x => x.Id).ToList(), Remaining = new[] { "A3", "A4", "A5", "A6", "B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2", "C3", "C4", "C5", "C6" }.Select(c => mixed.Single(x => Code(x) == c).Id).ToList() };
+Check(string.Join(" ", Enumerable.Range(0, 6).Select(_ => Code(Planner.Next(mixed, new Pool { Shuffle = false }, saved, "saved")!))) == "A3 A4 B1 B2 C1 C2", "Channels saved before this setting switch to two-episode turns without losing their place");
+var blockChannel = new ChannelDefinition { Id = "turns", Source = new Pool(), Blocks = [new TimeBlock { Id = "prime", Start = "18:00", End = "23:00", MaxItemsPerDay = 4, Source = new Pool { Shuffle = false } }] };
+var blockState = new ChannelState();
+var blockPools = new Dictionary<string, List<Media>> { ["default"] = [fallback], ["prime"] = mixed, ["commercials"] = [] };
+Planner.Extend(blockChannel, blockState, blockPools, now, now.AddDays(1), TimeZoneInfo.Utc);
+Check(string.Join(" ", blockState.Guide.Where(x => x.Title.StartsWith("Episode")).Select(x => Code(mixed.Single(m => m.Id == x.ItemId)))) == "A1 A2 B1 B2", "A time block with several shows mixes them instead of filling up with one show");
+var plannedTurns = blockState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
+var turnsBoundary = Planner.RewindFuture(blockState, now.AddMinutes(5));
+Planner.Extend(blockChannel, blockState, blockPools, now.AddMinutes(5), now.AddDays(1), TimeZoneInfo.Utc, turnsBoundary);
+Check(plannedTurns.SequenceEqual(blockState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding future slots reproduces the same mixed episode order");
 Console.WriteLine($"{passed} scheduling checks passed.");

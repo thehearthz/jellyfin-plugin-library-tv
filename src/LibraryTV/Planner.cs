@@ -19,6 +19,12 @@ public static class Planner
         var swapped = false;
         var byId = media.ToDictionary(x => x.Id);
         rotation.Remaining.RemoveAll(id => !byId.ContainsKey(id));
+        // Rotations saved before this setting existed, or under another value, are reordered once.
+        if (rotation.EpisodesInARow != pool.EpisodesInARow)
+        {
+            rotation.Remaining = Interleave(rotation.Remaining, byId, pool.EpisodesInARow);
+            rotation.EpisodesInARow = pool.EpisodesInARow;
+        }
         var known = rotation.Remaining.Concat(rotation.Seen).ToHashSet();
         var added = media.Where(x => !known.Contains(x.Id)).ToList();
         if (rotation.Remaining.Count == 0 && added.Count == 0 && pool.RepeatWhenExhausted)
@@ -28,9 +34,10 @@ public static class Planner
             added = media.ToList();
         }
         // Order each series by season/episode; shuffle series, never their episodes.
-        var groups = added.GroupBy(x => x.Series.Length == 0 ? x.Id.ToString() : x.Series);
+        var groups = added.GroupBy(SeriesKey);
         if (pool.Shuffle) groups = groups.OrderBy(g => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + rotation.Last + g.Key))));
-        foreach (var group in groups) rotation.Remaining.AddRange(group.OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).Select(x => x.Id));
+        var ordered = groups.SelectMany(group => group.OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).Select(x => x.Id)).ToList();
+        rotation.Remaining.AddRange(Interleave(ordered, byId, pool.EpisodesInARow));
         if (rotation.Remaining.Count == 0) return null;
         if (rotation.Remaining[0] == rotation.Last && rotation.Remaining.Count > 1 && byId[rotation.Last].Series.Length == 0)
         {
@@ -43,6 +50,22 @@ public static class Planner
         rotation.Last = next;
         undo = new PlanningUndo("", previousLast, added.Select(x => x.Id).ToArray(), swapped, previousSeen);
         return byId[next];
+    }
+
+    private static string SeriesKey(Media x) => x.Series.Length == 0 ? x.Id.ToString() : x.Series;
+
+    // A turn is up to `run` consecutive episodes of one series, or a single movie. Each
+    // group's turns are spread evenly through the cycle, so short and long series stay mixed.
+    // Group order and episode order are preserved; zero keeps every series in one turn.
+    private static List<Guid> Interleave(List<Guid> ids, Dictionary<Guid, Media> byId, int run)
+    {
+        var groups = ids.GroupBy(id => SeriesKey(byId[id])).ToArray();
+        return groups.SelectMany((group, index) =>
+            {
+                var turns = group.Chunk(run > 0 ? run : int.MaxValue).ToArray();
+                return turns.Select((turn, k) => (Position: (k + (index + 0.5) / groups.Length) / turns.Length, Group: index, Turn: turn));
+            })
+            .OrderBy(x => x.Position).ThenBy(x => x.Group).SelectMany(x => x.Turn).ToList();
     }
 
     // Rewind only future selections. Legacy guide entries have no undo metadata,

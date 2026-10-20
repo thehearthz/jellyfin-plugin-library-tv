@@ -537,3 +537,59 @@ test("media names are displayed as text instead of HTML", async () => {
     dom.window.close();
   }
 });
+
+function episodesInARow(container) {
+  return [...container.querySelectorAll("label.ltv-field")]
+    .filter((x) => x.querySelector("span").textContent === "Episodes in a row")
+    .map((x) => x.querySelector("input"));
+}
+
+test("shows default to two episodes in a row and the setting saves per lineup and block", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const [lineup] = episodesInARow(w.document);
+    assert.equal(lineup.value, "2");
+    change(w, lineup, "3");
+    click(w, "Schedule");
+    click(w, "+ Add time block");
+    const [block] = episodesInARow(w.document.querySelector(".ltv-block"));
+    assert.equal(block.value, "2");
+    change(w, block, "1");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.Source.EpisodesInARow, 3);
+    assert.equal(c.Blocks[0].Source.EpisodesInARow, 1);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("commercial breaks do not offer an episodes-in-a-row setting", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Commercials");
+    assert.equal(episodesInARow(w.document).length, 0);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("invalid episodes-in-a-row values show a readable error before saving", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    change(w, episodesInARow(w.document)[0], "-1");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved, null);
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /Episodes in a row must be/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});

@@ -47,6 +47,8 @@ public sealed class Pool
     public bool Shuffle { get; set; } = true;
     public bool IncludeSpecials { get; set; }
     public bool RepeatWhenExhausted { get; set; } = true;
+    // Episodes of one series aired before moving to the next; 0 airs each series straight through.
+    public int EpisodesInARow { get; set; } = 2;
 }
 
 public sealed class TimeBlock
@@ -67,6 +69,7 @@ public sealed class Rotation
     public List<Guid> Remaining { get; set; } = [];
     public List<Guid> Seen { get; set; } = [];
     public Guid Last { get; set; }
+    public int EpisodesInARow { get; set; }
 }
 public sealed class ChannelState
 {

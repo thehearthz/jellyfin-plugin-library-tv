@@ -174,6 +174,14 @@ try
     serializer.Serialize(writer, new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock()] }] });
     var roundtrip = (Configuration)serializer.Deserialize(new StringReader(writer.ToString()))!;
     Check(roundtrip.Channels.Length == 1 && roundtrip.Channels[0].Blocks.Length == 1 && roundtrip.StreamToken.Length >= 32, "Configuration survives Jellyfin XML storage");
+    using var turnsWriter = new StringWriter();
+    serializer.Serialize(turnsWriter, new Configuration { Channels = [new ChannelDefinition { Source = new Pool { EpisodesInARow = 5 } }] });
+    var legacyXml = System.Text.RegularExpressions.Regex.Replace(turnsWriter.ToString(), @"\s*<EpisodesInARow>5</EpisodesInARow>", "");
+    var turnsRoundtrip = (Configuration)serializer.Deserialize(new StringReader(turnsWriter.ToString()))!;
+    var legacyTurns = (Configuration)serializer.Deserialize(new StringReader(legacyXml))!;
+    Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
+    try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { Source = new Pool { EpisodesInARow = 101 } }] }); throw new Exception("Out-of-range episodes in a row accepted"); }
+    catch (ArgumentException) { Check(true, "Out-of-range episodes in a row values are rejected"); }
     var privateConfig = new Configuration { StreamToken = new string('x', 64), InternalBaseUrl = "http://127.0.0.1:18096/private", Channels = [new ChannelDefinition { Id = "backup-channel", Name = "Backed up", Number = "42.1" }] };
     var backup = SettingsBackup.Export(privateConfig);
     var exported = System.Text.Json.JsonSerializer.Serialize(backup);

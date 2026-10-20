@@ -623,6 +623,7 @@
         Shuffle: true,
         IncludeSpecials: false,
         RepeatWhenExhausted: true,
+        EpisodesInARow: 2,
       });
       function normalize(p) {
         p = p || pool();
@@ -634,6 +635,7 @@
           "Tags",
         ])
           p[key] = p[key] || [];
+        if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
         return p;
       }
       function node(tag, attrs, ...children) {
@@ -1095,6 +1097,22 @@
             { class: "ltv-muted" },
             "Episodes within each show always follow season and episode order.",
           ),
+          ...(ads
+            ? []
+            : [
+                field(
+                  "Episodes in a row",
+                  p.EpisodesInARow,
+                  (v) => (p.EpisodesInARow = v),
+                  "number",
+                  { min: 0, max: 100, step: 1 },
+                ),
+                node(
+                  "p",
+                  { class: "ltv-muted" },
+                  "How many episodes of one show air before the next show takes a turn. Use 0 to play each show straight through.",
+                ),
+              ]),
           check(
             "Repeat after all selected content has aired",
             p.RepeatWhenExhausted !== false,
@@ -1754,6 +1772,15 @@
             c.CommercialCount > 20
           )
             throw new Error("Use 0–20 commercial clips per break.");
+          for (const p of [c.Source, ...c.Blocks.map((b) => b.Source)])
+            if (
+              !Number.isInteger(p.EpisodesInARow) ||
+              p.EpisodesInARow < 0 ||
+              p.EpisodesInARow > 100
+            )
+              throw new Error(
+                "Episodes in a row must be a whole number from 0 to 100.",
+              );
           for (const b of c.Blocks) {
             if (!Number.isInteger(b.MaxItemsPerDay) || b.MaxItemsPerDay < 0)
               throw new Error(

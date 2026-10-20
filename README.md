@@ -45,6 +45,7 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Channel duplication, day/time block forms, commercial-folder selection, genre/tag filters, saved-guide preview, and Plugin Pages navigation.
 - Rolling 1–7 day schedule, extended periodically from current library metadata.
 - Saved rotation state survives restarts. Episodes within each series follow season/episode order, even with shuffle enabled.
+- Shows take turns: by default two episodes of one show air, then the next show takes a turn, so a time block mixes its shows instead of filling with one.
 - A pool airs all its selected content before cycling. New items enter the next unplanned portion of the rotation. Disable `RepeatWhenExhausted` to stop a pool when it runs out.
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
 - Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
@@ -82,7 +83,7 @@ Set a channel's `Transcode` to `true` to normalize its output to H.264/AAC at 72
 1. Click **New channel**, enter a name and number, then open **Content → Choose shows & movies**.
 2. In **Movies**, choose movies for the default lineup. Use the search box and library filter to narrow the list. Click **Done**. These movies fill the time outside your scheduled blocks.
 3. Open **Schedule → Add time block**. Choose 18:00–23:00, select the days, and set **Programs per day** to 3.
-4. In that block's content picker, select a show. Disable shuffle if you want series in the order selected. Episode order inside each show is preserved with either setting.
+4. In that block's content picker, select a show. Disable shuffle if you want series in the order selected. Episode order inside each show is preserved with either setting. Select several shows and set **Episodes in a row** (2 by default) to rotate between them.
 5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths.
 6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
@@ -109,8 +110,9 @@ Advanced source settings (also retained in the configuration API):
 | `Shuffle` | Shuffle series/movies between cycles; preserve order inside each series |
 | `IncludeSpecials` | Include TV season zero; false by default |
 | `RepeatWhenExhausted` | Repeat only after the pool is exhausted; true by default |
+| `EpisodesInARow` | Episodes of one series aired before the next series takes a turn, 0–100; 2 by default. 0 airs each series straight through |
 
-Library, folder and item selectors are combined. An empty source selects nothing. Individual item IDs preserve insertion order when shuffle is disabled; series episodes are always sorted by season/episode. With multiple series, one series runs through its available episodes before the next; interleaved episode batching is not implemented.
+Library, folder and item selectors are combined. An empty source selects nothing. Individual item IDs preserve insertion order when shuffle is disabled; series episodes are always sorted by season/episode. With multiple series, each series airs `EpisodesInARow` episodes per turn, and each series's turns are spread evenly through the cycle, so a short show is placed among a long show's turns instead of all at the start. Movies take one turn each. Every selected item still airs once before the pool repeats. Existing channels switch to this order at their next refresh without losing their place; programs already in the guide keep their order until they air, or use **Rebuild future slots** to apply it now.
 
 ## Updating schedules
 

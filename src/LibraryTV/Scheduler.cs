@@ -121,6 +121,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             foreach (var pool in channel.Blocks.Select(x => x.Source).Append(channel.Source).Append(channel.Commercials))
             {
                 if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
+                if (pool.EpisodesInARow is < 0 or > 100) throw new ArgumentException("Episodes in a row must be 0–100.");
                 foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
             }
         }
@@ -226,6 +227,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         Rotations = state.Rotations.ToDictionary(x => x.Key, x => new Rotation
         {
             Last = x.Value.Last,
+            EpisodesInARow = x.Value.EpisodesInARow,
             Remaining = new List<Guid>(x.Value.Remaining),
             Seen = new List<Guid>(x.Value.Seen)
         })
