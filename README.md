@@ -50,7 +50,7 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - A pool airs all its selected content before cycling. New items enter the next unplanned portion of the rotation. Disable `RepeatWhenExhausted` to stop a pool when it runs out.
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
 - Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
-- Commercials match the era of the program they follow: an episode from 1987 gets 1980s commercials (see [Era-matched commercials](#era-matched-commercials)).
+- Commercials match the network and era of the program they follow: an Adult Swim show gets Adult Swim commercials, and an episode from 1987 gets 1980s ones (see [Network-matched commercials](#network-matched-commercials) and [Era-matched commercials](#era-matched-commercials)).
 - Content restrictions keep genres or tags, such as Horror, off the air during set hours on every channel.
 - One FFmpeg process per actively watched channel shared by viewers. No FFmpeg processes when channels are idle. Bounded viewer queues and a simultaneous channel limit keep resource use controlled.
 - H.264/AAC files play directly; only files in other formats are encoded, and only while watched. Stalled playback restarts automatically without disconnecting viewers.
@@ -100,10 +100,34 @@ Channels saved by earlier versions switch to this behavior automatically. The ea
 2. In **Movies**, choose movies for the default lineup. Use the search box and library filter to narrow the list. Click **Done**. These movies fill the time outside your scheduled blocks.
 3. Open **Schedule → Add time block**. Choose 18:00–23:00, select the days, and set **Programs per day** to 3.
 4. In that block's content picker, select a show. Disable shuffle if you want series in the order selected. Episode order inside each show is preserved with either setting. Select several shows and set **Episodes in a row** (2 by default) to rotate between them.
-5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths. Name subfolders by decade, such as `1980s` and `1990s`, so each program gets commercials from its own era.
+5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths. Name subfolders by network and decade, such as `Nickelodeon/1990s` and `Adult Swim/2000s`, so each program gets commercials from its own network and era.
 6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
 This schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full. Selections can include specific shows, movies, indexed folders, or entire libraries. Shows automatically include their available episodes.
+
+### Network-matched commercials
+
+With **Match commercials to the network the program aired on** (on by default), each break uses commercials filed under the program's network. A commercial belongs to a network when a folder or file name in its path names it, for example:
+
+```text
+Commercials/
+  Adult Swim/2000s/…
+  Nickelodeon/1990s/…
+  Cartoon Network/…
+  Toonami/…
+  General/…        ← used for programs from any other network
+```
+
+Names match as whole words, ignoring case and punctuation, so `Adult Swim`, `adult_swim` and `Adult Swim Bumps 2004` all match Adult Swim. A name of six or more letters also matches when run together, such as `AdultSwim`. Short names like `ABC` must appear as a separate word.
+
+The network for a break is the first of these that has commercials:
+
+1. The time block's **Commercial network**, when the program came from that block.
+2. The channel's **Commercial network**, for example `Toonami` for a Toonami channel.
+3. A tag on the program or its show. Tag a show `Toonami` in Jellyfin to give it Toonami commercials even though its studio is Cartoon Network.
+4. The program's studios. For shows, Jellyfin's metadata usually lists the original network here (Nickelodeon, Adult Swim, Cartoon Network); for movies it lists production companies, which rarely match.
+
+If none matches, the break uses only commercials that are not in any network folder, so a kids show never gets another network's adult commercials. If every commercial is in a network folder, the whole commercial selection is used instead. Era matching then picks the decade within the chosen commercials. Each network and decade keeps its own rotation.
 
 ### Era-matched commercials
 
@@ -200,6 +224,6 @@ Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executab
 
 CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.5.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
-Tests cover episode continuation across lineups and blocks, content restrictions, era-matched commercials, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
+Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
 License: GPL-3.0-only.

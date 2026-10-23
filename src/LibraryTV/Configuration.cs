@@ -48,6 +48,10 @@ public sealed class ChannelDefinition
     public int CommercialCount { get; set; }
     // Prefer commercials from the same decade as the program they follow.
     public bool MatchCommercialEra { get; set; } = true;
+    // Prefer commercials filed under the network the program aired on (its studios or tags).
+    public bool MatchCommercialNetwork { get; set; } = true;
+    // Optional network for every break on this channel, such as "Toonami"; a block can override it.
+    public string CommercialNetwork { get; set; } = "";
     // Normalizes every program to 720p H.264/AAC. Otherwise only incompatible streams are encoded.
     public bool AlwaysEncode { get; set; }
 }
@@ -74,9 +78,10 @@ public sealed class TimeBlock
     public DayOfWeek[] Days { get; set; } = Enum.GetValues<DayOfWeek>();
     public int MaxItemsPerDay { get; set; }
     public Pool Source { get; set; } = new();
+    public string CommercialNetwork { get; set; } = "";
 }
 
-public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null);
+public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null);
 public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode.

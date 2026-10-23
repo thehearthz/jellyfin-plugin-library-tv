@@ -1360,6 +1360,7 @@
                 Days: [0, 1, 2, 3, 4, 5, 6],
                 MaxItemsPerDay: 3,
                 Source: pool(),
+                CommercialNetwork: "",
               });
               dirty();
               renderEditor();
@@ -1385,6 +1386,23 @@
               "p",
               { class: "ltv-muted" },
               "Commercials come from the program's decade, or the closest decade you have. Name commercial folders or files with a year or decade, such as “1980s”, “80s” or “Cola (1985)”. Clips without a year are used only after programs with no known year.",
+            ),
+            check(
+              "Match commercials to the network the program aired on",
+              c.MatchCommercialNetwork !== false,
+              (v) => (c.MatchCommercialNetwork = v),
+            ),
+            field(
+              "Commercial network for this channel (optional)",
+              c.CommercialNetwork || "",
+              (v) => (c.CommercialNetwork = v.trim()),
+              "text",
+              { placeholder: "e.g. Toonami", maxlength: 100 },
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "File commercials in folders named after networks, such as “Adult Swim”, “Nickelodeon” or “Cartoon Network”. Each program gets commercials from its network: a network you set here or on a time block first, then a matching Jellyfin tag on the show (tag a show “Toonami” to use Toonami commercials), then the show's studio. Programs from other networks get only commercials that aren't in a network folder. Era matching then picks the decade within those commercials.",
             ),
             poolEditor(c.Commercials, "Commercial content", true),
             node(
@@ -1445,6 +1463,13 @@
             (v) => (b.MaxItemsPerDay = v),
             "number",
             { min: 0 },
+          ),
+          field(
+            "Commercial network for this block (optional)",
+            b.CommercialNetwork || "",
+            (v) => (b.CommercialNetwork = v.trim()),
+            "text",
+            { placeholder: "e.g. Adult Swim", maxlength: 100 },
           ),
           poolEditor(b.Source, "Content for this block"),
         );
@@ -1591,6 +1616,8 @@
           Commercials: pool(),
           CommercialCount: 0,
           MatchCommercialEra: true,
+          MatchCommercialNetwork: true,
+          CommercialNetwork: "",
           AlwaysEncode: false,
         };
         state.config.Channels.push(c);
@@ -2023,6 +2050,11 @@
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
+            if (c.MatchCommercialNetwork === undefined)
+              c.MatchCommercialNetwork = true;
+            c.CommercialNetwork = c.CommercialNetwork || "";
+            for (const b of c.Blocks)
+              b.CommercialNetwork = b.CommercialNetwork || "";
           }
           const selected = new Set();
           for (const c of config.Channels)

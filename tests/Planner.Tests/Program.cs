@@ -202,4 +202,42 @@ eraChannel.MatchCommercialEra = false;
 var anyEra = new ChannelState();
 Planner.Extend(eraChannel, anyEra, new Dictionary<string, List<Media>> { ["default"] = eraPrograms, ["commercials"] = adPool }, now, now.AddHours(1), TimeZoneInfo.Utc);
 Check(anyEra.Rotations.Keys.Where(x => x.StartsWith("commercials")).SequenceEqual(["commercials"]), "Era matching can be turned off per channel");
+
+// Commercials follow the network a program aired on, then its decade.
+Media Clip(string path, int year) => new(Guid.NewGuid(), path, path, 30, "", 0, 0, year);
+var networkAds = new List<Media> { Clip("/ads/Adult Swim/2000s/one.mp4", 2003), Clip("/ads/AdultSwim/two.mp4", 2005), Clip("/ads/Nickelodeon/1990s/kids.mp4", 1994),
+    Clip("/ads/Nickelodeon/2000s/kids.mp4", 2004), Clip("/ads/Toonami/bump.mp4", 2001), Clip("/ads/General/cola.mp4", 1995) };
+Media Network(string name, int year, string[]? studios = null, string[]? tags = null) => new(Guid.NewGuid(), name, name + ".mkv", 1800, "", 0, 0, year, [], tags ?? [], studios ?? []);
+var nightShow = Network("Night", 2004, ["Adult Swim"]);
+var kidsShow = Network("Kids", 1996, ["Nickelodeon"]);
+var otherShow = Network("Other", 1995, ["Fox"]);
+var taggedShow = Network("Tagged", 2001, ["Cartoon Network"], ["Toonami"]);
+var networkChannel = new ChannelDefinition { Id = "networks", CommercialCount = 2, Source = new Pool { Shuffle = false } };
+var networkPools = new Dictionary<string, List<Media>> { ["default"] = [nightShow, kidsShow, otherShow, taggedShow], ["commercials"] = networkAds };
+var networkState = new ChannelState();
+Planner.Extend(networkChannel, networkState, networkPools, now, now.AddHours(2.1), TimeZoneInfo.Utc);
+string[] Breaks(ChannelState s, Media program) { var at = s.Guide.FindIndex(x => x.ItemId == program.Id); return s.Guide.Skip(at + 1).Take(2).Select(x => x.Path).ToArray(); }
+Check(Breaks(networkState, nightShow).All(x => x.Contains("Adult")) && Breaks(networkState, nightShow).Distinct().Count() == 2, "Adult Swim shows get Adult Swim commercials, including folders written as one word");
+Check(Breaks(networkState, kidsShow).All(x => x == "/ads/Nickelodeon/1990s/kids.mp4"), "Nickelodeon shows get Nickelodeon commercials from their own decade");
+Check(Breaks(networkState, otherShow).All(x => x == "/ads/General/cola.mp4"), "A show from a network without commercials gets only clips not filed under any network");
+Check(Breaks(networkState, taggedShow).All(x => x == "/ads/Toonami/bump.mp4"), "A tag such as Toonami takes priority over the show's studio");
+var networkPlan = networkState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
+var networkBoundary = Planner.RewindFuture(networkState, now.AddMinutes(5));
+Planner.Extend(networkChannel, networkState, networkPools, now.AddMinutes(5), now.AddHours(2.1), TimeZoneInfo.Utc, networkBoundary);
+Check(networkPlan.SequenceEqual(networkState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding reproduces network-matched commercial breaks");
+networkChannel.CommercialNetwork = "toonami";
+var overridden = new ChannelState();
+Planner.Extend(networkChannel, overridden, networkPools, now, now.AddHours(2.1), TimeZoneInfo.Utc);
+Check(overridden.Guide.Where(x => x.Commercial).All(x => x.Path == "/ads/Toonami/bump.mp4"), "A channel's commercial network applies to every break");
+networkChannel.CommercialNetwork = "";
+networkChannel.Blocks = [new TimeBlock { Id = "late", Start = "00:00", End = "01:00", Source = new Pool { Shuffle = false }, CommercialNetwork = "Nickelodeon" }];
+var blockNetwork = new ChannelState();
+Planner.Extend(networkChannel, blockNetwork, new Dictionary<string, List<Media>>(networkPools) { ["late"] = [nightShow] }, now, now.AddHours(1.1), TimeZoneInfo.Utc);
+Check(blockNetwork.Guide.Where(x => x.Commercial && x.Start < now.AddHours(1)).All(x => x.Path.Contains("Nickelodeon/2000s")), "A time block's commercial network overrides the program's own network");
+networkChannel.Blocks = []; networkChannel.MatchCommercialNetwork = false;
+var anyNetwork = new ChannelState();
+Planner.Extend(networkChannel, anyNetwork, networkPools, now, now.AddHours(2.1), TimeZoneInfo.Utc);
+Check(anyNetwork.Rotations.Keys.All(x => !x.Contains('@')), "Network matching can be turned off per channel");
+Check(Planner.FiledUnder("/ads/ABC Promos/x.mp4", "abc") && !Planner.FiledUnder("/ads/abcd/x.mp4", "abc") && Planner.FiledUnder("/ads/cartoon_network/x.mp4", "cartoon network")
+    && !Planner.FiledUnder("/ads/General/Cartoon Network.Promo/x.mp4", "promo x"), "Network names match whole words or longer run-together names, never fragments of other words");
 Console.WriteLine($"{passed} scheduling checks passed.");

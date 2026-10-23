@@ -189,7 +189,20 @@ public static class Planner
         // Preserve continuity through server downtime, with bounded catch-up work.
         if (at < now.AddDays(-7)) at = now;
         var episodes = new Dictionary<string, ILookup<string, Media>>();
-        var eras = pools["commercials"].Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
+        var commercials = pools["commercials"];
+        // Network names this channel can ask for: its overrides, and its programs' tags and studios.
+        var networks = new Dictionary<string, List<Media>>(StringComparer.Ordinal);
+        if (channel.MatchCommercialNetwork && commercials.Count > 0)
+            foreach (var name in channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
+                .Concat(pools.Where(x => x.Key != "commercials").SelectMany(x => x.Value).SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? [])))
+                .Select(NetworkKey).Where(x => x.Length > 0).Distinct(StringComparer.Ordinal))
+            {
+                var filed = commercials.Where(x => FiledUnder(x.Path, name)).ToList();
+                if (filed.Count > 0) networks[name] = filed;
+            }
+        var networkClips = networks.Values.SelectMany(x => x).Select(x => x.Id).ToHashSet();
+        var generic = commercials.Where(x => !networkClips.Contains(x.Id)).ToList();
+        var eras = new Dictionary<string, Dictionary<int, List<Media>>>(StringComparer.Ordinal);
         // Catch-up entries that already ended are pruned below; they must not use the guide cap.
         var stale = 0;
         var iterations = 0;
@@ -199,17 +212,24 @@ public static class Planner
             var key = "default";
             var pool = channel.Source;
             string? countKey = null;
+            var network = channel.CommercialNetwork;
             if (active is { } match)
             {
                 countKey = match.Date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) + ":" + match.Block.Id;
                 state.DailyCounts.TryGetValue(countKey, out var count);
-                if (match.Block.MaxItemsPerDay == 0 || count < match.Block.MaxItemsPerDay) { key = match.Block.Id; pool = match.Block.Source; }
+                if (match.Block.MaxItemsPerDay == 0 || count < match.Block.MaxItemsPerDay)
+                {
+                    key = match.Block.Id;
+                    pool = match.Block.Source;
+                    if (!string.IsNullOrWhiteSpace(match.Block.CommercialNetwork)) network = match.Block.CommercialNetwork;
+                }
             }
             if (!state.Rotations.TryGetValue(key, out var rotation)) state.Rotations[key] = rotation = new();
             var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo, x => Continue(key, x), Allowed);
             if (next is null && key != "default")
             {
                 key = "default";
+                network = channel.CommercialNetwork;
                 if (!state.Rotations.TryGetValue(key, out rotation)) state.Rotations[key] = rotation = new();
                 next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo, x => Continue(key, x), Allowed);
             }
@@ -222,7 +242,7 @@ public static class Planner
             }
             Add(next, false, undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor });
             if (key != "default" && countKey is not null) state.DailyCounts[countKey] = state.DailyCounts.GetValueOrDefault(countKey) + 1;
-            var (adKey, adPool) = CommercialsFor(next);
+            var (adKey, adPool) = CommercialsFor(next, network);
             if (!state.Rotations.TryGetValue(adKey, out var ads)) state.Rotations[adKey] = ads = new();
             for (var i = 0; i < channel.CommercialCount; i++)
             {
@@ -253,14 +273,45 @@ public static class Planner
             var series = bySeries[item.Series];
             return series.FirstOrDefault(x => x.Season > cursor.Season || x.Season == cursor.Season && x.Episode > cursor.Episode) ?? series.FirstOrDefault() ?? item;
         }
-        // Each decade keeps its own commercial rotation; programs without a known year use every clip.
-        (string, List<Media>) CommercialsFor(Media program)
+        // Pick the network first (the block or channel override, then the program's tags, then its studios),
+        // then the decade within that network's clips. Each combination keeps its own rotation.
+        (string, List<Media>) CommercialsFor(Media program, string network)
         {
-            if (!channel.MatchCommercialEra || program.Year <= 0 || eras.Count == 0) return ("commercials", pools["commercials"]);
+            var key = "commercials";
+            var clips = commercials;
+            if (networks.Count > 0)
+            {
+                var wanted = (program.Tags ?? []).Concat(program.Studios ?? []).Prepend(network).Select(NetworkKey).FirstOrDefault(networks.ContainsKey);
+                // Without a matching network, use clips not filed under any network, so a kids show never gets another network's ads.
+                if (wanted is not null) (key, clips) = ("commercials@" + wanted, networks[wanted]);
+                else if (generic.Count > 0) (key, clips) = ("commercials@", generic);
+            }
+            if (!eras.TryGetValue(key, out var decades))
+                eras[key] = decades = clips.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
+            if (!channel.MatchCommercialEra || program.Year <= 0 || decades.Count == 0) return (key, clips);
             var decade = program.Year / 10 * 10;
-            var nearest = eras.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
-            return ("commercials:" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), eras[nearest]);
+            var nearest = decades.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
+            return (key + ":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest]);
         }
+    }
+
+    // "Adult Swim", "adult_swim" and "AdultSwim" all become "adult swim" or match it compactly.
+    private static string NetworkKey(string? name) => string.Join(' ', System.Text.RegularExpressions.Regex.Split((name ?? "").ToLowerInvariant(), "[^a-z0-9]+").Where(x => x.Length > 0));
+
+    // True when a folder or file name in the path names the network, as whole words ("Adult Swim 2004")
+    // or run together ("AdultSwimBumps"); run-together matches need six letters, so "ABC" never matches "abcd".
+    public static bool FiledUnder(string path, string network)
+    {
+        var compactNetwork = network.Replace(" ", "");
+        var parts = path.Split('/', '\\');
+        parts[^1] = Path.GetFileNameWithoutExtension(parts[^1]);
+        foreach (var part in parts)
+        {
+            var words = NetworkKey(part);
+            if ((" " + words + " ").Contains(" " + network + " ", StringComparison.Ordinal)) return true;
+            if (compactNetwork.Length >= 6 && words.Replace(" ", "").Contains(compactNetwork, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     // True when the item would be on the air during a rule's window and matches its genres or tags.

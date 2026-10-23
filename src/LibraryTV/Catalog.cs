@@ -160,6 +160,8 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             // Episodes usually carry their genres and tags on the series.
             var genres = x.Genres.Concat(series?.Genres ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             var tags = x.Tags.Concat(series?.Tags ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            // For shows, studios are the networks they aired on, such as Nickelodeon or Adult Swim.
+            var studios = x.Studios.Concat(series?.Studios ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (pool.Genres.Length > 0 && !genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any()) continue;
             if (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any()) continue;
             if (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0)) continue;
@@ -170,7 +172,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                 : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
             media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
-                episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags));
+                episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios));
         }
         // The same file, or the same episode of the same show in two libraries, airs only once per cycle.
         return media.DistinctBy(x => x.Path, StringComparer.Ordinal)

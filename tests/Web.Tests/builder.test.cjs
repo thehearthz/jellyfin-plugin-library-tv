@@ -684,3 +684,28 @@ test("a content restriction without a genre or tag shows a readable error before
     dom.window.close();
   }
 });
+
+test("commercial networks default on and save per channel and time block", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Commercials");
+    assert.equal(checkbox(w, "Match commercials to the network").checked, true);
+    const field = (label) =>
+      [...w.document.querySelectorAll("main label.ltv-field")]
+        .find((x) => x.textContent.includes(label))
+        .querySelector("input");
+    change(w, field("Commercial network for this channel"), " Toonami ");
+    click(w, "Schedule");
+    click(w, "+ Add time block");
+    change(w, field("Commercial network for this block"), "Adult Swim");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.MatchCommercialNetwork, true);
+    assert.equal(c.CommercialNetwork, "Toonami");
+    assert.equal(c.Blocks[0].CommercialNetwork, "Adult Swim");
+  } finally {
+    dom.window.close();
+  }
+});
