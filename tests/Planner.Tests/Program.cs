@@ -131,4 +131,75 @@ var plannedTurns = blockState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
 var turnsBoundary = Planner.RewindFuture(blockState, now.AddMinutes(5));
 Planner.Extend(blockChannel, blockState, blockPools, now.AddMinutes(5), now.AddDays(1), TimeZoneInfo.Utc, turnsBoundary);
 Check(plannedTurns.SequenceEqual(blockState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding future slots reproduces the same mixed episode order");
+
+// One show in both the default lineup and a time block continues one episode sequence.
+var longShow = Enumerable.Range(1, 100).Select(n => Episode(n)).ToList();
+var sharedChannel = new ChannelDefinition { Id = "shared", Source = new Pool { Shuffle = false }, Blocks = [new TimeBlock { Id = "prime", Start = "18:00", End = "20:00", MaxItemsPerDay = 2, Source = new Pool { Shuffle = false } }] };
+var sharedPools = new Dictionary<string, List<Media>> { ["default"] = longShow, ["prime"] = longShow, ["commercials"] = [] };
+var sharedState = new ChannelState();
+Planner.Extend(sharedChannel, sharedState, sharedPools, now, now.AddDays(1), TimeZoneInfo.Utc);
+var aired = sharedState.Guide.Select(x => longShow.Single(m => m.Id == x.ItemId).Episode).ToArray();
+Check(aired.SequenceEqual(Enumerable.Range(1, aired.Length)), "A show in both the lineup and a time block moves to the next episode instead of repeating");
+var sharedPlan = sharedState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
+sharedState = JsonSerializer.Deserialize<ChannelState>(JsonSerializer.Serialize(sharedState))!;
+var sharedBoundary = Planner.RewindFuture(sharedState, now.AddMinutes(5));
+Check(sharedState.Series[Episode(1).Series] == new SeriesCursor(1, 1), "Rewinding restores the channel's series position");
+Planner.Extend(sharedChannel, sharedState, sharedPools, now.AddMinutes(5), now.AddDays(1), TimeZoneInfo.Utc, sharedBoundary);
+Check(sharedPlan.SequenceEqual(sharedState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding a shared show reproduces the same episodes");
+var twoBlocks = new ChannelDefinition { Id = "two-blocks", Source = new Pool(), Blocks = [
+    new TimeBlock { Id = "early", Start = "17:00", End = "18:00", MaxItemsPerDay = 1, Source = new Pool { Shuffle = false } },
+    new TimeBlock { Id = "late", Start = "22:00", End = "23:00", MaxItemsPerDay = 1, Source = new Pool { Shuffle = false } }] };
+var twoBlockState = new ChannelState();
+Planner.Extend(twoBlocks, twoBlockState, new Dictionary<string, List<Media>> { ["default"] = [fallback], ["early"] = longShow, ["late"] = longShow, ["commercials"] = [] }, now, now.AddDays(2), TimeZoneInfo.Utc);
+Check(twoBlockState.Guide.Where(x => x.Title.StartsWith("Episode")).Select(x => x.Title).SequenceEqual(new[] { "Episode 1", "Episode 2", "Episode 3", "Episode 4" }), "Two time blocks with the same show split its episodes instead of each starting at episode 1");
+var upgraded = new ChannelState { Rotations = new() { ["default"] = new Rotation { Last = Episode(6).Id, EpisodesInARow = 2, Seen = Enumerable.Range(1, 6).Select(n => Episode(n).Id).ToList(), Remaining = Enumerable.Range(7, 94).Select(n => Episode(n).Id).ToList() } } };
+Planner.Extend(new ChannelDefinition { Id = "upgraded", Source = new Pool { Shuffle = false } }, upgraded, new Dictionary<string, List<Media>> { ["default"] = longShow, ["commercials"] = [] }, now, now.AddHours(2), TimeZoneInfo.Utc);
+Check(upgraded.Guide[0].Title == "Episode 7" && upgraded.Guide[1].Title == "Episode 8", "Channels saved before series positions existed continue where they left off");
+
+// Content restrictions keep matching genres off the air during their window.
+var horror = new Media(Guid.NewGuid(), "Scary", "scary.mkv", 7200, "", 0, 0, 1980, ["Horror"]);
+var comedy = new Media(Guid.NewGuid(), "Funny", "funny.mkv", 5400, "", 0, 0, 1990, ["Comedy"]);
+var daytime = new[] { new ContentRule { Start = "06:00", End = "21:00", Genres = ["horror"] } };
+var restrictedChannel = new ChannelDefinition { Id = "restricted", Source = new Pool { Shuffle = false } };
+var restrictedState = new ChannelState();
+var restrictedPools = new Dictionary<string, List<Media>> { ["default"] = [horror, comedy], ["commercials"] = [] };
+Planner.Extend(restrictedChannel, restrictedState, restrictedPools, now, now.AddDays(2), TimeZoneInfo.Utc, null, daytime);
+var scary = restrictedState.Guide.Where(x => x.ItemId == horror.Id).ToArray();
+Check(scary.Length > 0 && scary.All(x => x.End.TimeOfDay <= TimeSpan.FromHours(6) && x.End.Date == x.Start.Date || x.Start.TimeOfDay >= TimeSpan.FromHours(21)), "Restricted genres never overlap their blocked hours and still air outside them");
+Check(restrictedState.Guide.Zip(restrictedState.Guide.Skip(1)).All(x => x.First.End == x.Second.Start), "Other content fills the blocked hours without gaps");
+var restrictedPlan = restrictedState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
+var restrictedBoundary = Planner.RewindFuture(restrictedState, now.AddMinutes(5));
+Planner.Extend(restrictedChannel, restrictedState, restrictedPools, now.AddMinutes(5), now.AddDays(2), TimeZoneInfo.Utc, restrictedBoundary, daytime);
+Check(restrictedPlan.SequenceEqual(restrictedState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding with restrictions reproduces the same schedule");
+var overnight = new[] { new ContentRule { Start = "22:00", End = "02:00", Days = [DayOfWeek.Saturday], Genres = [], Tags = ["kids-unsafe"] } };
+var tagged = comedy with { Tags = ["Kids-Unsafe"] };
+var saturday = new DateTimeOffset(2026, 10, 17, 0, 0, 0, TimeSpan.Zero);
+Check(Planner.Restricted(tagged, saturday.AddHours(25), saturday.AddHours(25.5), overnight, TimeZoneInfo.Utc) && !Planner.Restricted(tagged, saturday.AddHours(26), saturday.AddHours(27), overnight, TimeZoneInfo.Utc) && !Planner.Restricted(tagged, saturday.AddHours(-1), saturday, overnight, TimeZoneInfo.Utc), "Overnight restrictions belong to the day they start and match tags case-insensitively");
+Check(!Planner.Restricted(comedy, saturday.AddHours(23), saturday.AddHours(24), overnight, TimeZoneInfo.Utc), "Content without a restricted genre or tag is never blocked");
+var onlyHorror = new ChannelState();
+Planner.Extend(restrictedChannel, onlyHorror, new Dictionary<string, List<Media>> { ["default"] = [horror], ["commercials"] = [] }, now, now.AddDays(1), TimeZoneInfo.Utc, null, daytime);
+Check(onlyHorror.Guide.All(x => x.ItemId == horror.Id) && onlyHorror.Guide.Zip(onlyHorror.Guide.Skip(1)).Any(x => x.Second.Start > x.First.End) && onlyHorror.Guide.All(x => !Planner.Restricted(horror, x.Start, x.End, daytime, TimeZoneInfo.Utc))
+    && onlyHorror.Rotations["default"].Remaining.Concat(onlyHorror.Rotations["default"].Seen).Count(x => x == horror.Id) == 1, "A pool with nothing allowed leaves a gap instead of breaking its rules, and its rotation stays intact");
+
+// Commercials follow the decade of the program they come after.
+Media Ad(int year) => new(Guid.NewGuid(), "Ad " + year, "ad.mp4", 30, "", 0, 0, year);
+var adPool = new List<Media> { Ad(1983), Ad(1987), Ad(1994), Ad(1998), Ad(2006) };
+Media Program(int year) => new(Guid.NewGuid(), "Program " + year, "program.mkv", 1800, "", 0, 0, year);
+var eraChannel = new ChannelDefinition { Id = "era", CommercialCount = 2, Source = new Pool { Shuffle = false } };
+var eraPrograms = new List<Media> { Program(1988), Program(1992), Program(1971), Program(0) };
+var eraState = new ChannelState();
+Planner.Extend(eraChannel, eraState, new Dictionary<string, List<Media>> { ["default"] = eraPrograms, ["commercials"] = adPool }, now, now.AddHours(2.1), TimeZoneInfo.Utc);
+int[] AdsAfter(int index) => eraState.Guide.Skip(index * 3 + 1).Take(2).Select(x => adPool.Single(a => a.Id == x.ItemId).Year).ToArray();
+Check(AdsAfter(0).All(x => x / 10 == 198) && AdsAfter(0).Distinct().Count() == 2, "Commercials after a 1980s program come from the 1980s and rotate");
+Check(AdsAfter(1).All(x => x / 10 == 199), "Commercials after a 1990s program come from the 1990s");
+Check(AdsAfter(2).All(x => x / 10 == 198), "A decade without commercials uses the nearest decade that has them");
+Check(eraState.Rotations.ContainsKey("commercials") && eraState.Guide[10].Commercial, "Programs without a known year use the full commercial pool");
+var eraPlan = eraState.Guide.Select(x => (x.ItemId, x.Start)).ToArray();
+var eraBoundary = Planner.RewindFuture(eraState, now.AddMinutes(5));
+Planner.Extend(eraChannel, eraState, new Dictionary<string, List<Media>> { ["default"] = eraPrograms, ["commercials"] = adPool }, now.AddMinutes(5), now.AddHours(2.1), TimeZoneInfo.Utc, eraBoundary);
+Check(eraPlan.SequenceEqual(eraState.Guide.Select(x => (x.ItemId, x.Start))), "Rebuilding reproduces era-matched commercial breaks");
+eraChannel.MatchCommercialEra = false;
+var anyEra = new ChannelState();
+Planner.Extend(eraChannel, anyEra, new Dictionary<string, List<Media>> { ["default"] = eraPrograms, ["commercials"] = adPool }, now, now.AddHours(1), TimeZoneInfo.Utc);
+Check(anyEra.Rotations.Keys.Where(x => x.StartsWith("commercials")).SequenceEqual(["commercials"]), "Era matching can be turned off per channel");
 Console.WriteLine($"{passed} scheduling checks passed.");

@@ -15,6 +15,18 @@ public sealed class Configuration : BasePluginConfiguration
     public string InternalBaseUrl { get; set; } = "http://127.0.0.1:8096";
     public string StreamToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     public ChannelDefinition[] Channels { get; set; } = [];
+    // Applies to every channel: matching genres or tags never air during these windows.
+    public ContentRule[] Restrictions { get; set; } = [];
+}
+
+public sealed class ContentRule
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Start { get; set; } = "06:00";
+    public string End { get; set; } = "21:00";
+    public DayOfWeek[] Days { get; set; } = Enum.GetValues<DayOfWeek>();
+    public string[] Genres { get; set; } = ["Horror"];
+    public string[] Tags { get; set; } = [];
 }
 
 public sealed class AutomaticChannel
@@ -34,7 +46,10 @@ public sealed class ChannelDefinition
     public TimeBlock[] Blocks { get; set; } = [];
     public Pool Commercials { get; set; } = new();
     public int CommercialCount { get; set; }
-    public bool Transcode { get; set; }
+    // Prefer commercials from the same decade as the program they follow.
+    public bool MatchCommercialEra { get; set; } = true;
+    // Normalizes every program to 720p H.264/AAC. Otherwise only incompatible streams are encoded.
+    public bool AlwaysEncode { get; set; }
 }
 
 public sealed class Pool
@@ -61,9 +76,13 @@ public sealed class TimeBlock
     public Pool Source { get; set; } = new();
 }
 
-public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode);
+public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null);
 public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null);
-public sealed record PlanningUndo(string PoolKey, Guid PreviousLast, Guid[] AddedIds, bool Swapped, Guid[]? PreviousSeen, string? QuotaKey = null);
+// Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
+// Token is that entry when a series cursor aired a different episode.
+public sealed record PlanningUndo(string PoolKey, Guid PreviousLast, Guid[] AddedIds, bool Swapped, Guid[]? PreviousSeen, string? QuotaKey = null,
+    int Index = 0, Guid? Token = null, string? Series = null, SeriesCursor? PreviousCursor = null, int? SeenIndex = null);
+public sealed record SeriesCursor(int Season, int Episode);
 public sealed class Rotation
 {
     public List<Guid> Remaining { get; set; } = [];
@@ -76,4 +95,6 @@ public sealed class ChannelState
     public List<Airing> Guide { get; set; } = [];
     public Dictionary<string, Rotation> Rotations { get; set; } = [];
     public Dictionary<string, int> DailyCounts { get; set; } = [];
+    // Last episode aired per series on this channel, shared by every lineup and block.
+    public Dictionary<string, SeriesCursor> Series { get; set; } = [];
 }

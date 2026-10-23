@@ -34,7 +34,7 @@ const configuration = () => ({
         RepeatWhenExhausted: true,
       },
       CommercialCount: 0,
-      Transcode: false,
+      AlwaysEncode: false,
     },
   ],
 });

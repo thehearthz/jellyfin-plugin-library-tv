@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.4.2.0",
+    [string]$Version = "0.5.0.0",
     [string]$Changelog = "Local development build.",
     [string]$Repository = "thehearthz/jellyfin-plugin-library-tv",
     [string]$OutputDirectory = "artifacts"
@@ -19,7 +19,7 @@ $entry = [ordered]@{
     guid = '512a2a0d-5101-4fe8-9651-484f077a601a'
     name = 'Library TV'
     overview = 'Always-on channels from your own libraries'
-    description = 'Experimental virtual television with persistent episode order, time blocks, automatic library channels, and commercial breaks. No idle encoding. Stream copy requires compatible media; compatibility encoding costs CPU.'
+    description = 'Experimental virtual television with persistent episode order, time blocks, automatic library channels, and commercial breaks. No idle encoding: H.264/AAC files play directly, and only other formats are encoded while watched.'
     owner = $Repository.Split('/')[0]
     category = 'Live TV'
     versions = @([ordered]@{

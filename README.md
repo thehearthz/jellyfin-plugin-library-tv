@@ -45,15 +45,19 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Channel duplication, day/time block forms, commercial-folder selection, genre/tag filters, saved-guide preview, and Plugin Pages navigation.
 - Rolling 1–7 day schedule, extended periodically from current library metadata.
 - Saved rotation state survives restarts. Episodes within each series follow season/episode order, even with shuffle enabled.
+- A show always moves to its next episode on a channel. When the same show is in the default lineup and one or more time blocks, they share one episode position instead of each starting from episode 1. The same show held in two libraries (matched by TVDB, TMDB or IMDb ID) counts as one show, and a duplicated episode or file airs once.
 - Shows take turns: by default two episodes of one show air, then the next show takes a turn, so a time block mixes its shows instead of filling with one.
 - A pool airs all its selected content before cycling. New items enter the next unplanned portion of the rotation. Disable `RepeatWhenExhausted` to stop a pool when it runs out.
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
 - Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
+- Commercials match the era of the program they follow: an episode from 1987 gets 1980s commercials (see [Era-matched commercials](#era-matched-commercials)).
+- Content restrictions keep genres or tags, such as Horror, off the air during set hours on every channel.
 - One FFmpeg process per actively watched channel shared by viewers. No FFmpeg processes when channels are idle. Bounded viewer queues and a simultaneous channel limit keep resource use controlled.
+- H.264/AAC files play directly; only files in other formats are encoded, and only while watched. Stalled playback restarts automatically without disconnecting viewers.
 - Identical content pools share their library query during each refresh. The cache ends with that refresh, so new files can appear at the next refresh without a persistent media cache. Each media folder is checked once per refresh rather than every file, which skips an offline mount cheaply; files deleted between Jellyfin library scans are skipped by playback recovery.
 - Current-program lookup uses a per-channel index. State is copied without a JSON encode/decode round trip; JSON is used for durable storage. Guide previews return 40 programs by default (maximum 200 per request).
 - **Channel health** checks the saved schedule only when requested and reports channels with no upcoming content without starting playback or polling in the background.
-- Bounded playback recovery advances to the next scheduled item when a media file is missing or unreadable. An unavailable FFmpeg configuration stops playback without consuming episodes.
+- Bounded playback recovery restarts a stalled program and advances to the next scheduled item when a media file is missing or unreadable. An unavailable FFmpeg configuration stops playback without consuming episodes.
 - **Rebuild future slots** applies saved changes after the current program without resetting episode order or daily quotas. Legacy entries without rewind metadata are explicitly protected.
 - Reviewed settings backup/restore excludes private stream tokens and the server connection address.
 - Viewers join the program scheduled for the current time. The schedule continues while nobody watches.
@@ -72,11 +76,23 @@ Jellyfin still discovers the plugin assembly and registers its lightweight servi
 
 ### Playback
 
-Default playback uses FFmpeg **stream copy**: it remuxes local video/audio into MPEG-TS without encoding. Choose consistent video and audio codecs, resolution, audio layout and frame rate across programs and ads. H.264 video with AAC audio is a useful starting point. Files must be locally readable by the Jellyfin process and contain a video stream. Remote streams, DRM, images, music-only channels, subtitles and live inputs are not supported.
+Every channel plays files directly when it can and encodes only when it has to. For each program the plugin reads the file's streams from Jellyfin's library data (or FFprobe, if Jellyfin has none), then:
 
-Stream copy seeking is keyframe-limited. Joins may begin slightly before the exact schedule position. At file transitions the transport signals a discontinuity; tolerance varies between Jellyfin clients. Arbitrary mixed-codec libraries are **not guaranteed** to play seamlessly.
+| Source | What happens |
+| --- | --- |
+| 8-bit H.264 video | Copied without encoding |
+| Other video (HEVC, MPEG-2, MPEG-4, VC-1, 10-bit H.264, interlaced) | Encoded to H.264 at its own size, capped at 1080p |
+| Stereo 48 kHz AAC audio | Copied without encoding |
+| Other audio (AC-3, DTS, MP3, surround, mono, 44.1 kHz) | Encoded to stereo 48 kHz AAC, which costs little CPU |
+| No audio track | A silent stereo AAC track is added |
 
-Set a channel's `Transcode` to `true` to normalize its output to H.264/AAC at 720p/30fps using software encoding. This costs materially more CPU and requires Jellyfin's FFmpeg to include libx264. It is a compatibility option, not a promise of seamless transitions. Jellyfin may additionally transcode Live TV for a particular client. Hardware acceleration for the plugin's encoding process is not implemented.
+So every program on a channel reaches Jellyfin as H.264 video with stereo AAC audio. A codec or audio-layout change between programs is a common reason live streams freeze at program changes, and this avoids it while encoding nothing that is already compatible. A library that is all H.264/AAC is never encoded. Channel health shows what the current program is doing, for example "Direct: video and audio copied without encoding".
+
+Resolution and frame rate still change between programs when files differ. Most clients handle this. If a channel still freezes when programs change, turn on **Always encode every program** for that channel. Every program is then converted to 720p/30fps H.264/AAC, which gives the most consistent stream at much higher CPU cost. Encoding uses Jellyfin's FFmpeg with libx264 in software; hardware acceleration for the plugin's own encoding is not implemented. Jellyfin may additionally transcode Live TV for a particular client.
+
+Files must be locally readable by the Jellyfin process and contain a video stream. Remote streams, DRM, images, music-only channels, subtitles and live inputs are not supported. Copy seeking is keyframe-limited, so joins may begin slightly before the exact schedule position. At file transitions the transport signals a discontinuity.
+
+Channels saved by earlier versions switch to this behavior automatically. The earlier `Transcode` setting is no longer used; use **Always encode every program** instead.
 
 ## Build an evening channel
 
@@ -84,10 +100,22 @@ Set a channel's `Transcode` to `true` to normalize its output to H.264/AAC at 72
 2. In **Movies**, choose movies for the default lineup. Use the search box and library filter to narrow the list. Click **Done**. These movies fill the time outside your scheduled blocks.
 3. Open **Schedule → Add time block**. Choose 18:00–23:00, select the days, and set **Programs per day** to 3.
 4. In that block's content picker, select a show. Disable shuffle if you want series in the order selected. Episode order inside each show is preserved with either setting. Select several shows and set **Episodes in a row** (2 by default) to rotate between them.
-5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths.
+5. Open **Commercials**, set two clips per break, and select an indexed commercial folder. Add the folder to a Jellyfin video library first; the picker does not scan arbitrary filesystem paths. Name subfolders by decade, such as `1980s` and `1990s`, so each program gets commercials from its own era.
 6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
 This schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full. Selections can include specific shows, movies, indexed folders, or entire libraries. Shows automatically include their available episodes.
+
+### Era-matched commercials
+
+With **Match commercials to when the program was released or aired** (on by default), each break uses commercials from the decade of the program before it. Episodes use their original air date, falling back to the show's first year; movies use their release year. If you have no commercials from that decade, the closest decade you do have is used. Each decade keeps its own rotation, so clips still take turns.
+
+A commercial's year comes from its folder or file name first, because commercial collections are usually organized that way: `1980s`, `80s`, `1985` and `Cola (1985).mp4` all work, and the last year or decade in the path wins. Jellyfin's production year or premiere date is used only when the path has none. Clips with no year at all are used only after programs whose year is unknown. Turn the option off to draw every break from all selected clips.
+
+### Content restrictions
+
+Open **Content restrictions** to keep matching content off the air during set hours on every channel. For example, block the `Horror` genre from 06:00 until 21:00 so scary movies only air at night. A restriction matches a program when any of its genres or tags matches, ignoring case; episodes use their show's genres and tags. A program is never scheduled if any part of it would be on the air inside the window, so a two-hour horror movie cannot start at 20:00 under a window ending at 21:00. Windows can span midnight and belong to the day they start.
+
+Restricted programs are skipped for now and stay at the front of the rotation, so they air at the first allowed time. If nothing left in the current cycle is allowed, the least recently aired allowed item plays again rather than leaving dead air; shows still continue from their next episode. A time block with nothing allowed falls back to the default lineup. If the default lineup has nothing allowed either, the channel has a gap until the next allowed program, and Channel health warns about it. Viewers stay connected through gaps of up to 15 minutes and can tune in during one.
 
 ### Channel numbers and automatic stations
 
@@ -112,11 +140,11 @@ Advanced source settings (also retained in the configuration API):
 | `RepeatWhenExhausted` | Repeat only after the pool is exhausted; true by default |
 | `EpisodesInARow` | Episodes of one series aired before the next series takes a turn, 0–100; 2 by default. 0 airs each series straight through |
 
-Library, folder and item selectors are combined. An empty source selects nothing. Individual item IDs preserve insertion order when shuffle is disabled; series episodes are always sorted by season/episode. With multiple series, each series airs `EpisodesInARow` episodes per turn, and each series's turns are spread evenly through the cycle, so a short show is placed among a long show's turns instead of all at the start. Movies take one turn each. Every selected item still airs once before the pool repeats. Existing channels switch to this order at their next refresh without losing their place; programs already in the guide keep their order until they air, or use **Rebuild future slots** to apply it now.
+Library, folder and item selectors are combined. An empty source selects nothing. Genre and tag filters also match episodes whose genres or tags are set on their show. Individual item IDs preserve insertion order when shuffle is disabled; series episodes are always sorted by season/episode. With multiple series, each series airs `EpisodesInARow` episodes per turn, and each series's turns are spread evenly through the cycle, so a short show is placed among a long show's turns instead of all at the start. Movies take one turn each. Every selected item still airs once before the pool repeats. Existing channels switch to this order at their next refresh without losing their place; programs already in the guide keep their order until they air, or use **Rebuild future slots** to apply it now.
 
 ## Updating schedules
 
-Saving settings refreshes the plugin schedule and extends its unplanned tail. To apply saved content or schedule changes sooner, open **Guide preview → Rebuild future slots**. The current program finishes, then reversible future entries are rebuilt from the saved settings. Episode progress, movie rotation and daily quotas are rewound only for discarded future selections. Newly generated entries carry compact undo metadata; no complete rotation snapshot is stored for every program.
+Saving settings refreshes the plugin schedule and extends its unplanned tail. To apply saved content or schedule changes sooner, open **Guide preview → Rebuild future slots**. The current program and its commercial break finish, then reversible future entries are rebuilt from the saved settings. Episode progress, movie rotation and daily quotas are rewound only for discarded future selections. Newly generated entries carry compact undo metadata; no complete rotation snapshot is stored for every program.
 
 Schedules created before v0.4 do not contain enough information to safely rewind every selection. Their existing future entries stay protected until they air; any newer tail can be rebuilt. The builder reports the actual **Applied from** time. This preserves episode progress instead of guessing at an older cursor. A failed scan or write keeps the previous published schedule and saved state.
 
@@ -128,11 +156,13 @@ Schedule and rotation state are stored in `<Jellyfin data directory>/library-tv/
 
 ### Playback recovery and diagnostics
 
+If FFmpeg sends nothing for 12 seconds (20 seconds while starting), for example because a network mount hangs, or exits partway through a program, the plugin restarts that program at the current position. Viewers stay connected, and the connection is kept busy with MPEG-TS filler packets while it restarts. A program is restarted at most twice before it is treated as unplayable. If a file ends more than five seconds before its listed runtime, the next program starts at once instead of leaving dead air.
+
 If a watched program is missing, unreadable or fails to produce a transport stream, the plugin brings the next scheduled item forward and shifts the later guide times by the same amount. Rotation selections remain consumed once; stale recovery requests cannot skip twice. Recovery is limited to three consecutive failed items per viewing session (two advances, then stop), with no background retry loop. Successful playback resets the consecutive-failure count. If FFmpeg itself cannot start, playback stops with a configuration message and the schedule is not advanced. Because Jellyfin keeps its own copy of the guide, a recovery queues Jellyfin's **Refresh Guide** task once so the shifted times appear; it is skipped if that task is already running or queued.
 
-Channel health shows source/schedule warnings, active viewers, recovery count, stream-copy/compatibility mode and the most recent playback issue. It does not probe media or run FFmpeg. Playback diagnostics are kept in bounded memory, not a growing history file. A refresh records its elapsed time; this is a diagnostic measurement, not a server-wide CPU benchmark.
+Channel health shows source/schedule warnings, active viewers, recovery count, playback mode, how the current program is being played (copied or encoded) and the most recent playback issue. It does not probe media or run FFmpeg. Playback diagnostics are kept in bounded memory, not a growing history file. A refresh records its elapsed time; this is a diagnostic measurement, not a server-wide CPU benchmark.
 
-FFmpeg is killed and awaited on cancellation or output failure. No media process runs when nobody is watching. Recovery does not guarantee seamless playback on every client, normalize mixed codecs in copy mode, reconnect clients that independently disconnect, or detect every stalled network filesystem read. Real FFmpeg tests validate compatible program/commercial transitions and cleanup; real client testing is still needed.
+FFmpeg is killed and awaited on cancellation, output failure or a stall. No media process runs when nobody is watching. Recovery does not guarantee seamless playback on every client or reconnect clients that independently disconnect; a client whose own player stalls may need to be restarted. Real FFmpeg tests validate compatible program/commercial transitions and cleanup; real client testing is still needed.
 
 If a pool is empty or exhausted with repeats disabled, its time block falls back to the default source. If both are unavailable, the guide has a gap rather than silently repeating episodes. Recordings are not supported by this provider.
 
@@ -156,7 +186,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.4.2.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.5.0.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -168,8 +198,8 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.4.2.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.5.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
-Tests cover episode continuation, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
+Tests cover episode continuation across lineups and blocks, content restrictions, era-matched commercials, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
 License: GPL-3.0-only.

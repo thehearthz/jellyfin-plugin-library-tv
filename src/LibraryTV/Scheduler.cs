@@ -113,7 +113,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
             foreach (var block in channel.Blocks)
             {
-                if (block.Id is "default" or "commercials" || string.IsNullOrWhiteSpace(block.Id)) throw new ArgumentException("Block ID is empty or reserved.");
+                if (block.Id is "default" || block.Id.StartsWith("commercials", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(block.Id)) throw new ArgumentException("Block ID is empty or reserved.");
                 if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) || block.Start == block.End) throw new ArgumentException("Time blocks require different start/end times in HH:mm format.");
                 if (block.MaxItemsPerDay < 0) throw new ArgumentException("Daily episode limits cannot be negative.");
                 if (block.Days is null || block.Days.Length == 0 || block.Days.Any(x => !Enum.IsDefined(x))) throw new ArgumentException("Choose at least one valid day for every time block.");
@@ -124,6 +124,13 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (pool.EpisodesInARow is < 0 or > 100) throw new ArgumentException("Episodes in a row must be 0–100.");
                 foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
             }
+        }
+        if (c.Restrictions is null || c.Restrictions.Length > 50 || c.Restrictions.Any(x => x is null)) throw new ArgumentException("Use at most 50 content restrictions.");
+        foreach (var rule in c.Restrictions)
+        {
+            if (!TimeOnly.TryParseExact(rule.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(rule.End, "HH:mm", out _) || rule.Start == rule.End) throw new ArgumentException("Content restrictions require different start/end times in HH:mm format.");
+            if (rule.Days is null || rule.Days.Length == 0 || rule.Days.Any(x => !Enum.IsDefined(x))) throw new ArgumentException("Choose at least one valid day for every content restriction.");
+            if (rule.Genres is null || rule.Tags is null || rule.Genres.Concat(rule.Tags).All(string.IsNullOrWhiteSpace)) throw new ArgumentException("Each content restriction needs at least one genre or tag.");
         }
         ChannelNumbers.ValidateUnique(c.Channels.Where(x => x.Enabled));
         foreach (var id in c.AutoLibraryIds) _ = Guid.Parse(id);
@@ -167,7 +174,9 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (rebuildChannel is not null && !definitions.Any(x => x.Id == rebuildChannel)) throw new ArgumentException("Choose an enabled channel to rebuild.");
             if (assignedNumbers || LastRefresh is null) Plugin.Instance.SaveConfiguration();
             var now = DateTimeOffset.UtcNow;
-            var read = catalog.CreateRefreshReader();
+            var scan = new Catalog.RefreshScan();
+            var read = catalog.CreateRefreshReader(false, scan);
+            var readCommercials = catalog.CreateRefreshReader(true, scan);
             DateTimeOffset? rebuiltFrom = null;
             var warnings = new Dictionary<string, string[]>();
             foreach (var channel in definitions)
@@ -176,15 +185,18 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (!working.TryGetValue(channel.Id, out var state)) working[channel.Id] = state = new();
                 var pools = channel.Blocks.ToDictionary(x => x.Id, x => read(x.Source));
                 pools["default"] = read(channel.Source);
-                pools["commercials"] = read(channel.Commercials);
+                pools["commercials"] = readCommercials(channel.Commercials);
                 var adIds = pools["commercials"].Select(x => x.Id).ToHashSet();
                 foreach (var key in pools.Keys.Where(x => x != "commercials").ToArray()) pools[key].RemoveAll(x => adIds.Contains(x.Id));
                 if (channel.Id == rebuildChannel) rebuiltFrom = Planner.RewindFuture(state, now);
-                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null);
+                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions);
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
                 if (channel.CommercialCount > 0 && pools["commercials"].Count == 0) notes.Add("Commercial breaks are enabled but no readable commercial clips were found.");
+                var upcoming = state.Guide.Where(x => x.End > now).ToArray();
+                if (upcoming.Zip(upcoming.Skip(1)).Any(x => x.Second.Start - x.First.End > TimeSpan.FromMinutes(1)))
+                    notes.Add("Some times have nothing allowed to air, so the channel goes off the air until the next program. Add content or narrow the content restrictions.");
                 if (!state.Guide.Any(x => x.End > now)) notes.Add("No programs are queued. Check content selections, missing files, time blocks, and repeat settings.");
                 if (state.Guide.Count >= Planner.MaxGuideEntries) notes.Add("This channel reached the 10,000-program guide limit. Use longer clips or a shorter guide horizon to keep memory and refresh costs low.");
                 warnings[channel.Id] = notes.ToArray();
@@ -224,6 +236,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
     {
         Guide = new List<Airing>(state.Guide), // Airing is immutable; share records, not mutable lists.
         DailyCounts = new Dictionary<string, int>(state.DailyCounts),
+        Series = new Dictionary<string, SeriesCursor>(state.Series), // SeriesCursor is immutable.
         Rotations = state.Rotations.ToDictionary(x => x.Key, x => new Rotation
         {
             Last = x.Value.Last,

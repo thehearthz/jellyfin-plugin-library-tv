@@ -439,13 +439,14 @@ test("health view explains source and runtime problems without starting streams"
       {
         Name: "Test",
         Number: "42",
-        Transcode: false,
+        AlwaysEncode: false,
         HasUpcomingPrograms: false,
         Warnings: ["No readable commercial clips were found."],
         Runtime: {
           Viewers: 0,
           Recoveries: 2,
           LastProblem: "A scheduled file is missing.",
+          Playback: "Video copied; audio encoded to AAC stereo",
         },
       },
     ];
@@ -455,6 +456,8 @@ test("health view explains source and runtime problems without starting streams"
     assert.match(text, /commercial clips/);
     assert.match(text, /file is missing/);
     assert.match(text, /2 automatic recoveries/);
+    assert.match(text, /encodes only programs whose formats need it/);
+    assert.match(text, /Now: Video copied; audio encoded/);
     assert.ok(!w.testApi.calls.some((x) => x.startsWith("stream/")));
   } finally {
     dom.window.close();
@@ -588,6 +591,94 @@ test("invalid episodes-in-a-row values show a readable error before saving", asy
     assert.match(
       w.document.querySelector("[data-ui=status]").textContent,
       /Episodes in a row must be/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+function checkbox(window, label) {
+  const found = [...window.document.querySelectorAll("label.ltv-check")].find(
+    (x) => x.textContent.includes(label),
+  );
+  assert.ok(found, "Checkbox " + label);
+  return found.querySelector("input");
+}
+
+test("playback and commercial era options default on older channels and save per channel", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const encode = checkbox(w, "Always encode every program");
+    assert.equal(encode.checked, false);
+    encode.click();
+    click(w, "Commercials");
+    const era = checkbox(w, "Match commercials to when the program");
+    assert.equal(era.checked, true);
+    era.click();
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.AlwaysEncode, true);
+    assert.equal(c.MatchCommercialEra, false);
+    assert.ok(!("Transcode" in c) || c.Transcode === undefined);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("content restrictions are added for every channel with times, days, genres and tags", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const panel = w.document.querySelector("[data-ui=restrictions]");
+    assert.match(panel.textContent, /No restrictions/);
+    click(w, "+ Add restriction");
+    const [from, until] = panel.querySelectorAll("input[type=time]");
+    assert.equal(from.value, "06:00");
+    assert.equal(until.value, "21:00");
+    change(w, until, "20:30");
+    const [genres, tags] = [...panel.querySelectorAll("label.ltv-field")]
+      .filter((x) => /Genres|Tags/.test(x.textContent))
+      .map((x) => x.querySelector("input"));
+    assert.equal(genres.value, "Horror");
+    change(w, genres, "Horror, Thriller");
+    change(w, tags, "scary");
+    [...panel.querySelectorAll(".ltv-days input")][0].click();
+    click(w, "Save channels");
+    await settle();
+    const [rule] = w.testApi.saved.Restrictions;
+    assert.equal(rule.Start, "06:00");
+    assert.equal(rule.End, "20:30");
+    assert.deepEqual(rule.Genres, ["Horror", "Thriller"]);
+    assert.deepEqual(rule.Tags, ["scary"]);
+    assert.deepEqual(rule.Days, [1, 2, 3, 4, 5, 6]);
+    click(w, "Remove", panel);
+    click(w, "Save channels");
+    await settle();
+    assert.deepEqual(w.testApi.saved.Restrictions, []);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("a content restriction without a genre or tag shows a readable error before saving", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "+ Add restriction");
+    const genres = [
+      ...w.document.querySelectorAll("[data-ui=restrictions] label.ltv-field"),
+    ]
+      .find((x) => /Genres/.test(x.textContent))
+      .querySelector("input");
+    change(w, genres, " ");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved, null);
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /needs at least one genre or tag/,
     );
   } finally {
     dom.window.close();

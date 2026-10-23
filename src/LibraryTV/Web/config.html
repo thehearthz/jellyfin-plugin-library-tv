@@ -446,6 +446,20 @@
         </div>
       </details>
       <details class="ltv-panel">
+        <summary>Content restrictions</summary>
+        <div>
+          <p class="ltv-muted">
+            Keep genres or tags off the air during set hours on every channel,
+            for example horror before 9 pm. A program that would still be
+            playing when a window starts waits until the window ends.
+          </p>
+          <div data-ui="restrictions"></div>
+          <button type="button" data-action="add-restriction">
+            + Add restriction
+          </button>
+        </div>
+      </details>
+      <details class="ltv-panel">
         <summary>Channel health</summary>
         <div>
           <p class="ltv-muted">
@@ -945,10 +959,17 @@
                 node(
                   "p",
                   { class: "ltv-muted" },
-                  channel.Transcode
-                    ? "Compatibility encoding enabled — higher CPU use while watched."
-                    : "Stream copy selected — no video encoding by the plugin.",
+                  channel.AlwaysEncode
+                    ? "Always encode is on — every program is encoded to 720p, using more CPU while watched."
+                    : "Plays files directly and encodes only programs whose formats need it.",
                 ),
+                channel.Runtime?.Playback
+                  ? node(
+                      "p",
+                      { class: "ltv-muted" },
+                      "Now: " + channel.Runtime.Playback,
+                    )
+                  : null,
                 ...(channel.Warnings || []).map((text) => node("p", {}, text)),
                 channel.Runtime
                   ? node(
@@ -1307,14 +1328,14 @@
             ),
             poolEditor(c.Source, "Channel content"),
             check(
-              "Compatibility encoding (uses more CPU)",
-              c.Transcode,
-              (v) => (c.Transcode = v),
+              "Always encode every program (uses more CPU)",
+              c.AlwaysEncode,
+              (v) => (c.AlwaysEncode = v),
             ),
             node(
               "p",
               { class: "ltv-muted" },
-              "Leave encoding off for low CPU usage. Stream copy works best with matching video and audio formats.",
+              "Leave this off to play H.264/AAC files directly and encode only programs in other formats. Turn it on if a channel still freezes when programs change; every program is then converted to 720p.",
             ),
           );
         }
@@ -1354,6 +1375,16 @@
               (v) => (c.CommercialCount = v),
               "number",
               { min: 0, max: 20 },
+            ),
+            check(
+              "Match commercials to when the program was released or aired",
+              c.MatchCommercialEra !== false,
+              (v) => (c.MatchCommercialEra = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Commercials come from the program's decade, or the closest decade you have. Name commercial folders or files with a year or decade, such as “1980s”, “80s” or “Cola (1985)”. Clips without a year are used only after programs with no known year.",
             ),
             poolEditor(c.Commercials, "Commercial content", true),
             node(
@@ -1406,9 +1437,23 @@
             field("Ends", b.End, (v) => (b.End = v), "time"),
           ),
         );
+        box.append(
+          dayPicker(b),
+          field(
+            "Programs per day (0 = fill the time slot)",
+            b.MaxItemsPerDay || 0,
+            (v) => (b.MaxItemsPerDay = v),
+            "number",
+            { min: 0 },
+          ),
+          poolEditor(b.Source, "Content for this block"),
+        );
+        return box;
+      }
+      function dayPicker(target) {
         const days = node("div", { class: "ltv-days" }),
           names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        b.Days = (b.Days || []).map((x) =>
+        target.Days = (target.Days || []).map((x) =>
           typeof x === "number"
             ? x
             : [
@@ -1428,11 +1473,11 @@
               {},
               node("input", {
                 type: "checkbox",
-                checked: b.Days.includes(n),
+                checked: target.Days.includes(n),
                 onChange: (e) => {
-                  b.Days = e.target.checked
-                    ? [...b.Days, n]
-                    : b.Days.filter((x) => x !== n);
+                  target.Days = e.target.checked
+                    ? [...target.Days, n]
+                    : target.Days.filter((x) => x !== n);
                   dirty();
                 },
               }),
@@ -1440,18 +1485,83 @@
             ),
           ),
         );
-        box.append(
-          days,
-          field(
-            "Programs per day (0 = fill the time slot)",
-            b.MaxItemsPerDay || 0,
-            (v) => (b.MaxItemsPerDay = v),
-            "number",
-            { min: 0 },
-          ),
-          poolEditor(b.Source, "Content for this block"),
-        );
-        return box;
+        return days;
+      }
+      const list = (value) =>
+        value
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      function renderRestrictions() {
+        const target = ui("restrictions");
+        target.replaceChildren();
+        state.config.Restrictions.forEach((rule, index) => {
+          const box = node("section", { class: "ltv-block" });
+          box.append(
+            node(
+              "div",
+              { class: "ltv-top" },
+              node("h3", {}, "Restriction " + (index + 1)),
+              button("Remove", () => {
+                state.config.Restrictions.splice(index, 1);
+                dirty();
+                renderRestrictions();
+              }),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Blocked from",
+                rule.Start,
+                (v) => (rule.Start = v),
+                "time",
+              ),
+              field("Until", rule.End, (v) => (rule.End = v), "time"),
+            ),
+            dayPicker(rule),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Genres (comma separated)",
+                rule.Genres.join(", "),
+                (v) => (rule.Genres = list(v)),
+              ),
+              field(
+                "Tags (comma separated)",
+                rule.Tags.join(", "),
+                (v) => (rule.Tags = list(v)),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Matching content can't be on the air between these times on the selected days. A window that ends after midnight belongs to the day it starts. Episodes use their show's genres and tags.",
+            ),
+          );
+          target.append(box);
+        });
+        if (!state.config.Restrictions.length)
+          target.append(
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "No restrictions. Every program can air at any time.",
+            ),
+          );
+      }
+      function addRestriction() {
+        state.config.Restrictions.push({
+          Id: id(),
+          Start: "06:00",
+          End: "21:00",
+          Days: [0, 1, 2, 3, 4, 5, 6],
+          Genres: ["Horror"],
+          Tags: [],
+        });
+        dirty();
+        renderRestrictions();
       }
       function moveBlock(c, index, direction) {
         const to = index + direction;
@@ -1480,7 +1590,8 @@
           Blocks: [],
           Commercials: pool(),
           CommercialCount: 0,
-          Transcode: false,
+          MatchCommercialEra: true,
+          AlwaysEncode: false,
         };
         state.config.Channels.push(c);
         state.channel = c.Id;
@@ -1794,6 +1905,20 @@
               );
           }
         }
+        for (const rule of state.config.Restrictions) {
+          if (!rule.Start || !rule.End || rule.Start === rule.End)
+            throw new Error(
+              "Choose different start and end times for each content restriction.",
+            );
+          if (!rule.Days.length)
+            throw new Error(
+              "Choose at least one day for each content restriction.",
+            );
+          if (!rule.Genres.length && !rule.Tags.length)
+            throw new Error(
+              "Each content restriction needs at least one genre or tag.",
+            );
+        }
         if (state.config.AutoChannels)
           for (const entry of state.config.AutomaticChannels) {
             if (
@@ -1882,6 +2007,13 @@
           state.config.Channels = state.config.Channels || [];
           state.config.AutomaticChannels = state.config.AutomaticChannels || [];
           state.config.AutoLibraryIds = state.config.AutoLibraryIds || [];
+          state.config.Restrictions = (state.config.Restrictions || []).map(
+            (rule) => ({
+              ...rule,
+              Genres: rule.Genres || [],
+              Tags: rule.Tags || [],
+            }),
+          );
           state.config.AutoChannelStartNumber =
             state.config.AutoChannelStartNumber ?? 100;
           state.libraries = libraries;
@@ -1890,6 +2022,7 @@
             c.Commercials = normalize(c.Commercials);
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
+            if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
           }
           const selected = new Set();
           for (const c of config.Channels)
@@ -1925,6 +2058,7 @@
             };
           }
           renderAutomaticChannels();
+          renderRestrictions();
           ui("plugin-pages").textContent =
             status.PluginPages || "Plugin Pages status unavailable.";
           ui("body").hidden = false;
@@ -1962,6 +2096,9 @@
       page
         .querySelector("[data-action=add-channel]")
         .addEventListener("click", addChannel);
+      page
+        .querySelector('[data-action="add-restriction"]')
+        .addEventListener("click", addRestriction);
       page
         .querySelector("[data-action=close-picker]")
         .addEventListener("click", closePicker);

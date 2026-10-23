@@ -54,7 +54,7 @@ public sealed class Controller : ControllerBase
     [HttpGet("status")]
     public object Status() => startup?.IsReady == false
         ? new { IsReady = false, LastRefresh = (DateTimeOffset?)null, LastRefreshMilliseconds = (double?)null, LastError = (string?)null, PluginPages = PluginPagesIntegration.Status, Channels = Array.Empty<object>() }
-        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.Transcode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
+        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
 
     [HttpPost("rebuild/{id}")]
     public async Task<IActionResult> Rebuild(string id, CancellationToken ct)
@@ -112,7 +112,9 @@ public sealed class Controller : ControllerBase
         var address = HttpContext.Connection.RemoteIpAddress;
         if (address is null || !System.Net.IPAddress.IsLoopback(address) || token is null || !CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(token)), SHA256.HashData(Encoding.UTF8.GetBytes(Plugin.Instance.Configuration.StreamToken)) ))
         { Response.StatusCode = 403; return; }
-        if (scheduler.Current(id, DateTimeOffset.UtcNow) is null) { Response.StatusCode = 404; return; }
+        var now = DateTimeOffset.UtcNow;
+        // A short gap left by content restrictions is bridged by the broadcast, so tuning in may start in one.
+        if (scheduler.Current(id, now) is null && !scheduler.GuideFor(id).Any(x => x.Start > now && x.Start - now <= Broadcasts.MaxGap)) { Response.StatusCode = 404; return; }
         Response.ContentType = "video/mp2t";
         Response.Headers.CacheControl = "no-store";
         try { await broadcasts!.Watch(id, Response.Body, ct); }

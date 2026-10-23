@@ -142,6 +142,43 @@ public static class PlaybackTests
                 check(transport.Response.StatusCode == 503, "A channel that cannot play returns a clean unavailable response instead of an unhandled server error");
             }
             scheduler = await Fresh();
+            DelegateStreamer stalledOnce = null!;
+            stalledOnce = new DelegateStreamer(async (_, _, write, ct) =>
+            {
+                await write(new byte[188]);
+                if (stalledOnce.Calls == 1) throw new PlaybackInterruptedException(true, true);
+                await Task.Delay(Timeout.Infinite, ct);
+            });
+            var stalledProgram = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
+            using (var live = new Broadcasts(scheduler, stalledOnce, NullLogger<Broadcasts>.Instance))
+            using (var stop = new CancellationTokenSource())
+            {
+                var output = new CountingStream();
+                var watch = live.Watch("playback", output, stop.Token);
+                await output.WaitFor(2 * 188 + 188 * 7, TimeSpan.FromSeconds(5));
+                var status = live.StatusFor("playback");
+                check(stalledOnce.Calls == 2 && scheduler.Current("playback", DateTimeOffset.UtcNow)!.Start == stalledProgram.Start && status.Recoveries == 1 && status.LastProblem!.Contains("restarted automatically") && !watch.IsCompleted,
+                    "A stalled program restarts automatically at the current position while the viewer stays connected");
+                stop.Cancel(); await IgnoreCancellation(watch);
+            }
+            scheduler = await Fresh();
+            var shortProgram = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
+            var shortFile = new DelegateStreamer(async (item, _, write, ct) =>
+            {
+                await write(new byte[188]);
+                if (item.ItemId != shortProgram.ItemId) await Task.Delay(Timeout.Infinite, ct);
+            });
+            using (var live = new Broadcasts(scheduler, shortFile, NullLogger<Broadcasts>.Instance))
+            using (var stop = new CancellationTokenSource())
+            {
+                var output = new CountingStream();
+                var watch = live.Watch("playback", output, stop.Token);
+                await output.WaitFor(2 * 188, TimeSpan.FromSeconds(5));
+                check(shortFile.Calls == 2 && scheduler.Current("playback", DateTimeOffset.UtcNow)!.ItemId != shortProgram.ItemId && live.StatusFor("playback").Playback == "Test playback",
+                    "A file shorter than its listed runtime is followed at once by the next program instead of dead air");
+                stop.Cancel(); await IgnoreCancellation(watch);
+            }
+            scheduler = await Fresh();
             var before = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
             var unavailable = new DelegateStreamer((_, _, _, _) => Task.FromException(new EncoderUnavailableException()));
             using (var live = new Broadcasts(scheduler, unavailable, NullLogger<Broadcasts>.Instance))
@@ -159,11 +196,21 @@ public static class PlaybackTests
     {
         private int calls;
         public int Calls => Volatile.Read(ref calls);
-        public Task Stream(Airing program, bool transcode, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); return stream(program, transcode, output, ct); }
+        public async Task<string> Stream(Airing program, bool alwaysEncode, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); await stream(program, alwaysEncode, output, ct); return "Test playback"; }
     }
     private sealed class StalledStream : MemoryStream
     {
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => await Task.Delay(Timeout.Infinite, ct);
+    }
+    private sealed class CountingStream : MemoryStream
+    {
+        private long total;
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) { await base.WriteAsync(buffer, ct); Interlocked.Add(ref total, buffer.Length); }
+        public async Task WaitFor(long bytes, TimeSpan timeout)
+        {
+            var until = DateTime.UtcNow + timeout;
+            while (Interlocked.Read(ref total) < bytes) { if (DateTime.UtcNow > until) throw new TimeoutException("Expected stream output did not arrive."); await Task.Delay(20); }
+        }
     }
     private sealed class SignalStream : MemoryStream
     {

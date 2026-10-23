@@ -106,6 +106,23 @@ try
     var mountCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name == "GetItemById" ? new[] { mounted, offlineMedia }.FirstOrDefault(x => x.Id == (Guid)args![0]!) : throw new NotSupportedException(name)));
     var mountReader = mountCatalog.CreateRefreshReader();
     Check(mountReader(new Pool { ItemIds = [mounted.Id.ToString(), offlineMedia.Id.ToString()] }).Select(x => x.Title).SequenceEqual(["Mounted"]), "Refresh skips media whose storage folder is unavailable without checking every file");
+    Check(Catalog.YearFromPath("/media/Commercials/1980s/Cola (1985) 1080p.mp4") == 1985 && Catalog.YearFromPath("/media/ads/80s/Cola.mp4") == 1980
+        && Catalog.YearFromPath("/media/ads/1990s/clip.mkv") == 1990 && Catalog.YearFromPath("/media/ads/clip 1080p x264.mkv") is null, "Commercial years come from year or decade names in folders and files, ignoring resolutions and codecs");
+    var horrorSeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], ProviderIds = new() { ["Tvdb"] = "4242" } };
+    var copySeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], ProviderIds = new() { ["Tvdb"] = "4242" } };
+    MediaBrowser.Controller.Entities.TV.Episode Ep(MediaBrowser.Controller.Entities.TV.Series series, int number, string folder) => new() { Id = Guid.NewGuid(), Name = "Part " + number, SeriesId = series.Id, SeriesName = series.Name, ParentIndexNumber = 1, IndexNumber = number, Path = Path.Combine(directory, folder + number + ".mkv"), RunTimeTicks = TimeSpan.FromMinutes(22).Ticks, PremiereDate = new DateTime(1988, 1, number) };
+    var showFiles = new BaseItem[] { Ep(horrorSeries, 1, "hd"), Ep(horrorSeries, 2, "hd"), Ep(copySeries, 2, "4k"), Ep(copySeries, 3, "4k") };
+    var showLibrary = Guid.NewGuid();
+    var showCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name switch
+    {
+        "GetItemList" => showFiles.ToList(),
+        "GetItemById" => new BaseItem[] { horrorSeries, copySeries }.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+        _ => throw new NotSupportedException(name)
+    }));
+    var showMedia = showCatalog.Read(new Pool { LibraryIds = [showLibrary.ToString()] });
+    Check(showMedia.Select(x => x.Episode).SequenceEqual([1, 2, 3]) && showMedia.Select(x => x.Series).Distinct().Count() == 1, "The same show in two libraries is one show, and a duplicated episode airs once");
+    Check(showMedia.All(x => x.Year == 1988 && x.Genres!.Contains("Horror")), "Episodes use their air date for commercial matching and inherit the show's genres for restrictions");
+    Check(showCatalog.Read(new Pool { LibraryIds = [showLibrary.ToString()], Genres = ["horror"] }).Count == 3, "Genre filters also match episodes whose genres are set on the show");
     var scheduler = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
     await scheduler.Refresh(default);
     Check(scheduler.LastError is null && scheduler.LastRefresh is not null && File.Exists(scheduler.StatePath), "Schedule refresh persists state atomically");
@@ -180,14 +197,29 @@ try
     var turnsRoundtrip = (Configuration)serializer.Deserialize(new StringReader(turnsWriter.ToString()))!;
     var legacyTurns = (Configuration)serializer.Deserialize(new StringReader(legacyXml))!;
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
+    using var rulesWriter = new StringWriter();
+    serializer.Serialize(rulesWriter, new Configuration { Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false }] });
+    var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
+    Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra, "Content restrictions and playback settings survive XML storage");
+    var olderXml = System.Text.RegularExpressions.Regex.Replace(rulesWriter.ToString(), @"\s*<MatchCommercialEra>false</MatchCommercialEra>\s*<AlwaysEncode>true</AlwaysEncode>", "<Transcode>true</Transcode>");
+    if (olderXml == rulesWriter.ToString()) throw new Exception("Test XML was not rewritten");
+    var older = (Configuration)serializer.Deserialize(new StringReader(olderXml))!;
+    Check(!older.Channels[0].AlwaysEncode && older.Channels[0].MatchCommercialEra, "Channels saved by older versions switch to encode-only-when-needed playback and era-matched commercials");
+    foreach (var bad in new[] { new ContentRule { Genres = [], Tags = [] }, new ContentRule { Start = "9pm" }, new ContentRule { Days = [] } })
+    {
+        try { Scheduler.Validate(new Configuration { Restrictions = [bad] }); throw new Exception("Invalid content restriction accepted"); }
+        catch (ArgumentException) { }
+    }
+    Check(true, "Content restrictions need a genre or tag, valid times and at least one day");
     try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { Source = new Pool { EpisodesInARow = 101 } }] }); throw new Exception("Out-of-range episodes in a row accepted"); }
     catch (ArgumentException) { Check(true, "Out-of-range episodes in a row values are rejected"); }
-    var privateConfig = new Configuration { StreamToken = new string('x', 64), InternalBaseUrl = "http://127.0.0.1:18096/private", Channels = [new ChannelDefinition { Id = "backup-channel", Name = "Backed up", Number = "42.1" }] };
+    var privateConfig = new Configuration { StreamToken = new string('x', 64), InternalBaseUrl = "http://127.0.0.1:18096/private", Channels = [new ChannelDefinition { Id = "backup-channel", Name = "Backed up", Number = "42.1" }], Restrictions = [new ContentRule()] };
     var backup = SettingsBackup.Export(privateConfig);
     var exported = System.Text.Json.JsonSerializer.Serialize(backup);
     Check(!exported.Contains("StreamToken") && !exported.Contains("InternalBaseUrl") && !exported.Contains(privateConfig.StreamToken) && !exported.Contains("18096"), "Settings backups exclude private transport tokens and server connection addresses");
     var destination = new Configuration { StreamToken = new string('y',64), InternalBaseUrl = "http://127.0.0.1:28096" };
     var imported = backup.ApplyTo(destination);
+    Check(imported.Restrictions.Single().Genres.SequenceEqual(["Horror"]), "Settings backups include content restrictions");
     Check(imported.Channels.Single().Number == "42.1" && imported.Channels.Single().Id == "backup-channel" && imported.StreamToken == destination.StreamToken && imported.InternalBaseUrl == destination.InternalBaseUrl, "Restoring settings retains channel IDs while preserving this server's token and connection address");
     backup.FormatVersion = 99;
     try { backup.ApplyTo(destination); throw new Exception("Unknown backup format accepted"); }

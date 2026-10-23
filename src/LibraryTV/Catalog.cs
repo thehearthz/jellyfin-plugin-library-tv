@@ -103,19 +103,26 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
     }
 
     // The cache lives for one refresh only, so the next refresh still sees new media.
-    public Func<Pool, List<Media>> CreateRefreshReader()
+    public Func<Pool, List<Media>> CreateRefreshReader(bool commercials = false, RefreshScan? scan = null)
     {
         var cache = new Dictionary<string, List<Media>>(StringComparer.Ordinal);
-        var folders = new Dictionary<string, bool>(StringComparer.Ordinal);
+        scan ??= new();
         return pool =>
         {
-            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials });
-            if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, folders);
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, commercials });
+            if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, scan, commercials);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
     }
 
-    public List<Media> Read(Pool pool, Dictionary<string, bool>? folders = null)
+    // Shared by every pool read during one refresh.
+    public sealed class RefreshScan
+    {
+        public Dictionary<string, bool> Folders { get; } = new(StringComparer.Ordinal);
+        public Dictionary<Guid, Series?> Series { get; } = [];
+    }
+
+    public List<Media> Read(Pool pool, RefreshScan? scan = null, bool commercials = false)
     {
         startup?.RequireReady();
         // An empty selector deliberately means no content, never every library.
@@ -132,20 +139,68 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         }
         // Check each media folder once, not every file: this catches an offline mount cheaply.
         // Jellyfin's library scan removes deleted files, and playback recovery skips stragglers.
-        folders ??= new(StringComparer.Ordinal);
+        scan ??= new();
         bool Available(string path)
         {
             var folder = Path.GetDirectoryName(path) ?? "";
-            if (!folders.TryGetValue(folder, out var exists)) folders[folder] = exists = Directory.Exists(folder);
+            if (!scan.Folders.TryGetValue(folder, out var exists)) scan.Folders[folder] = exists = Directory.Exists(folder);
             return exists;
         }
-        return items.Values.Where(x => x.RunTimeTicks > 0 && !string.IsNullOrEmpty(x.Path) && Available(x.Path))
-            .Where(x => pool.Genres.Length == 0 || x.Genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any())
-            .Where(x => pool.Tags.Length == 0 || x.Tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any())
-            .Where(x => pool.IncludeSpecials || x is not Episode ep || ep.ParentIndexNumber > 0)
-            .Select(x => new Media(x.Id, x is Episode e ? $"{e.SeriesName} — S{e.ParentIndexNumber:00}E{e.IndexNumber:00} {x.Name}" : x.Name,
+        Series? SeriesOf(Episode episode)
+        {
+            if (episode.SeriesId == Guid.Empty) return null;
+            if (!scan.Series.TryGetValue(episode.SeriesId, out var series)) scan.Series[episode.SeriesId] = series = library.GetItemById(episode.SeriesId) as Series;
+            return series;
+        }
+        var media = new List<Media>();
+        foreach (var x in items.Values.Where(x => x.RunTimeTicks > 0 && !string.IsNullOrEmpty(x.Path) && Available(x.Path)))
+        {
+            var episode = x as Episode;
+            var series = episode is null ? null : SeriesOf(episode);
+            // Episodes usually carry their genres and tags on the series.
+            var genres = x.Genres.Concat(series?.Genres ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var tags = x.Tags.Concat(series?.Tags ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (pool.Genres.Length > 0 && !genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any()) continue;
+            if (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any()) continue;
+            if (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0)) continue;
+            var pathYear = YearFromPath(x.Path);
+            // Commercial folders are usually organised by year or decade, which beats file dates.
+            var year = commercials ? pathYear ?? x.ProductionYear ?? x.PremiereDate?.Year
+                : episode is not null ? x.PremiereDate?.Year ?? x.ProductionYear ?? series?.ProductionYear ?? pathYear
+                : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
+            media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
-                x is Episode episode ? episode.SeriesId.ToString("N") : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0)).ToList();
+                episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags));
+        }
+        // The same file, or the same episode of the same show in two libraries, airs only once per cycle.
+        return media.DistinctBy(x => x.Path, StringComparer.Ordinal)
+            .DistinctBy(x => x.Series.Length > 0 && x.Episode > 0 ? $"{x.Series}|{x.Season}|{x.Episode}" : x.Id.ToString())
+            .ToList();
+    }
+
+    // One key per show, even when two libraries hold separate copies of it.
+    private static string SeriesKey(Episode episode, Series? series)
+    {
+        if (series is not null)
+            foreach (var provider in new[] { "Tvdb", "Tmdb", "Imdb" })
+                if (series.ProviderIds.TryGetValue(provider, out var value) && !string.IsNullOrWhiteSpace(value)) return provider.ToLowerInvariant() + ":" + value.Trim();
+        return episode.SeriesId.ToString("N");
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex YearPattern = new(@"(?<![0-9])(?:(?<year>19[2-9][0-9]|20[0-9]{2})(?![0-9])|(?<decade>19[2-9]0|20[0-2]0)'?s\b|(?<short>[2-9]0)'?s\b)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // The last year or decade in a path, such as "1980s/Cola (1985).mp4" (1985) or "80s ads/clip.mp4" (1980).
+    public static int? YearFromPath(string path)
+    {
+        int? found = null;
+        foreach (System.Text.RegularExpressions.Match match in YearPattern.Matches(path))
+        {
+            var value = match.Groups["year"].Success ? int.Parse(match.Groups["year"].Value, System.Globalization.CultureInfo.InvariantCulture)
+                : match.Groups["decade"].Success ? int.Parse(match.Groups["decade"].Value, System.Globalization.CultureInfo.InvariantCulture)
+                : 1900 + int.Parse(match.Groups["short"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (value <= DateTime.UtcNow.Year + 1) found = value;
+        }
+        return found;
     }
 }
 

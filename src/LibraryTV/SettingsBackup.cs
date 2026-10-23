@@ -15,6 +15,7 @@ public sealed class SettingsBackup
     public int GuideDays { get; set; } = 3;
     public int RefreshMinutes { get; set; } = 60;
     public int MaxActiveChannels { get; set; } = 2;
+    public ContentRule[] Restrictions { get; set; } = [];
 
     public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
 
@@ -31,6 +32,7 @@ public sealed class SettingsBackup
         config.GuideDays = GuideDays;
         config.RefreshMinutes = RefreshMinutes;
         config.MaxActiveChannels = MaxActiveChannels;
+        config.Restrictions = Restrictions;
         Scheduler.Validate(config);
         return config;
     }

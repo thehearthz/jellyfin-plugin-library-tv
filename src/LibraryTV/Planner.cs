@@ -10,7 +10,10 @@ public static class Planner
     public static Media? Next(List<Media> media, Pool pool, Rotation rotation, string seed)
         => Next(media, pool, rotation, seed, out _);
 
-    private static Media? Next(List<Media> media, Pool pool, Rotation rotation, string seed, out PlanningUndo? undo)
+    // `resolve` may air a different episode of the same series (the channel's series cursor);
+    // `allowed` skips entries that cannot air in this slot, leaving them for a later slot.
+    private static Media? Next(List<Media> media, Pool pool, Rotation rotation, string seed, out PlanningUndo? undo,
+        Func<Media, Media>? resolve = null, Func<Media, bool>? allowed = null)
     {
         undo = null;
         if (media.Count == 0) return null;
@@ -37,6 +40,7 @@ public static class Planner
         var groups = added.GroupBy(SeriesKey);
         if (pool.Shuffle) groups = groups.OrderBy(g => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + rotation.Last + g.Key))));
         var ordered = groups.SelectMany(group => group.OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).Select(x => x.Id)).ToList();
+        var before = rotation.Remaining.Count;
         rotation.Remaining.AddRange(Interleave(ordered, byId, pool.EpisodesInARow));
         if (rotation.Remaining.Count == 0) return null;
         if (rotation.Remaining[0] == rotation.Last && rotation.Remaining.Count > 1 && byId[rotation.Last].Series.Length == 0)
@@ -44,12 +48,45 @@ public static class Planner
             (rotation.Remaining[0], rotation.Remaining[1]) = (rotation.Remaining[1], rotation.Remaining[0]);
             swapped = true;
         }
-        var next = rotation.Remaining[0];
-        rotation.Remaining.RemoveAt(0);
-        rotation.Seen.Add(next);
-        rotation.Last = next;
-        undo = new PlanningUndo("", previousLast, added.Select(x => x.Id).ToArray(), swapped, previousSeen);
-        return byId[next];
+        var index = -1;
+        Media? chosen = null;
+        for (var i = 0; i < rotation.Remaining.Count && chosen is null; i++)
+        {
+            var candidate = byId[rotation.Remaining[i]];
+            candidate = resolve?.Invoke(candidate) ?? candidate;
+            if (allowed?.Invoke(candidate) != false) (index, chosen) = (i, candidate);
+        }
+        if (chosen is null)
+        {
+            // Nothing left in this cycle can air in this slot. Undo the refill so the next slot sees the same rotation.
+            if (swapped) (rotation.Remaining[0], rotation.Remaining[1]) = (rotation.Remaining[1], rotation.Remaining[0]);
+            rotation.Remaining.RemoveRange(before, rotation.Remaining.Count - before);
+            if (previousSeen is not null) rotation.Seen = new List<Guid>(previousSeen);
+            if (!pool.RepeatWhenExhausted) return null;
+            // Rather than going off the air, repeat the least recently aired item that is allowed.
+            // A series still continues from its cursor, so this does not repeat episodes.
+            // The movie that just aired is the last resort.
+            foreach (var again in new[] { false, true })
+                for (var i = 0; i < rotation.Seen.Count && chosen is null; i++)
+                {
+                    if (!byId.TryGetValue(rotation.Seen[i], out var candidate) || again != (rotation.Seen[i] == previousLast && candidate.Series.Length == 0)) continue;
+                    candidate = resolve?.Invoke(candidate) ?? candidate;
+                    if (allowed?.Invoke(candidate) != false) (index, chosen) = (i, candidate);
+                }
+            if (chosen is null) return null;
+            var repeated = rotation.Seen[index];
+            rotation.Seen.RemoveAt(index);
+            rotation.Seen.Add(repeated);
+            rotation.Last = repeated;
+            undo = new PlanningUndo("", previousLast, [], false, null, Index: index, Token: repeated == chosen.Id ? null : repeated, SeenIndex: index);
+            return chosen;
+        }
+        var token = rotation.Remaining[index];
+        rotation.Remaining.RemoveAt(index);
+        rotation.Seen.Add(token);
+        rotation.Last = token;
+        undo = new PlanningUndo("", previousLast, added.Select(x => x.Id).ToArray(), swapped, previousSeen, Index: index, Token: token == chosen.Id ? null : token);
+        return chosen;
     }
 
     private static string SeriesKey(Media x) => x.Series.Length == 0 ? x.Id.ToString() : x.Series;
@@ -74,12 +111,27 @@ public static class Planner
     {
         var boundary = state.Guide.Where(x => x.Start <= now && x.End > now).Select(x => x.End).DefaultIfEmpty(now).Max();
         boundary = state.Guide.Where(x => x.Start > now && x.Undo is null).Select(x => x.End).Append(boundary).Max();
+        // The commercial break after the current program belongs to it, so keep it too.
+        foreach (var ad in state.Guide.Where(x => x.Start >= boundary).OrderBy(x => x.Start))
+        {
+            if (!ad.Commercial || ad.Start != boundary) break;
+            boundary = ad.End;
+        }
         var removed = state.Guide.Where(x => x.Start >= boundary && x.Start > now).ToArray();
         foreach (var item in removed.Reverse())
         {
             var undo = item.Undo ?? throw new InvalidOperationException("Cannot rewind a legacy program.");
             var rotation = state.Rotations[undo.PoolKey];
-            rotation.Remaining.Insert(0, item.ItemId);
+            if (undo.SeenIndex is { } seenIndex)
+            {
+                // An early repeat moved this entry to the end of Seen; move it back.
+                if (rotation.Seen.Count > 0) rotation.Seen.RemoveAt(rotation.Seen.Count - 1);
+                rotation.Seen.Insert(Math.Min(seenIndex, rotation.Seen.Count), undo.Token ?? item.ItemId);
+                rotation.Last = undo.PreviousLast;
+                RestoreCursorAndQuota(undo);
+                continue;
+            }
+            rotation.Remaining.Insert(Math.Min(undo.Index, rotation.Remaining.Count), undo.Token ?? item.ItemId);
             if (undo.Swapped)
             {
                 var index = rotation.Remaining.IndexOf(undo.PreviousLast, 1);
@@ -93,14 +145,22 @@ public static class Planner
             if (undo.PreviousSeen is not null) rotation.Seen = new List<Guid>(undo.PreviousSeen);
             else if (rotation.Seen.Count > 0) rotation.Seen.RemoveAt(rotation.Seen.Count - 1);
             rotation.Last = undo.PreviousLast;
+            RestoreCursorAndQuota(undo);
+        }
+        state.Guide.RemoveAll(x => x.Start >= boundary && x.Start > now);
+        return boundary;
+        void RestoreCursorAndQuota(PlanningUndo undo)
+        {
+            if (undo.Series is { } series)
+            {
+                if (undo.PreviousCursor is null) state.Series.Remove(series); else state.Series[series] = undo.PreviousCursor;
+            }
             if (undo.QuotaKey is { } quota)
             {
                 var count = state.DailyCounts.GetValueOrDefault(quota);
                 if (count <= 1) state.DailyCounts.Remove(quota); else state.DailyCounts[quota] = count - 1;
             }
         }
-        state.Guide.RemoveAll(x => x.Start >= boundary && x.Start > now);
-        return boundary;
     }
 
     public static (TimeBlock Block, DateOnly Date)? ActiveBlock(ChannelDefinition channel, DateTimeOffset at, TimeZoneInfo zone)
@@ -119,7 +179,8 @@ public static class Planner
         return null;
     }
 
-    public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone, DateTimeOffset? startAt = null)
+    public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone,
+        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null)
     {
         var at = state.Guide.Count > 0 ? state.Guide[^1].End : now;
         if (startAt > at) at = startAt.Value;
@@ -127,6 +188,8 @@ public static class Planner
         state.Guide.RemoveAll(x => x.End < cutoff);
         // Preserve continuity through server downtime, with bounded catch-up work.
         if (at < now.AddDays(-7)) at = now;
+        var episodes = new Dictionary<string, ILookup<string, Media>>();
+        var eras = pools["commercials"].Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
         // Catch-up entries that already ended are pruned below; they must not use the guide cap.
         var stale = 0;
         var iterations = 0;
@@ -143,23 +206,30 @@ public static class Planner
                 if (match.Block.MaxItemsPerDay == 0 || count < match.Block.MaxItemsPerDay) { key = match.Block.Id; pool = match.Block.Source; }
             }
             if (!state.Rotations.TryGetValue(key, out var rotation)) state.Rotations[key] = rotation = new();
-            var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo);
+            var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo, x => Continue(key, x), Allowed);
             if (next is null && key != "default")
             {
                 key = "default";
                 if (!state.Rotations.TryGetValue(key, out rotation)) state.Rotations[key] = rotation = new();
-                next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo);
+                next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo, x => Continue(key, x), Allowed);
             }
             if (next is null) { at = at.AddMinutes(1); continue; }
-            Add(next, false, undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey });
+            SeriesCursor? previousCursor = null;
+            if (next.Series.Length > 0)
+            {
+                previousCursor = state.Series.GetValueOrDefault(next.Series);
+                state.Series[next.Series] = new SeriesCursor(next.Season, next.Episode);
+            }
+            Add(next, false, undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor });
             if (key != "default" && countKey is not null) state.DailyCounts[countKey] = state.DailyCounts.GetValueOrDefault(countKey) + 1;
-            if (!state.Rotations.TryGetValue("commercials", out var ads)) state.Rotations["commercials"] = ads = new();
+            var (adKey, adPool) = CommercialsFor(next);
+            if (!state.Rotations.TryGetValue(adKey, out var ads)) state.Rotations[adKey] = ads = new();
             for (var i = 0; i < channel.CommercialCount; i++)
             {
                 if (state.Guide.Count - stale >= MaxGuideEntries) break;
-                var ad = Next(pools["commercials"], channel.Commercials, ads, channel.Id + "ads", out var adUndo);
+                var ad = Next(adPool, channel.Commercials, ads, channel.Id + (adKey == "commercials" ? "ads" : adKey), out var adUndo, null, Allowed);
                 if (ad is null) break;
-                Add(ad, true, adUndo! with { PoolKey = "commercials" });
+                Add(ad, true, adUndo! with { PoolKey = adKey });
             }
         }
         if (stale > 0) state.Guide.RemoveAll(x => x.End < cutoff);
@@ -172,6 +242,54 @@ public static class Planner
             state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo));
             if (end < cutoff) stale++;
             at = end;
+        }
+        bool Allowed(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds), rules, zone);
+        // A series continues from the last episode this channel aired, whichever lineup or block aired it.
+        Media Continue(string poolKey, Media item)
+        {
+            if (item.Series.Length == 0 || !state.Series.TryGetValue(item.Series, out var cursor)) return item;
+            if (!episodes.TryGetValue(poolKey, out var bySeries))
+                episodes[poolKey] = bySeries = pools[poolKey].Where(x => x.Series.Length > 0).OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).ToLookup(x => x.Series);
+            var series = bySeries[item.Series];
+            return series.FirstOrDefault(x => x.Season > cursor.Season || x.Season == cursor.Season && x.Episode > cursor.Episode) ?? series.FirstOrDefault() ?? item;
+        }
+        // Each decade keeps its own commercial rotation; programs without a known year use every clip.
+        (string, List<Media>) CommercialsFor(Media program)
+        {
+            if (!channel.MatchCommercialEra || program.Year <= 0 || eras.Count == 0) return ("commercials", pools["commercials"]);
+            var decade = program.Year / 10 * 10;
+            var nearest = eras.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
+            return ("commercials:" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), eras[nearest]);
+        }
+    }
+
+    // True when the item would be on the air during a rule's window and matches its genres or tags.
+    public static bool Restricted(Media item, DateTimeOffset start, DateTimeOffset end, IReadOnlyList<ContentRule> rules, TimeZoneInfo zone)
+    {
+        foreach (var rule in rules)
+        {
+            var matches = (item.Genres ?? []).Intersect(rule.Genres, StringComparer.OrdinalIgnoreCase).Any()
+                || (item.Tags ?? []).Intersect(rule.Tags, StringComparer.OrdinalIgnoreCase).Any();
+            if (!matches) continue;
+            var from = TimeOnly.ParseExact(rule.Start, "HH:mm");
+            var to = TimeOnly.ParseExact(rule.End, "HH:mm");
+            var first = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(start, zone).DateTime).AddDays(-1);
+            var last = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(end, zone).DateTime);
+            for (var day = first; day <= last; day = day.AddDays(1))
+            {
+                if (!rule.Days.Contains(day.DayOfWeek)) continue;
+                var windowStart = Local(day, from);
+                var windowEnd = Local(from < to ? day : day.AddDays(1), to);
+                if (windowStart < end && start < windowEnd) return true;
+            }
+        }
+        return false;
+        DateTimeOffset Local(DateOnly day, TimeOnly time)
+        {
+            var local = day.ToDateTime(time, DateTimeKind.Unspecified);
+            // A time skipped by a daylight-saving change starts at the first valid time after it.
+            while (zone.IsInvalidTime(local)) local = local.AddMinutes(30);
+            return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, zone), TimeSpan.Zero);
         }
     }
 }
