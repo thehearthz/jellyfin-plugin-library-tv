@@ -2,6 +2,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Release from GitHub's Actions page without a local clone; this run creates the tag itself.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Four-part version, such as 0.5.0.0"
+        required: true
+      notes:
+        description: "What changed (release notes and catalog changelog)"
+        required: true
 permissions:
   contents: write
 concurrency:
@@ -10,6 +19,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,9 +40,20 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
-      - name: Read release notes from the tag message
+      - name: Create the release tag
+        if: github.event_name == 'workflow_dispatch'
         env:
-          TAG: ${{ github.ref_name }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Use a four-part version such as 0.5.0.0"; exit 1; fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then echo "$TAG already exists"; exit 1; fi
+          if ! grep -q '[^[:space:]]' <<< "$NOTES"; then echo "Provide release notes"; exit 1; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "$NOTES"
+          # Tags pushed with the workflow token do not start this workflow a second time.
+          git push origin "refs/tags/$TAG"
+      - name: Read release notes from the tag message
         run: |
           # Checkout can leave a lightweight copy of the tag; fetch the annotated tag itself.
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
@@ -41,20 +63,16 @@ jobs:
       - name: Package
         shell: pwsh
         env:
-          TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: ./scripts/package.ps1 -Version $env:TAG.Substring(1) -Repository $env:REPO -Changelog (Get-Content "$env:RUNNER_TEMP/changelog.txt" -Raw)
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
           printf '\n\nExperimental release for Jellyfin 12.2. Read the README for setup, codec constraints, and known limitations.\n' >> "$RUNNER_TEMP/changelog.txt"
           gh release create "$TAG" artifacts/* --title "Library TV $TAG (experimental)" --notes-file "$RUNNER_TEMP/changelog.txt"
       - name: Update install catalog
         shell: pwsh
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           $fresh = Get-Content artifacts/manifest.json -Raw | ConvertFrom-Json
           git checkout main
