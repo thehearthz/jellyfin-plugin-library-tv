@@ -3,10 +3,18 @@
     "guid": "512a2a0d-5101-4fe8-9651-484f077a601a",
     "name": "Library TV",
     "overview": "Always-on channels from your own libraries",
-    "description": "Experimental virtual television with persistent episode order, time blocks, automatic library channels, and commercial breaks. No idle encoding. Stream copy requires compatible media; compatibility encoding costs CPU.",
+    "description": "Experimental virtual television with persistent episode order, time blocks, automatic library channels, and commercial breaks. No idle encoding: H.264/AAC files play directly, and only other formats are encoded while watched.",
     "owner": "thehearthz",
     "category": "Live TV",
     "versions": [
+      {
+        "version": "0.5.0.0",
+        "changelog": "Commercials match the network and era of the program they follow, shows always continue to their next episode on a channel, and channels encode only when needed and recover from stalls.\n\n- Commercials filed in network folders (Adult Swim, Nickelodeon, Cartoon Network, Toonami...) follow programs from that network, chosen by a time block or channel setting, the show's tags, then its studio. Programs from other networks get only commercials outside network folders.\n- Commercials come from the program's decade, or the nearest one available. Name commercial folders or files with a year or decade, such as 1980s or Cola (1985).\n- Content restrictions keep genres or tags, such as Horror, off the air during set hours on every channel.\n- A show continues from the last episode its channel aired, even when it is in both the default lineup and a time block. The same show in two libraries counts once, and duplicate episodes air once.\n- H.264 files with stereo AAC audio play directly. Only other formats are encoded, so every program reaches Jellyfin in the same formats. Always encode replaces Compatibility encoding; existing channels switch to the new behavior.\n- Stalled playback restarts automatically without disconnecting viewers, a file that ends early starts the next program at once, and short gaps keep the connection alive.\n- Rebuilding future slots keeps the current program's commercial break.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.5.0.0/library-tv-0.5.0.0.zip",
+        "checksum": "2106eb5e17af011bc6dce0d9439fa653",
+        "timestamp": "2026-10-23T07:02:55Z"
+      },
       {
         "version": "0.4.2.0",
         "changelog": "Rotate between shows with a configurable episodes-in-a-row setting\n\n- Pools now air \"Episodes in a row\" episodes of one series (2 by default) before the next series takes a turn, spreading each series evenly through the cycle. Movies take one turn each and every item still airs once per cycle. Set it to 0 to keep the previous straight-through order. Existing rotations are reordered once and keep their place.\n- Daily limits keep their quotas on servers with non-Gregorian locales.\n- The guide still reaches the current time after long downtime.\n- Joining a channel while its stream is stopping now starts a fresh stream.\n- Malformed saved settings return 400, and unplayable channels return 503, instead of unhandled errors.\n- Jellyfin's Refresh Guide task is queued once after recovery shifts program times.\n- Library refreshes check each media folder once instead of per file.",
