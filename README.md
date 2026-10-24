@@ -49,7 +49,9 @@ Jellyfin's plugin catalog and repository configuration are documented [here](htt
 - Shows take turns: by default two episodes of one show air, then the next show takes a turn, so a time block mixes its shows instead of filling with one.
 - A pool airs all its selected content before cycling. New items enter the next unplanned portion of the rotation. Disable `RepeatWhenExhausted` to stop a pool when it runs out.
 - Daily/weekly time blocks, local time zones, overnight blocks, and per-block daily episode limits.
-- Commercial breaks from indexed library folders, with configurable number of clips between programs. Selected commercials are excluded from that channel's main content pools.
+- Commercial breaks from indexed library folders: one break in the middle of each episode, two during each movie (at chapter marks when available), and one after every program. Selected commercials are excluded from that channel's main content pools.
+- Bumpers ("We'll be right back") play going into and coming out of each break.
+- Every program is shown in the channel's picture shape (16:9 by default), so a 4:3 show after a widescreen one is never stretched.
 - Commercials match the network and era of the program they follow: an Adult Swim show gets Adult Swim commercials, and an episode from 1987 gets 1980s ones (see [Network-matched commercials](#network-matched-commercials) and [Era-matched commercials](#era-matched-commercials)).
 - Content restrictions keep genres or tags, such as Horror, off the air during set hours on every channel.
 - One FFmpeg process per actively watched channel shared by viewers. No FFmpeg processes when channels are idle. Bounded viewer queues and a simultaneous channel limit keep resource use controlled.
@@ -86,9 +88,11 @@ Every channel plays files directly when it can and encodes only when it has to. 
 | Other audio (AC-3, DTS, MP3, surround, mono, 44.1 kHz) | Encoded to stereo 48 kHz AAC, which costs little CPU |
 | No audio track | A silent stereo AAC track is added |
 
-So every program on a channel reaches Jellyfin as H.264 video with stereo AAC audio. A codec or audio-layout change between programs is a common reason live streams freeze at program changes, and this avoids it while encoding nothing that is already compatible. A library that is all H.264/AAC is never encoded. Channel health shows what the current program is doing, for example "Direct: video and audio copied without encoding".
+So every program on a channel reaches Jellyfin as H.264 video with stereo AAC audio, in the channel's picture shape. A codec or audio-layout change between programs is a common reason live streams freeze at program changes, and this avoids it while encoding nothing that is already compatible. A library that is all H.264/AAC is never encoded. Channel health shows what the current program is doing, for example "Direct: video and audio copied without encoding".
 
-Resolution and frame rate still change between programs when files differ. Most clients handle this. If a channel still freezes when programs change, turn on **Always encode every program** for that channel. Every program is then converted to 720p/30fps H.264/AAC, which gives the most consistent stream at much higher CPU cost. Encoding uses Jellyfin's FFmpeg with libx264 in software; hardware acceleration for the plugin's own encoding is not implemented. Jellyfin may additionally transcode Live TV for a particular client.
+**Picture shape.** Jellyfin sizes the picture it sends a viewer from the first program that viewer sees, so a later program of another shape would be stretched or squashed: a 4:3 cartoon after a widescreen show, or a 2.39:1 film. Each channel therefore has a **Picture shape**, 16:9 by default. Programs already in that shape, with square pixels, are copied as before. Others are encoded into that shape with black bars: a 4:3 show gets bars at the sides (a 640×480 file becomes 854×480), a wide film gets bars at the top and bottom (1920×800 becomes 1920×1080), and DVD video with stretched pixels is corrected. Choose **Classic 4:3** for a channel of mostly older shows, so they play directly and widescreen programs get bars instead. **Each program's own shape** turns this off and encodes nothing for shape, at the risk of stretched pictures on some players.
+
+Resolution and frame rate still change between programs when files differ; in the same shape this only changes sharpness. If a channel still freezes when programs change, turn on **Always encode every program** for that channel. Every program is then converted to 720p/30fps H.264/AAC, which gives the most consistent stream at much higher CPU cost. Encoding uses Jellyfin's FFmpeg with libx264 in software; hardware acceleration for the plugin's own encoding is not implemented. Jellyfin may additionally transcode Live TV for a particular client.
 
 Files must be locally readable by the Jellyfin process and contain a video stream. Remote streams, DRM, images, music-only channels, subtitles and live inputs are not supported. Copy seeking is keyframe-limited, so joins may begin slightly before the exact schedule position. At file transitions the transport signals a discontinuity.
 
@@ -104,6 +108,14 @@ Channels saved by earlier versions switch to this behavior automatically. The ea
 6. Click **Save channels**. The **Guide preview** tab shows the saved schedule; it does not simulate unsaved edits.
 
 This schedules three episodes during the evening block, then returns to movies. Episode rotation is independent for each channel and each block: day one 1/2/3, day two 4/5/6, and so on. The default source must provide enough repeatable content to keep the rest of the day full. Selections can include specific shows, movies, indexed folders, or entire libraries. Shows automatically include their available episodes.
+
+### Commercial breaks and bumpers
+
+**Clips to play in each break** sets how many commercials each break has. A break plays after every program, and **Breaks during each episode** (1 by default) and **Breaks during each movie** (2 by default) add breaks inside programs, 0–5 each. A program is split evenly, or at the chapter mark nearest each split when the file has chapters (DVD and Blu-ray rips often mark act breaks). Programs shorter than ten minutes are never split, and nothing is split while **Clips to play in each break** is 0. Each part continues exactly where the last one stopped; the Live TV guide still lists the program once. When video is copied rather than encoded, a later part can start a few seconds before the cut and repeat them, because copied video can only start on a keyframe.
+
+Select clips under the **Bumpers** tab to add bumpers. One plays going into each break and one coming out of it; on a channel without commercials, one bumper plays between programs. Bumpers follow the same network and era matching as commercials, so file them the same way, for example `Bumpers/Adult Swim/2000s`.
+
+If a program's file is missing or fails, its remaining parts and the breaks inside it are skipped together and the break after it starts.
 
 ### Network-matched commercials
 
@@ -210,7 +222,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.5.0.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.6.0.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -222,8 +234,8 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.5.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.6.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
-Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
+Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
 License: GPL-3.0-only.

@@ -101,7 +101,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 if (restarted != item) (restarted, restarts) = (item, 0);
                 try
                 {
-                    var method = await streamer.Stream(item, channel.AlwaysEncode, chunk => Send(broadcast, chunk, ct), ct);
+                    var method = await streamer.Stream(item, channel, chunk => Send(broadcast, chunk, ct), ct);
                     lock (gate) playback[id] = method;
                     consecutiveFailures = 0;
                     var remaining = item.End - DateTimeOffset.UtcNow;

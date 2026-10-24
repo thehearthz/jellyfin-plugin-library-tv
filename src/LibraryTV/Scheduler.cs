@@ -24,11 +24,20 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (current is null) return false;
             if (current.ItemId != failed.ItemId || current.Start != failed.Start) return true;
             var state = CopyState(saved);
-            var next = state.Guide.FirstOrDefault(x => x.Start >= failed.End);
+            // A failed program also loses its later parts and the commercial breaks between them.
+            var skipUntil = failed.End;
+            if (!failed.Commercial)
+                foreach (var later in state.Guide.Where(x => x.Start >= failed.End).OrderBy(x => x.Start))
+                {
+                    if (later.Commercial) continue;
+                    if (later.ItemId != failed.ItemId || later.Offset <= failed.Offset) break;
+                    skipUntil = later.End;
+                }
+            var next = state.Guide.FirstOrDefault(x => x.Start >= skipUntil);
             if (next is null) return false;
             var delta = next.Start - now;
             var zone = TimeZoneInfo.FindSystemTimeZoneById(Plugin.Instance.Configuration.TimeZoneId);
-            state.Guide = state.Guide.Select(Shift).Where(x => x.End > x.Start).ToList();
+            state.Guide = state.Guide.Where(x => x.Start < failed.End || x.Start >= skipUntil).Select(Shift).Where(x => x.End > x.Start).ToList();
             var working = new Dictionary<string, ChannelState>(states) { [failed.ChannelId] = state };
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
             await File.WriteAllTextAsync(StatePath + ".tmp", JsonSerializer.Serialize(working), ct);
@@ -110,6 +119,9 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (channel.Blocks.Any(x => x is null)) throw new ArgumentException("Time blocks cannot be null.");
             if (string.IsNullOrWhiteSpace(channel.Name) || !System.Text.RegularExpressions.Regex.IsMatch(channel.Id, "^[a-zA-Z0-9_-]{1,80}$")) throw new ArgumentException("Provide a name and a unique channel ID using letters, numbers, underscores or hyphens.");
             if (channel.CommercialCount is < 0 or > 20) throw new ArgumentException("Commercial count must be 0–20.");
+            if (channel.EpisodeBreaks is < 0 or > 5 || channel.MovieBreaks is < 0 or > 5) throw new ArgumentException("Breaks during a program must be 0–5.");
+            if (channel.PictureShape is not ("16:9" or "4:3" or "off")) throw new ArgumentException("Picture shape must be 16:9, 4:3 or off.");
+            if (channel.Bumpers is null) throw new ArgumentException("Channel content and schedule lists cannot be null.");
             if (channel.CommercialNetwork is null || channel.CommercialNetwork.Length > 100 || channel.Blocks.Any(x => x is not null && (x.CommercialNetwork is null || x.CommercialNetwork.Length > 100))) throw new ArgumentException("Commercial network names must be 100 characters or fewer.");
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
             foreach (var block in channel.Blocks)
@@ -119,7 +131,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (block.MaxItemsPerDay < 0) throw new ArgumentException("Daily episode limits cannot be negative.");
                 if (block.Days is null || block.Days.Length == 0 || block.Days.Any(x => !Enum.IsDefined(x))) throw new ArgumentException("Choose at least one valid day for every time block.");
             }
-            foreach (var pool in channel.Blocks.Select(x => x.Source).Append(channel.Source).Append(channel.Commercials))
+            foreach (var pool in channel.Blocks.Select(x => x.Source).Append(channel.Source).Append(channel.Commercials).Append(channel.Bumpers))
             {
                 if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
                 if (pool.EpisodesInARow is < 0 or > 100) throw new ArgumentException("Episodes in a row must be 0–100.");
@@ -178,6 +190,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             var scan = new Catalog.RefreshScan();
             var read = catalog.CreateRefreshReader(false, scan);
             var readCommercials = catalog.CreateRefreshReader(true, scan);
+            var chapters = catalog.CreateChapterReader();
             DateTimeOffset? rebuiltFrom = null;
             var warnings = new Dictionary<string, string[]>();
             foreach (var channel in definitions)
@@ -187,14 +200,16 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 var pools = channel.Blocks.ToDictionary(x => x.Id, x => read(x.Source));
                 pools["default"] = read(channel.Source);
                 pools["commercials"] = readCommercials(channel.Commercials);
-                var adIds = pools["commercials"].Select(x => x.Id).ToHashSet();
-                foreach (var key in pools.Keys.Where(x => x != "commercials").ToArray()) pools[key].RemoveAll(x => adIds.Contains(x.Id));
+                pools["bumpers"] = readCommercials(channel.Bumpers);
+                var clipIds = pools["commercials"].Concat(pools["bumpers"]).Select(x => x.Id).ToHashSet();
+                foreach (var key in pools.Keys.Where(x => x is not ("commercials" or "bumpers")).ToArray()) pools[key].RemoveAll(x => clipIds.Contains(x.Id));
                 if (channel.Id == rebuildChannel) rebuiltFrom = Planner.RewindFuture(state, now);
-                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions);
+                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions, chapters);
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
                 if (channel.CommercialCount > 0 && pools["commercials"].Count == 0) notes.Add("Commercial breaks are enabled but no readable commercial clips were found.");
+                if (channel.Bumpers.LibraryIds.Length + channel.Bumpers.FolderIds.Length + channel.Bumpers.ItemIds.Length > 0 && pools["bumpers"].Count == 0) notes.Add("Bumpers are selected but no readable bumper clips were found.");
                 var upcoming = state.Guide.Where(x => x.End > now).ToArray();
                 if (upcoming.Zip(upcoming.Skip(1)).Any(x => x.Second.Start - x.First.End > TimeSpan.FromMinutes(1)))
                     notes.Add("Some times have nothing allowed to air, so the channel goes off the air until the next program. Add content or narrow the content restrictions.");

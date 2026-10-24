@@ -44,7 +44,7 @@ Check(Planner.ActiveBlock(channel, now.AddDays(1).AddHours(3), TimeZoneInfo.Utc)
 var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
 channel.Blocks = [new TimeBlock { Start = "18:00", End = "21:00" }];
 Check(Planner.ActiveBlock(channel, now.AddHours(22), zone) is not null, "Blocks use the configured local time zone");
-channel.Blocks = []; channel.CommercialCount = 2;
+channel.Blocks = []; channel.CommercialCount = 2; channel.MovieBreaks = 0;
 var ad = new Media(Guid.NewGuid(), "Ad", "ad.mp4", 30, "", 0, 0);
 pools["commercials"] = [ad];
 state = new();
@@ -185,7 +185,7 @@ Check(onlyHorror.Guide.All(x => x.ItemId == horror.Id) && onlyHorror.Guide.Zip(o
 Media Ad(int year) => new(Guid.NewGuid(), "Ad " + year, "ad.mp4", 30, "", 0, 0, year);
 var adPool = new List<Media> { Ad(1983), Ad(1987), Ad(1994), Ad(1998), Ad(2006) };
 Media Program(int year) => new(Guid.NewGuid(), "Program " + year, "program.mkv", 1800, "", 0, 0, year);
-var eraChannel = new ChannelDefinition { Id = "era", CommercialCount = 2, Source = new Pool { Shuffle = false } };
+var eraChannel = new ChannelDefinition { Id = "era", CommercialCount = 2, MovieBreaks = 0, Source = new Pool { Shuffle = false } };
 var eraPrograms = new List<Media> { Program(1988), Program(1992), Program(1971), Program(0) };
 var eraState = new ChannelState();
 Planner.Extend(eraChannel, eraState, new Dictionary<string, List<Media>> { ["default"] = eraPrograms, ["commercials"] = adPool }, now, now.AddHours(2.1), TimeZoneInfo.Utc);
@@ -212,7 +212,7 @@ var nightShow = Network("Night", 2004, ["Adult Swim"]);
 var kidsShow = Network("Kids", 1996, ["Nickelodeon"]);
 var otherShow = Network("Other", 1995, ["Fox"]);
 var taggedShow = Network("Tagged", 2001, ["Cartoon Network"], ["Toonami"]);
-var networkChannel = new ChannelDefinition { Id = "networks", CommercialCount = 2, Source = new Pool { Shuffle = false } };
+var networkChannel = new ChannelDefinition { Id = "networks", CommercialCount = 2, MovieBreaks = 0, EpisodeBreaks = 0, Source = new Pool { Shuffle = false } };
 var networkPools = new Dictionary<string, List<Media>> { ["default"] = [nightShow, kidsShow, otherShow, taggedShow], ["commercials"] = networkAds };
 var networkState = new ChannelState();
 Planner.Extend(networkChannel, networkState, networkPools, now, now.AddHours(2.1), TimeZoneInfo.Utc);
@@ -240,4 +240,47 @@ Planner.Extend(networkChannel, anyNetwork, networkPools, now, now.AddHours(2.1),
 Check(anyNetwork.Rotations.Keys.All(x => !x.Contains('@')), "Network matching can be turned off per channel");
 Check(Planner.FiledUnder("/ads/ABC Promos/x.mp4", "abc") && !Planner.FiledUnder("/ads/abcd/x.mp4", "abc") && Planner.FiledUnder("/ads/cartoon_network/x.mp4", "cartoon network")
     && !Planner.FiledUnder("/ads/General/Cartoon Network.Promo/x.mp4", "promo x"), "Network names match whole words or longer run-together names, never fragments of other words");
+
+// Commercial breaks inside programs: one per episode, two per movie, at chapter marks when available.
+var episode22 = Episode(1, "toon") with { Seconds = 1320 };
+var movie90 = new Media(Guid.NewGuid(), "Feature", "feature.mkv", 5400, "", 0, 0, 1999);
+var shortClip = new Media(Guid.NewGuid(), "Short", "short.mkv", 300, "", 0, 0);
+var ad30 = new Media(Guid.NewGuid(), "Ad", "/ads/ad.mp4", 30, "", 0, 0);
+var breaksChannel = new ChannelDefinition { Id = "breaks", CommercialCount = 2, Source = new Pool { Shuffle = false } };
+var breakPools = new Dictionary<string, List<Media>> { ["default"] = [episode22, movie90, shortClip], ["commercials"] = [ad30], ["bumpers"] = [] };
+var breakState = new ChannelState();
+Planner.Extend(breaksChannel, breakState, breakPools, now, now.AddHours(2.5), TimeZoneInfo.Utc);
+string Pattern(IEnumerable<Airing> guide) => string.Join(" ", guide.Select(x => x.Commercial ? "c" : x.Title[0] + (x.Offset > 0 ? "+" : "")));
+Check(Pattern(breakState.Guide.Take(17)) == "E c c E+ c c F c c F+ c c F+ c c S c", "Episodes get one break in the middle, movies two, short clips none, and every program is followed by a break");
+var feature = breakState.Guide.Where(x => x.ItemId == movie90.Id).Take(3).ToArray();
+Check(feature.Select(x => x.Offset).SequenceEqual([0, 1800, 3600]) && feature.Sum(x => (x.End - x.Start).TotalSeconds) == 5400 && breakState.Guide.Zip(breakState.Guide.Skip(1)).All(x => x.First.End == x.Second.Start), "Program parts continue where the last part stopped, with no time lost or gaps");
+var marked = new ChannelState();
+Planner.Extend(breaksChannel, marked, breakPools, now, now.AddHours(1), TimeZoneInfo.Utc, null, null, m => m.Id == episode22.Id ? [200, 610, 1250] : []);
+Check(marked.Guide.First(x => x.Offset > 0).Offset == 610, "A break lands on the chapter mark nearest the middle of a show");
+var breakPlan = breakState.Guide.Select(x => (x.ItemId, x.Start, x.Offset)).ToArray();
+breakState = JsonSerializer.Deserialize<ChannelState>(JsonSerializer.Serialize(breakState))!;
+var midProgram = now.AddMinutes(25);
+var breakBoundary = Planner.RewindFuture(breakState, midProgram);
+Check(breakBoundary == breakState.Guide[^1].End && breakState.Guide.Last().Commercial && breakState.Guide.Count(x => x.ItemId == movie90.Id) == 3, "Rebuilding during a program keeps all of its parts and breaks");
+Planner.Extend(breaksChannel, breakState, breakPools, midProgram, now.AddHours(2.5), TimeZoneInfo.Utc, breakBoundary);
+Check(breakPlan.SequenceEqual(breakState.Guide.Select(x => (x.ItemId, x.Start, x.Offset))), "Rebuilding reproduces the same split programs and breaks");
+breaksChannel.EpisodeBreaks = 0; breaksChannel.MovieBreaks = 0;
+var noBreaks = new ChannelState();
+Planner.Extend(breaksChannel, noBreaks, breakPools, now, now.AddHours(2.5), TimeZoneInfo.Utc);
+Check(noBreaks.Guide.All(x => x.Offset == 0) && Pattern(noBreaks.Guide.Take(6)) == "E c c F c c", "Breaks inside programs can be turned off");
+
+// Bumpers go into and out of every break, matched to the network like commercials.
+var bumpOut = new Media(Guid.NewGuid(), "Bump", "/bumps/Adult Swim/bump.mp4", 5, "", 0, 0);
+var bumpGeneric = new Media(Guid.NewGuid(), "Bump", "/bumps/General/bump.mp4", 5, "", 0, 0);
+var swimShow = episode22 with { Studios = ["Adult Swim"] };
+var bumperChannel = new ChannelDefinition { Id = "bumpers", CommercialCount = 1, MovieBreaks = 0, Source = new Pool { Shuffle = false } };
+var bumperPools = new Dictionary<string, List<Media>> { ["default"] = [swimShow, movie90], ["commercials"] = [ad30], ["bumpers"] = [bumpOut, bumpGeneric] };
+var bumperState = new ChannelState();
+Planner.Extend(bumperChannel, bumperState, bumperPools, now, now.AddHours(2.5), TimeZoneInfo.Utc);
+Check(string.Join(" ", bumperState.Guide.Take(13).Select(x => x.Commercial ? x.Title[0].ToString() : "P")) == "P B A B P B A B P B A B P", "Each break is a bumper, the commercials, then a bumper");
+Check(bumperState.Guide.Take(8).Where(x => x.Title == "Bump").All(x => x.Path.Contains("Adult Swim")) && bumperState.Guide.Skip(8).Take(4).Where(x => x.Title == "Bump").All(x => x.Path.Contains("General")), "Bumpers follow the program's network, and other programs get general bumpers");
+bumperChannel.CommercialCount = 0;
+var bumpersOnly = new ChannelState();
+Planner.Extend(bumperChannel, bumpersOnly, bumperPools, now, now.AddHours(2.5), TimeZoneInfo.Utc);
+Check(string.Join(" ", bumpersOnly.Guide.Take(4).Select(x => x.Commercial ? "B" : "P")) == "P B P B" && bumpersOnly.Guide.All(x => x.Offset == 0), "Without commercials, one bumper plays between programs and programs are not split");
 Console.WriteLine($"{passed} scheduling checks passed.");

@@ -111,16 +111,17 @@ public static class Planner
     {
         var boundary = state.Guide.Where(x => x.Start <= now && x.End > now).Select(x => x.End).DefaultIfEmpty(now).Max();
         boundary = state.Guide.Where(x => x.Start > now && x.Undo is null).Select(x => x.End).Append(boundary).Max();
-        // The commercial break after the current program belongs to it, so keep it too.
-        foreach (var ad in state.Guide.Where(x => x.Start >= boundary).OrderBy(x => x.Start))
+        // The rest of the current program (its breaks and later parts) and the break after it belong to it.
+        foreach (var rest in state.Guide.Where(x => x.Start >= boundary).OrderBy(x => x.Start))
         {
-            if (!ad.Commercial || ad.Start != boundary) break;
-            boundary = ad.End;
+            if (!(rest.Commercial || rest.Offset > 0) || rest.Start != boundary) break;
+            boundary = rest.End;
         }
         var removed = state.Guide.Where(x => x.Start >= boundary && x.Start > now).ToArray();
         foreach (var item in removed.Reverse())
         {
             var undo = item.Undo ?? throw new InvalidOperationException("Cannot rewind a legacy program.");
+            if (undo.Part) continue;
             var rotation = state.Rotations[undo.PoolKey];
             if (undo.SeenIndex is { } seenIndex)
             {
@@ -180,7 +181,7 @@ public static class Planner
     }
 
     public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone,
-        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null)
+        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null)
     {
         var at = state.Guide.Count > 0 ? state.Guide[^1].End : now;
         if (startAt > at) at = startAt.Value;
@@ -190,19 +191,15 @@ public static class Planner
         if (at < now.AddDays(-7)) at = now;
         var episodes = new Dictionary<string, ILookup<string, Media>>();
         var commercials = pools["commercials"];
+        var bumpers = pools.GetValueOrDefault("bumpers") ?? [];
         // Network names this channel can ask for: its overrides, and its programs' tags and studios.
-        var networks = new Dictionary<string, List<Media>>(StringComparer.Ordinal);
-        if (channel.MatchCommercialNetwork && commercials.Count > 0)
-            foreach (var name in channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
-                .Concat(pools.Where(x => x.Key != "commercials").SelectMany(x => x.Value).SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? [])))
-                .Select(NetworkKey).Where(x => x.Length > 0).Distinct(StringComparer.Ordinal))
-            {
-                var filed = commercials.Where(x => FiledUnder(x.Path, name)).ToList();
-                if (filed.Count > 0) networks[name] = filed;
-            }
-        var networkClips = networks.Values.SelectMany(x => x).Select(x => x.Id).ToHashSet();
-        var generic = commercials.Where(x => !networkClips.Contains(x.Id)).ToList();
-        var eras = new Dictionary<string, Dictionary<int, List<Media>>>(StringComparer.Ordinal);
+        var names = channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
+            .Concat(pools.Where(x => x.Key is not ("commercials" or "bumpers")).SelectMany(x => x.Value).SelectMany(x => (x.Tags ?? []).Concat(x.Studios ?? [])))
+            .Select(NetworkKey).Where(x => x.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
+        var adPicker = new ClipPicker(channel, "commercials", commercials, names);
+        var bumperPicker = new ClipPicker(channel, "bumpers", bumpers, names);
+        // Restrictions must cover a program's own commercial breaks, so estimate their length.
+        var breakSeconds = channel.CommercialCount * (commercials.Count > 0 ? commercials.Average(x => x.Seconds) : 0) + 2 * (bumpers.Count > 0 ? bumpers.Average(x => x.Seconds) : 0);
         // Catch-up entries that already ended are pruned below; they must not use the guide cap.
         var stale = 0;
         var iterations = 0;
@@ -225,13 +222,13 @@ public static class Planner
                 }
             }
             if (!state.Rotations.TryGetValue(key, out var rotation)) state.Rotations[key] = rotation = new();
-            var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo, x => Continue(key, x), Allowed);
+            var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo, x => Continue(key, x), AllowedProgram);
             if (next is null && key != "default")
             {
                 key = "default";
                 network = channel.CommercialNetwork;
                 if (!state.Rotations.TryGetValue(key, out rotation)) state.Rotations[key] = rotation = new();
-                next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo, x => Continue(key, x), Allowed);
+                next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo, x => Continue(key, x), AllowedProgram);
             }
             if (next is null) { at = at.AddMinutes(1); continue; }
             SeriesCursor? previousCursor = null;
@@ -240,30 +237,69 @@ public static class Planner
                 previousCursor = state.Series.GetValueOrDefault(next.Series);
                 state.Series[next.Series] = new SeriesCursor(next.Season, next.Episode);
             }
-            Add(next, false, undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor });
             if (key != "default" && countKey is not null) state.DailyCounts[countKey] = state.DailyCounts.GetValueOrDefault(countKey) + 1;
-            var (adKey, adPool) = CommercialsFor(next, network);
-            if (!state.Rotations.TryGetValue(adKey, out var ads)) state.Rotations[adKey] = ads = new();
-            for (var i = 0; i < channel.CommercialCount; i++)
+            var first = undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor };
+            // The program airs in parts with a commercial break between each, then a break after it.
+            var from = 0.0;
+            foreach (var cut in Cuts(next).Append(next.Seconds))
             {
-                if (state.Guide.Count - stale >= MaxGuideEntries) break;
-                var ad = Next(adPool, channel.Commercials, ads, channel.Id + (adKey == "commercials" ? "ads" : adKey), out var adUndo, null, Allowed);
-                if (ad is null) break;
-                Add(ad, true, adUndo! with { PoolKey = adKey });
+                Add(next, false, from == 0 ? first : new PlanningUndo("", Guid.Empty, [], false, null, Part: true), from, cut - from);
+                Break(next, network);
+                from = cut;
             }
         }
         if (stale > 0) state.Guide.RemoveAll(x => x.End < cutoff);
         // Daily quota entries only need to survive the current planning horizon.
         var keep = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now.AddDays(-1), zone).DateTime).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         foreach (var key in state.DailyCounts.Keys.Where(k => string.CompareOrdinal(k[..10], keep) < 0).ToArray()) state.DailyCounts.Remove(key);
-        void Add(Media item, bool commercial, PlanningUndo undo)
+        void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null)
         {
-            var end = at.AddSeconds(item.Seconds);
-            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo));
+            var end = at.AddSeconds(seconds ?? item.Seconds);
+            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset));
             if (end < cutoff) stale++;
             at = end;
         }
+        // A break is bumper, commercials, bumper; without commercials it is one bumper between programs.
+        void Break(Media program, string network)
+        {
+            if (channel.CommercialCount == 0) { Clip(bumperPicker, program, network); return; }
+            Clip(bumperPicker, program, network);
+            for (var i = 0; i < channel.CommercialCount; i++)
+                if (!Clip(adPicker, program, network)) break;
+            Clip(bumperPicker, program, network);
+        }
+        bool Clip(ClipPicker picker, Media program, string network)
+        {
+            if (picker.Empty || state.Guide.Count - stale >= MaxGuideEntries) return false;
+            var (clipKey, clips) = picker.For(program, network);
+            if (!state.Rotations.TryGetValue(clipKey, out var clipRotation)) state.Rotations[clipKey] = clipRotation = new();
+            var seed = channel.Id + (clipKey == "commercials" ? "ads" : clipKey);
+            var clip = Next(clips, picker.Pool, clipRotation, seed, out var clipUndo, null, Allowed);
+            if (clip is null) return false;
+            Add(clip, true, clipUndo! with { PoolKey = clipKey });
+            return true;
+        }
+        // Where to break inside a program: the chapter mark nearest each even split, or the split itself.
+        IEnumerable<double> Cuts(Media program)
+        {
+            var count = BreakCount(program);
+            if (count == 0) return [];
+            var marks = chapters?.Invoke(program) ?? [];
+            var cuts = new List<double>();
+            for (var k = 1; k <= count; k++)
+            {
+                var target = program.Seconds * k / (count + 1);
+                var previous = cuts.Count > 0 ? cuts[^1] : 0;
+                var mark = marks.Where(x => Math.Abs(x - target) <= program.Seconds * 0.1 && x > previous + 120 && x < program.Seconds - 120).OrderBy(x => Math.Abs(x - target)).Cast<double?>().FirstOrDefault();
+                cuts.Add(mark ?? target);
+            }
+            return cuts;
+        }
+        // Breaks need commercials, and a program of at least ten minutes.
+        int BreakCount(Media program) => channel.CommercialCount == 0 || commercials.Count == 0 || program.Seconds < 600 ? 0
+            : program.Series.Length > 0 ? channel.EpisodeBreaks : channel.MovieBreaks;
         bool Allowed(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds), rules, zone);
+        bool AllowedProgram(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds + BreakCount(item) * breakSeconds), rules, zone);
         // A series continues from the last episode this channel aired, whichever lineup or block aired it.
         Media Continue(string poolKey, Media item)
         {
@@ -273,22 +309,50 @@ public static class Planner
             var series = bySeries[item.Series];
             return series.FirstOrDefault(x => x.Season > cursor.Season || x.Season == cursor.Season && x.Episode > cursor.Episode) ?? series.FirstOrDefault() ?? item;
         }
-        // Pick the network first (the block or channel override, then the program's tags, then its studios),
-        // then the decade within that network's clips. Each combination keeps its own rotation.
-        (string, List<Media>) CommercialsFor(Media program, string network)
+    }
+
+    // Chooses commercials or bumpers for a program: the network first (the block or channel override,
+    // then the program's tags, then its studios), then the decade within that network's clips.
+    // Each combination keeps its own rotation, keyed by the prefix ("commercials" or "bumpers").
+    private sealed class ClipPicker
+    {
+        private readonly ChannelDefinition channel;
+        private readonly string prefix;
+        private readonly List<Media> clips;
+        private readonly Dictionary<string, List<Media>> networks = new(StringComparer.Ordinal);
+        private readonly List<Media> generic;
+        private readonly Dictionary<string, Dictionary<int, List<Media>>> eras = new(StringComparer.Ordinal);
+
+        public ClipPicker(ChannelDefinition channel, string prefix, List<Media> clips, IEnumerable<string> names)
         {
-            var key = "commercials";
-            var clips = commercials;
+            (this.channel, this.prefix, this.clips) = (channel, prefix, clips);
+            if (channel.MatchCommercialNetwork && clips.Count > 0)
+                foreach (var name in names)
+                {
+                    var filed = clips.Where(x => FiledUnder(x.Path, name)).ToList();
+                    if (filed.Count > 0) networks[name] = filed;
+                }
+            var filedIds = networks.Values.SelectMany(x => x).Select(x => x.Id).ToHashSet();
+            generic = clips.Where(x => !filedIds.Contains(x.Id)).ToList();
+        }
+
+        public bool Empty => clips.Count == 0;
+        public Pool Pool => prefix == "bumpers" ? channel.Bumpers : channel.Commercials;
+
+        public (string, List<Media>) For(Media program, string network)
+        {
+            var key = prefix;
+            var chosen = clips;
             if (networks.Count > 0)
             {
                 var wanted = (program.Tags ?? []).Concat(program.Studios ?? []).Prepend(network).Select(NetworkKey).FirstOrDefault(networks.ContainsKey);
                 // Without a matching network, use clips not filed under any network, so a kids show never gets another network's ads.
-                if (wanted is not null) (key, clips) = ("commercials@" + wanted, networks[wanted]);
-                else if (generic.Count > 0) (key, clips) = ("commercials@", generic);
+                if (wanted is not null) (key, chosen) = (prefix + "@" + wanted, networks[wanted]);
+                else if (generic.Count > 0) (key, chosen) = (prefix + "@", generic);
             }
             if (!eras.TryGetValue(key, out var decades))
-                eras[key] = decades = clips.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
-            if (!channel.MatchCommercialEra || program.Year <= 0 || decades.Count == 0) return (key, clips);
+                eras[key] = decades = chosen.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
+            if (!channel.MatchCommercialEra || program.Year <= 0 || decades.Count == 0) return (key, chosen);
             var decade = program.Year / 10 * 10;
             var nearest = decades.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
             return (key + ":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest]);

@@ -709,3 +709,71 @@ test("commercial networks default on and save per channel and time block", async
     dom.window.close();
   }
 });
+
+test("bumpers have their own section and save their folder selection", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Bumpers");
+    assert.match(
+      w.document.querySelector("main").textContent,
+      /going into each commercial break/,
+    );
+    click(w, "Choose bumper folders or clips");
+    await settle();
+    click(w, "+ Select", w.document.querySelector(".ltv-media"));
+    click(w, "Done");
+    click(w, "Save channels");
+    await settle();
+    assert.deepEqual(w.testApi.saved.Channels[0].Bumpers.FolderIds, [
+      fixture.content.folders[0].Id,
+    ]);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("breaks during programs default to one per episode and two per movie and save", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Commercials");
+    const field = (label) =>
+      [...w.document.querySelectorAll("main label.ltv-field")]
+        .find((x) => x.textContent.includes(label))
+        .querySelector("input");
+    assert.equal(field("Breaks during each episode").value, "1");
+    assert.equal(field("Breaks during each movie").value, "2");
+    change(w, field("Breaks during each movie"), "3");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].EpisodeBreaks, 1);
+    assert.equal(w.testApi.saved.Channels[0].MovieBreaks, 3);
+    change(w, field("Breaks during each episode"), "9");
+    click(w, "Save channels");
+    await settle();
+    assert.match(
+      w.document.querySelector("[data-ui=status]").textContent,
+      /Breaks during a program must be/,
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("picture shape defaults to widescreen and saves per channel", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const select = [...w.document.querySelectorAll("main label.ltv-field")]
+      .find((x) => x.textContent.includes("Picture shape"))
+      .querySelector("select");
+    assert.equal(select.value, "16:9");
+    change(w, select, "4:3");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].PictureShape, "4:3");
+  } finally {
+    dom.window.close();
+  }
+});

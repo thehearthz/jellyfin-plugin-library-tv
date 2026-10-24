@@ -9,8 +9,21 @@ using System.Text.Json;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Catalog(ILibraryManager library, StartupGate? startup = null)
+public sealed class Catalog(ILibraryManager library, StartupGate? startup = null, MediaBrowser.Controller.Chapters.IChapterManager? chapterManager = null)
 {
+    // Chapter start times in seconds, read only for programs being scheduled and cached for one refresh.
+    public Func<Media, double[]> CreateChapterReader()
+    {
+        var cache = new Dictionary<Guid, double[]>();
+        return media =>
+        {
+            if (cache.TryGetValue(media.Id, out var marks)) return marks;
+            try { marks = chapterManager?.GetChapters(media.Id).Select(x => TimeSpan.FromTicks(x.StartPositionTicks).TotalSeconds).Where(x => x > 0).ToArray() ?? []; }
+            catch (Exception ex) when (ex is not OperationCanceledException) { marks = []; }
+            return cache[media.Id] = marks;
+        };
+    }
+
     public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit)
     {
         startup?.RequireReady();

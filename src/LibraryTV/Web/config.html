@@ -1075,7 +1075,9 @@
           }
         return list;
       }
-      function poolEditor(p, label, ads = false) {
+      // clips is false for programs, or "commercial" / "bumper" for short clips.
+      function poolEditor(p, label, clips = false) {
+        const ads = !!clips;
         normalize(p);
         const box = node("div", {});
         box.append(
@@ -1092,7 +1094,7 @@
           chips(p),
           button(
             ads
-              ? "Choose commercial folders or clips"
+              ? "Choose " + clips + " folders or clips"
               : "Choose shows & movies",
             () => openPicker(p, ads),
           ),
@@ -1103,7 +1105,9 @@
               "p",
               { class: "ltv-muted" },
               ads
-                ? "Choose an indexed video folder containing your commercial clips."
+                ? "Choose an indexed video folder containing your " +
+                    clips +
+                    " clips."
                 : "Pick specific shows, movies, or an entire library. Shows include their available episodes automatically.",
             ),
           );
@@ -1305,6 +1309,7 @@
           ["content", "Content"],
           ["schedule", "Schedule"],
           ["commercials", "Commercials"],
+          ["bumpers", "Bumpers"],
           ["preview", "Guide preview"],
         ]) {
           const b = button(label, () => {
@@ -1336,6 +1341,36 @@
               "p",
               { class: "ltv-muted" },
               "Leave this off to play H.264/AAC files directly and encode only programs in other formats. Turn it on if a channel still freezes when programs change; every program is then converted to 720p.",
+            ),
+            node(
+              "label",
+              { class: "ltv-field" },
+              node("span", {}, "Picture shape"),
+              node(
+                "select",
+                {
+                  onChange: (e) => {
+                    c.PictureShape = e.target.value;
+                    dirty();
+                  },
+                },
+                ...[
+                  ["16:9", "Widescreen 16:9"],
+                  ["4:3", "Classic 4:3"],
+                  ["off", "Each program's own shape"],
+                ].map(([value, text]) =>
+                  node(
+                    "option",
+                    { value, selected: c.PictureShape === value ? "" : null },
+                    text,
+                  ),
+                ),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Every program is shown in this shape, so pictures are never stretched when one program follows another. Programs already in this shape play directly; others are encoded with black bars at the sides or top and bottom. Choose Classic 4:3 for a channel of mostly older shows. “Each program's own shape” avoids that encoding, but some players then stretch programs after the first.",
             ),
           );
         }
@@ -1371,11 +1406,34 @@
           body.append(
             node("h2", {}, "Commercial breaks"),
             field(
-              "Clips to play between programs",
+              "Clips to play in each break",
               c.CommercialCount || 0,
               (v) => (c.CommercialCount = v),
               "number",
               { min: 0, max: 20 },
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Breaks during each episode",
+                c.EpisodeBreaks,
+                (v) => (c.EpisodeBreaks = v),
+                "number",
+                { min: 0, max: 5 },
+              ),
+              field(
+                "Breaks during each movie",
+                c.MovieBreaks,
+                (v) => (c.MovieBreaks = v),
+                "number",
+                { min: 0, max: 5 },
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "A break also plays after every program. Breaks during a program split it evenly, or at the nearest chapter mark when the file has chapters. Programs shorter than 10 minutes are never split.",
             ),
             check(
               "Match commercials to when the program was released or aired",
@@ -1404,12 +1462,23 @@
               { class: "ltv-muted" },
               "File commercials in folders named after networks, such as “Adult Swim”, “Nickelodeon” or “Cartoon Network”. Each program gets commercials from its network: a network you set here or on a time block first, then a matching Jellyfin tag on the show (tag a show “Toonami” to use Toonami commercials), then the show's studio. Programs from other networks get only commercials that aren't in a network folder. Era matching then picks the decade within those commercials.",
             ),
-            poolEditor(c.Commercials, "Commercial content", true),
+            poolEditor(c.Commercials, "Commercial content", "commercial"),
             node(
               "p",
               { class: "ltv-muted" },
-              "Commercials play between programs, never in the middle of an episode. Selected clips are excluded from the main lineup.",
+              "Selected clips are excluded from the main lineup.",
             ),
+          );
+        }
+        if (state.tab === "bumpers") {
+          body.append(
+            node("h2", {}, "Bumpers"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Bumpers are short clips, like “We'll be right back” and “Now back to the show”. One plays going into each commercial break and one coming out of it. If the channel has no commercials, one bumper plays between programs. Bumpers follow the same network and decade matching as commercials, so file them the same way, such as “Adult Swim/2000s”.",
+            ),
+            poolEditor(c.Bumpers, "Bumper clips", "bumper"),
           );
         }
         if (state.tab === "preview") {
@@ -1615,6 +1684,10 @@
           Blocks: [],
           Commercials: pool(),
           CommercialCount: 0,
+          EpisodeBreaks: 1,
+          MovieBreaks: 2,
+          Bumpers: pool(),
+          PictureShape: "16:9",
           MatchCommercialEra: true,
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
@@ -1910,6 +1983,11 @@
             c.CommercialCount > 20
           )
             throw new Error("Use 0–20 commercial clips per break.");
+          for (const value of [c.EpisodeBreaks, c.MovieBreaks])
+            if (!Number.isInteger(value) || value < 0 || value > 5)
+              throw new Error(
+                "Breaks during a program must be a whole number from 0 to 5.",
+              );
           for (const p of [c.Source, ...c.Blocks.map((b) => b.Source)])
             if (
               !Number.isInteger(p.EpisodesInARow) ||
@@ -2047,6 +2125,10 @@
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
             c.Commercials = normalize(c.Commercials);
+            c.Bumpers = normalize(c.Bumpers);
+            if (!Number.isInteger(c.EpisodeBreaks)) c.EpisodeBreaks = 1;
+            if (!Number.isInteger(c.MovieBreaks)) c.MovieBreaks = 2;
+            c.PictureShape = c.PictureShape || "16:9";
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
@@ -2061,6 +2143,7 @@
             for (const p of [
               c.Source,
               c.Commercials,
+              c.Bumpers,
               ...c.Blocks.map((x) => x.Source),
             ])
               for (const key of ["ItemIds", "FolderIds"])

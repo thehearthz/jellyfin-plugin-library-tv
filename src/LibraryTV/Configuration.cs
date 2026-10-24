@@ -46,6 +46,11 @@ public sealed class ChannelDefinition
     public TimeBlock[] Blocks { get; set; } = [];
     public Pool Commercials { get; set; } = new();
     public int CommercialCount { get; set; }
+    // Commercial breaks inside a program, placed at chapter marks when there are any (needs CommercialCount > 0).
+    public int EpisodeBreaks { get; set; } = 1;
+    public int MovieBreaks { get; set; } = 2;
+    // Short clips played going into and coming out of each break, or between programs without commercials.
+    public Pool Bumpers { get; set; } = new();
     // Prefer commercials from the same decade as the program they follow.
     public bool MatchCommercialEra { get; set; } = true;
     // Prefer commercials filed under the network the program aired on (its studios or tags).
@@ -54,6 +59,8 @@ public sealed class ChannelDefinition
     public string CommercialNetwork { get; set; } = "";
     // Normalizes every program to 720p H.264/AAC. Otherwise only incompatible streams are encoded.
     public bool AlwaysEncode { get; set; }
+    // Every program is delivered in this picture shape ("16:9", "4:3" or "off"); other shapes get black bars.
+    public string PictureShape { get; set; } = "16:9";
 }
 
 public sealed class Pool
@@ -82,11 +89,13 @@ public sealed class TimeBlock
 }
 
 public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null);
-public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null);
+// Offset is where in the file this entry starts: the later parts of a program split by a commercial break.
+public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
-// Token is that entry when a series cursor aired a different episode.
+// Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
+// program split by a commercial break: the first part holds the selection, so they have nothing to rewind.
 public sealed record PlanningUndo(string PoolKey, Guid PreviousLast, Guid[] AddedIds, bool Swapped, Guid[]? PreviousSeen, string? QuotaKey = null,
-    int Index = 0, Guid? Token = null, string? Series = null, SeriesCursor? PreviousCursor = null, int? SeenIndex = null);
+    int Index = 0, Guid? Token = null, string? Series = null, SeriesCursor? PreviousCursor = null, int? SeenIndex = null, bool Part = false);
 public sealed record SeriesCursor(int Season, int Episode);
 public sealed class Rotation
 {

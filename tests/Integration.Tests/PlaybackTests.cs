@@ -178,6 +178,32 @@ public static class PlaybackTests
                     "A file shorter than its listed runtime is followed at once by the next program instead of dead air");
                 stop.Cancel(); await IgnoreCancellation(watch);
             }
+            var ad = new Video { Id = Guid.NewGuid(), Name = "Ad", Path = Path.Combine(root, "ad.mp4"), RunTimeTicks = TimeSpan.FromSeconds(30).Ticks };
+            await File.WriteAllTextAsync(ad.Path, "test metadata fixture");
+            items = [.. items, ad];
+            var plainConfiguration = Plugin.Instance.Configuration;
+            Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "playback", Name = "Playback", CommercialCount = 1,
+                Source = new Pool { ItemIds = items.Take(3).Select(x => x.Id.ToString()).ToArray(), Shuffle = false }, Commercials = new Pool { ItemIds = [ad.Id.ToString()] } }] });
+            scheduler = await Fresh();
+            var splitProgram = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
+            check(splitProgram.Offset == 0 && scheduler.GuideFor("playback").TakeWhile(x => x.Commercial || x.ItemId == splitProgram.ItemId).Count(x => !x.Commercial) == 3, "An hour-long movie is planned in three parts around two commercial breaks");
+            var splitFailure = new DelegateStreamer(async (item, _, write, ct) =>
+            {
+                if (item.ItemId == splitProgram.ItemId) throw new FileNotFoundException();
+                await write(new byte[188]); await Task.Delay(Timeout.Infinite, ct);
+            });
+            using (var live = new Broadcasts(scheduler, splitFailure, NullLogger<Broadcasts>.Instance))
+            using (var stop = new CancellationTokenSource())
+            {
+                var output = new SignalStream();
+                var watch = live.Watch("playback", output, stop.Token);
+                await output.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var guide = scheduler.GuideFor("playback");
+                check(splitFailure.Calls == 2 && !guide.TakeWhile(x => x.Commercial || x.ItemId == splitProgram.ItemId).Any(x => x.Offset > 0) && scheduler.Current("playback", DateTimeOffset.UtcNow)!.ItemId == ad.Id
+                    && guide.Zip(guide.Skip(1)).All(x => x.First.End <= x.Second.Start), "A missing movie skips its later parts and inner breaks in one step, going straight to the break after it");
+                stop.Cancel(); await IgnoreCancellation(watch);
+            }
+            Plugin.Instance.UpdateConfiguration(plainConfiguration);
             scheduler = await Fresh();
             var before = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
             var unavailable = new DelegateStreamer((_, _, _, _) => Task.FromException(new EncoderUnavailableException()));
@@ -192,11 +218,11 @@ public static class PlaybackTests
     }
 
     private static async Task IgnoreCancellation(Task task) { try { await task.WaitAsync(TimeSpan.FromSeconds(5)); } catch (OperationCanceledException) { } }
-    private sealed class DelegateStreamer(Func<Airing, bool, Func<byte[], Task>, CancellationToken, Task> stream) : IProgramStreamer
+    private sealed class DelegateStreamer(Func<Airing, ChannelDefinition, Func<byte[], Task>, CancellationToken, Task> stream) : IProgramStreamer
     {
         private int calls;
         public int Calls => Volatile.Read(ref calls);
-        public async Task<string> Stream(Airing program, bool alwaysEncode, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); await stream(program, alwaysEncode, output, ct); return "Test playback"; }
+        public async Task<string> Stream(Airing program, ChannelDefinition channel, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); await stream(program, channel, output, ct); return "Test playback"; }
     }
     private sealed class StalledStream : MemoryStream
     {

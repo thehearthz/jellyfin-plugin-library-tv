@@ -124,6 +124,24 @@ try
     Check(showMedia.All(x => x.Year == 1988 && x.Genres!.Contains("Horror")), "Episodes use their air date for commercial matching and inherit the show's genres for restrictions");
     Check(showMedia.All(x => x.Studios!.SequenceEqual(["Adult Swim"])), "Episodes inherit the show's network for commercial matching");
     Check(showCatalog.Read(new Pool { LibraryIds = [showLibrary.ToString()], Genres = ["horror"] }).Count == 3, "Genre filters also match episodes whose genres are set on the show");
+    var sixteenNine = new ChannelDefinition();
+    var dvd = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 720, 480, 8.0 / 9, 4.0 / 3), sixteenNine);
+    Check(!dvd.CopyVideo && dvd.CopyAudio && dvd.FrameWidth == 854 && dvd.FrameHeight == 480, "A 4:3 DVD episode is encoded into a 16:9 picture at its own height, keeping its audio");
+    var scope = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 800, 1, 2.4), sixteenNine);
+    Check(!scope.CopyVideo && scope.FrameWidth == 1920 && scope.FrameHeight == 1080, "A widescreen film is letterboxed into a 1920×1080 picture");
+    var anamorphic = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 720, 480, 32.0 / 27, 16.0 / 9), sixteenNine);
+    Check(!anamorphic.CopyVideo && anamorphic.FrameWidth == 854 && anamorphic.FrameHeight == 480, "Widescreen video with stretched pixels is converted to square pixels");
+    Check(StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 1080, 1, 16.0 / 9), sixteenNine).CopyVideo
+        && StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720), sixteenNine).CopyVideo, "16:9 H.264 programs are still copied without encoding");
+    Check(StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 640, 480, 1, 4.0 / 3), new ChannelDefinition { PictureShape = "4:3" }).CopyVideo
+        && StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 640, 480, 1, 4.0 / 3), new ChannelDefinition { PictureShape = "off" }).CopyVideo, "4:3 channels copy 4:3 programs, and the shape can be turned off");
+    Check(ProgramStreamer.Ratio("4:3") == 4.0 / 3 && ProgramStreamer.Ratio("0:1") is null && ProgramStreamer.Ratio("N/A") is null, "Aspect ratios from Jellyfin and FFprobe are read, and unknown ones are ignored");
+    var part = DateTimeOffset.UtcNow;
+    var parts = new List<Airing> { new("g", preservedIdFor(1), "Show", "s.mkv", part, part.AddMinutes(11), false), new("g", preservedIdFor(9), "Ad", "a.mp4", part.AddMinutes(11), part.AddMinutes(12), true),
+        new("g", preservedIdFor(1), "Show", "s.mkv", part.AddMinutes(12), part.AddMinutes(23), false, Offset: 660), new("g", preservedIdFor(9), "Ad", "a.mp4", part.AddMinutes(23), part.AddMinutes(24), true) };
+    var listings = LiveTvService.Listings(parts);
+    Check(listings.Count == 2 && listings[0].End == part.AddMinutes(23) && listings[1].Commercial, "The Live TV guide lists a program once, including the breaks inside it");
+    static Guid preservedIdFor(int n) => new(n, 0, 0, new byte[8]);
     var scheduler = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
     await scheduler.Refresh(default);
     Check(scheduler.LastError is null && scheduler.LastRefresh is not null && File.Exists(scheduler.StatePath), "Schedule refresh persists state atomically");
@@ -199,15 +217,20 @@ try
     var legacyTurns = (Configuration)serializer.Deserialize(new StringReader(legacyXml))!;
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
     using var rulesWriter = new StringWriter();
-    serializer.Serialize(rulesWriter, new Configuration { Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }] }] });
+    serializer.Serialize(rulesWriter, new Configuration { Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
+        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] } }] });
     var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
     Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra
         && !rules.Channels[0].MatchCommercialNetwork && rules.Channels[0].CommercialNetwork == "Toonami" && rules.Channels[0].Blocks[0].CommercialNetwork == "Adult Swim", "Content restrictions, commercial matching and playback settings survive XML storage");
+    Check(rules.Channels[0].EpisodeBreaks == 3 && rules.Channels[0].MovieBreaks == 0 && rules.Channels[0].PictureShape == "4:3" && rules.Channels[0].Bumpers.FolderIds.Length == 1, "Breaks, picture shape and bumpers survive XML storage");
     var olderXml = System.Text.RegularExpressions.Regex.Replace(rulesWriter.ToString().Replace("<AlwaysEncode>true</AlwaysEncode>", "<Transcode>true</Transcode>"), @"\s*<MatchCommercialEra>false</MatchCommercialEra>", "");
     if (olderXml == rulesWriter.ToString()) throw new Exception("Test XML was not rewritten");
     var older = (Configuration)serializer.Deserialize(new StringReader(olderXml))!;
     var legacyChannel = (Configuration)serializer.Deserialize(new StringReader(System.Text.RegularExpressions.Regex.Replace(olderXml, @"\s*<MatchCommercialNetwork>false</MatchCommercialNetwork>", "")))!;
-    Check(legacyChannel.Channels[0].MatchCommercialNetwork, "Channels saved by older versions match commercials to networks");
+    var oldestXml = System.Text.RegularExpressions.Regex.Replace(olderXml, @"\s*<(EpisodeBreaks|MovieBreaks|PictureShape)>[^<]*</\1>|\s*<Bumpers>.*?</Bumpers>", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+    var oldest = (Configuration)serializer.Deserialize(new StringReader(oldestXml))!;
+    Check(oldestXml != olderXml && legacyChannel.Channels[0].MatchCommercialNetwork && oldest.Channels[0].EpisodeBreaks == 1 && oldest.Channels[0].MovieBreaks == 2 && oldest.Channels[0].PictureShape == "16:9" && oldest.Channels[0].Bumpers.FolderIds.Length == 0,
+        "Channels saved by older versions match networks, break inside programs and use a 16:9 picture");
     Check(!older.Channels[0].AlwaysEncode && older.Channels[0].MatchCommercialEra, "Channels saved by older versions switch to encode-only-when-needed playback and era-matched commercials");
     foreach (var bad in new[] { new ContentRule { Genres = [], Tags = [] }, new ContentRule { Start = "9pm" }, new ContentRule { Days = [] } })
     {
@@ -217,6 +240,12 @@ try
     Check(true, "Content restrictions need a genre or tag, valid times and at least one day");
     try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { CommercialNetwork = new string('n', 101) }] }); throw new Exception("Overlong network accepted"); }
     catch (ArgumentException) { Check(true, "Overlong commercial network names are rejected"); }
+    foreach (var bad in new[] { new ChannelDefinition { EpisodeBreaks = 6 }, new ChannelDefinition { MovieBreaks = -1 }, new ChannelDefinition { PictureShape = "21:9" } })
+    {
+        try { Scheduler.Validate(new Configuration { Channels = [bad] }); throw new Exception("Invalid break or picture setting accepted"); }
+        catch (ArgumentException) { }
+    }
+    Check(true, "Break counts outside 0–5 and unknown picture shapes are rejected");
     try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { Source = new Pool { EpisodesInARow = 101 } }] }); throw new Exception("Out-of-range episodes in a row accepted"); }
     catch (ArgumentException) { Check(true, "Out-of-range episodes in a row values are rejected"); }
     var privateConfig = new Configuration { StreamToken = new string('x', 64), InternalBaseUrl = "http://127.0.0.1:18096/private", Channels = [new ChannelDefinition { Id = "backup-channel", Name = "Backed up", Number = "42.1" }], Restrictions = [new ContentRule()] };
