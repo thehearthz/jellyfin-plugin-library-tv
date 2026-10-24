@@ -777,3 +777,52 @@ test("picture shape defaults to widescreen and saves per channel", async () => {
     dom.window.close();
   }
 });
+
+test("shared commercials are chosen once for every channel and show how they were sorted", async () => {
+  const dom = await ready({
+    clipLibrary: [
+      { Kind: "Commercials", Network: "Nickelodeon", Decade: 1990, Count: 42 },
+      { Kind: "Commercials", Network: "Nickelodeon", Decade: 2000, Count: 17 },
+      { Kind: "Commercials", Network: "General", Decade: 0, Count: 3 },
+      { Kind: "Bumpers", Network: "Adult Swim", Decade: 2000, Count: 8 },
+    ],
+  });
+  try {
+    const w = dom.window;
+    const summary = w.document.querySelector(
+      "[data-ui=clip-library]",
+    ).textContent;
+    assert.match(summary, /Nickelodeon: 1990s 42 · 2000s 17/);
+    assert.match(summary, /No network \(general\): no year 3/);
+    assert.match(summary, /Bumpers.*Adult Swim: 2000s 8/);
+    const shared = w.document.querySelector("[data-ui=shared-clips]");
+    click(w, "Choose commercial folders or clips", shared);
+    await settle();
+    click(w, "+ Select", w.document.querySelector(".ltv-media"));
+    click(w, "Done");
+    click(w, "Save channels");
+    await settle();
+    assert.deepEqual(w.testApi.saved.SharedCommercials.FolderIds, [
+      fixture.content.folders[0].Id,
+    ]);
+    assert.deepEqual(w.testApi.saved.Channels[0].Commercials.FolderIds, []);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("the picture shape can restart players instead of adding black bars", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const select = [...w.document.querySelectorAll("main label.ltv-field")]
+      .find((x) => x.textContent.includes("Picture shape"))
+      .querySelector("select");
+    change(w, select, "restart");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].PictureShape, "restart");
+  } finally {
+    dom.window.close();
+  }
+});

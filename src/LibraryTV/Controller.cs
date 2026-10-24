@@ -54,7 +54,7 @@ public sealed class Controller : ControllerBase
     [HttpGet("status")]
     public object Status() => startup?.IsReady == false
         ? new { IsReady = false, LastRefresh = (DateTimeOffset?)null, LastRefreshMilliseconds = (double?)null, LastError = (string?)null, PluginPages = PluginPagesIntegration.Status, Channels = Array.Empty<object>() }
-        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
+        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, scheduler.ClipLibrary, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
 
     [HttpPost("rebuild/{id}")]
     public async Task<IActionResult> Rebuild(string id, CancellationToken ct)

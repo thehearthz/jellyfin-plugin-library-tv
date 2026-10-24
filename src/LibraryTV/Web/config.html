@@ -460,6 +460,22 @@
         </div>
       </details>
       <details class="ltv-panel">
+        <summary>Commercial library</summary>
+        <div>
+          <p class="ltv-muted">
+            Shared commercials and bumpers for every channel without its own.
+            After Jellyfin finishes starting, and at each library refresh,
+            Library TV reads the year, decade and network from every file and
+            folder name, such as “Nickelodeon Gak 1994.mp4” or “Adult
+            Swim/2000s/bump.mp4”, and sorts each clip to the programs that match
+            it.
+          </p>
+          <div data-ui="shared-clips"></div>
+          <h3>How your clips were sorted</h3>
+          <div data-ui="clip-library" aria-live="polite"></div>
+        </div>
+      </details>
+      <details class="ltv-panel">
         <summary>Channel health</summary>
         <div>
           <p class="ltv-muted">
@@ -1212,7 +1228,58 @@
             node("p", { class: "ltv-muted" }, "No manual channels yet."),
           );
       }
+      function renderSharedClips() {
+        ui("shared-clips").replaceChildren(
+          poolEditor(
+            state.config.SharedCommercials,
+            "Shared commercials",
+            "commercial",
+          ),
+          poolEditor(state.config.SharedBumpers, "Shared bumpers", "bumper"),
+        );
+      }
+      function renderClipLibrary(groups) {
+        const target = ui("clip-library");
+        target.replaceChildren();
+        if (!groups || !groups.length) {
+          target.append(
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Nothing sorted yet. Choose shared clips and save; sorting runs with the next refresh.",
+            ),
+          );
+          return;
+        }
+        for (const kind of ["Commercials", "Bumpers"]) {
+          const rows = groups.filter((x) => x.Kind === kind);
+          if (!rows.length) continue;
+          const networks = new Map();
+          for (const row of rows)
+            networks.set(row.Network, [
+              ...(networks.get(row.Network) || []),
+              row,
+            ]);
+          target.append(node("strong", {}, kind));
+          for (const [network, decades] of networks)
+            target.append(
+              node(
+                "p",
+                { class: "ltv-muted" },
+                (network === "General" ? "No network (general)" : network) +
+                  ": " +
+                  decades
+                    .map(
+                      (x) =>
+                        (x.Decade ? x.Decade + "s" : "no year") + " " + x.Count,
+                    )
+                    .join(" · "),
+              ),
+            );
+        }
+      }
       function renderEditor() {
+        renderSharedClips();
         const area = ui("editor"),
           c = current();
         area.replaceChildren();
@@ -1357,6 +1424,7 @@
                 ...[
                   ["16:9", "Widescreen 16:9"],
                   ["4:3", "Classic 4:3"],
+                  ["restart", "Each program's own shape, restarting players"],
                   ["off", "Each program's own shape"],
                 ].map(([value, text]) =>
                   node(
@@ -1370,7 +1438,7 @@
             node(
               "p",
               { class: "ltv-muted" },
-              "Every program is shown in this shape, so pictures are never stretched when one program follows another. Programs already in this shape play directly; others are encoded with black bars at the sides or top and bottom. Choose Classic 4:3 for a channel of mostly older shows. “Each program's own shape” avoids that encoding, but some players then stretch programs after the first.",
+              "Every program is shown in this shape, so pictures are never stretched when one program follows another. Programs already in this shape play directly; others are encoded with black bars at the sides or top and bottom. Choose Classic 4:3 for a channel of mostly older shows. “Restarting players” plays every program in its own shape without bars: when a program of a different shape starts, apps watching the channel restart it, with a few seconds of loading. Commercials and bumpers keep the shape of the program they follow. Apps that don't accept remote control keep playing and may stretch. “Each program's own shape” never restarts or adds bars, but some players then stretch programs after the first.",
             ),
           );
         }
@@ -1462,7 +1530,16 @@
               { class: "ltv-muted" },
               "File commercials in folders named after networks, such as “Adult Swim”, “Nickelodeon” or “Cartoon Network”. Each program gets commercials from its network: a network you set here or on a time block first, then a matching Jellyfin tag on the show (tag a show “Toonami” to use Toonami commercials), then the show's studio. Programs from other networks get only commercials that aren't in a network folder. Era matching then picks the decade within those commercials.",
             ),
-            poolEditor(c.Commercials, "Commercial content", "commercial"),
+            poolEditor(
+              c.Commercials,
+              "Commercials for this channel",
+              "commercial",
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Leave this empty to use the shared commercial library under Commercial library below.",
+            ),
             node(
               "p",
               { class: "ltv-muted" },
@@ -1478,7 +1555,12 @@
               { class: "ltv-muted" },
               "Bumpers are short clips, like “We'll be right back” and “Now back to the show”. One plays going into each commercial break and one coming out of it. If the channel has no commercials, one bumper plays between programs. Bumpers follow the same network and decade matching as commercials, so file them the same way, such as “Adult Swim/2000s”.",
             ),
-            poolEditor(c.Bumpers, "Bumper clips", "bumper"),
+            poolEditor(c.Bumpers, "Bumpers for this channel", "bumper"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Leave this empty to use the shared bumpers under Commercial library below.",
+            ),
           );
         }
         if (state.tab === "preview") {
@@ -2064,6 +2146,7 @@
           try {
             const result = await api("refresh", "POST");
             ui("plugin-pages").textContent = result.PluginPages || "";
+            renderClipLibrary(result.ClipLibrary);
             notice(
               state.dirty
                 ? "Earlier changes were saved. You made more edits while saving; save again to apply those."
@@ -2112,6 +2195,10 @@
           state.config.Channels = state.config.Channels || [];
           state.config.AutomaticChannels = state.config.AutomaticChannels || [];
           state.config.AutoLibraryIds = state.config.AutoLibraryIds || [];
+          state.config.SharedCommercials = normalize(
+            state.config.SharedCommercials,
+          );
+          state.config.SharedBumpers = normalize(state.config.SharedBumpers);
           state.config.Restrictions = (state.config.Restrictions || []).map(
             (rule) => ({
               ...rule,
@@ -2139,6 +2226,9 @@
               b.CommercialNetwork = b.CommercialNetwork || "";
           }
           const selected = new Set();
+          for (const p of [config.SharedCommercials, config.SharedBumpers])
+            for (const key of ["ItemIds", "FolderIds"])
+              for (const value of p[key]) selected.add(value);
           for (const c of config.Channels)
             for (const p of [
               c.Source,
@@ -2174,6 +2264,7 @@
           }
           renderAutomaticChannels();
           renderRestrictions();
+          renderClipLibrary(status.ClipLibrary);
           ui("plugin-pages").textContent =
             status.PluginPages || "Plugin Pages status unavailable.";
           ui("body").hidden = false;

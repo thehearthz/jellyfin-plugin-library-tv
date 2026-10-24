@@ -108,6 +108,30 @@ try
     Check(mountReader(new Pool { ItemIds = [mounted.Id.ToString(), offlineMedia.Id.ToString()] }).Select(x => x.Title).SequenceEqual(["Mounted"]), "Refresh skips media whose storage folder is unavailable without checking every file");
     Check(Catalog.YearFromPath("/media/Commercials/1980s/Cola (1985) 1080p.mp4") == 1985 && Catalog.YearFromPath("/media/ads/80s/Cola.mp4") == 1980
         && Catalog.YearFromPath("/media/ads/1990s/clip.mkv") == 1990 && Catalog.YearFromPath("/media/ads/clip 1080p x264.mkv") is null, "Commercial years come from year or decade names in folders and files, ignoring resolutions and codecs");
+    Check(Catalog.YearFromPath("/ads/Nickelodeon Gak '94.mp4") == 1994, "Short years with an apostrophe are recognised");
+    // A shared commercial library is sorted by network and decade, then used by channels without their own clips.
+    var sharedFolder = Path.Combine(directory, "shared commercials");
+    Directory.CreateDirectory(sharedFolder);
+    Video Clip(string file) => new() { Id = Guid.NewGuid(), Name = file, Path = Path.Combine(sharedFolder, file), RunTimeTicks = TimeSpan.FromSeconds(30).Ticks };
+    var sharedClips = new[] { Clip("Nickelodeon Gak '94.mp4"), Clip("Adult Swim bump 2004.mp4"), Clip("Cola.mp4") };
+    var kidsMovie = new Movie { Id = Guid.NewGuid(), Name = "Kids movie", Path = Path.Combine(sharedFolder, "kids.mkv"), RunTimeTicks = TimeSpan.FromMinutes(30).Ticks, ProductionYear = 1996, Studios = ["Nickelodeon"] };
+    var sharedCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name switch
+    {
+        "GetItemById" => sharedClips.Cast<BaseItem>().Append(kidsMovie).FirstOrDefault(x => x.Id == (Guid)args![0]!),
+        "GetVirtualFolders" => new List<VirtualFolderInfo>(),
+        _ => throw new NotSupportedException(name)
+    }));
+    var sharedPaths = Proxy<IApplicationPaths>.Make((_, _) => sharedFolder);
+    var keptConfig = plugin.Configuration;
+    plugin.UpdateConfiguration(new Configuration { GuideDays = 1, SharedCommercials = new Pool { ItemIds = sharedClips.Select(x => x.Id.ToString()).ToArray() },
+        Channels = [new ChannelDefinition { Id = "kids", Name = "Kids", CommercialCount = 1, MovieBreaks = 0, Source = new Pool { ItemIds = [kidsMovie.Id.ToString()] } }] });
+    var sharedScheduler = new Scheduler(sharedCatalog, sharedPaths, NullLogger<Scheduler>.Instance);
+    await sharedScheduler.Refresh(default);
+    plugin.UpdateConfiguration(keptConfig);
+    Check(sharedScheduler.ClipLibrary.Select(x => $"{x.Kind}:{x.Network}:{x.Decade}:{x.Count}").SequenceEqual(["Commercials:Adult Swim:2000:1", "Commercials:Nickelodeon:1990:1", "Commercials:General:0:1"]),
+        "Each refresh sorts the shared commercial library by the network and year in its file names");
+    Check(sharedScheduler.GuideFor("kids").Where(x => x.Commercial).All(x => x.ItemId == sharedClips[0].Id) && sharedScheduler.GuideFor("kids").Any(x => x.Commercial),
+        "A channel without its own commercials plays the shared commercials sorted to its programs' network");
     var horrorSeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], Studios = ["Adult Swim"], ProviderIds = new() { ["Tvdb"] = "4242" } };
     var copySeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], Studios = ["Adult Swim"], ProviderIds = new() { ["Tvdb"] = "4242" } };
     MediaBrowser.Controller.Entities.TV.Episode Ep(MediaBrowser.Controller.Entities.TV.Series series, int number, string folder) => new() { Id = Guid.NewGuid(), Name = "Part " + number, SeriesId = series.Id, SeriesName = series.Name, ParentIndexNumber = 1, IndexNumber = number, Path = Path.Combine(directory, folder + number + ".mkv"), RunTimeTicks = TimeSpan.FromMinutes(22).Ticks, PremiereDate = new DateTime(1988, 1, number) };
@@ -217,12 +241,13 @@ try
     var legacyTurns = (Configuration)serializer.Deserialize(new StringReader(legacyXml))!;
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
     using var rulesWriter = new StringWriter();
-    serializer.Serialize(rulesWriter, new Configuration { Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
+    serializer.Serialize(rulesWriter, new Configuration { SharedCommercials = new Pool { FolderIds = [Guid.Empty.ToString()] }, SharedBumpers = new Pool { LibraryIds = [Guid.Empty.ToString()] }, Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
         EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] } }] });
     var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
     Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra
         && !rules.Channels[0].MatchCommercialNetwork && rules.Channels[0].CommercialNetwork == "Toonami" && rules.Channels[0].Blocks[0].CommercialNetwork == "Adult Swim", "Content restrictions, commercial matching and playback settings survive XML storage");
     Check(rules.Channels[0].EpisodeBreaks == 3 && rules.Channels[0].MovieBreaks == 0 && rules.Channels[0].PictureShape == "4:3" && rules.Channels[0].Bumpers.FolderIds.Length == 1, "Breaks, picture shape and bumpers survive XML storage");
+    Check(rules.SharedCommercials.FolderIds.Length == 1 && rules.SharedBumpers.LibraryIds.Length == 1, "The shared commercial and bumper libraries survive XML storage");
     var olderXml = System.Text.RegularExpressions.Regex.Replace(rulesWriter.ToString().Replace("<AlwaysEncode>true</AlwaysEncode>", "<Transcode>true</Transcode>"), @"\s*<MatchCommercialEra>false</MatchCommercialEra>", "");
     if (olderXml == rulesWriter.ToString()) throw new Exception("Test XML was not rewritten");
     var older = (Configuration)serializer.Deserialize(new StringReader(olderXml))!;

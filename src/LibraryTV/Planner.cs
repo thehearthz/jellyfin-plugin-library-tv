@@ -181,7 +181,7 @@ public static class Planner
     }
 
     public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone,
-        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null)
+        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null, NetworkIndex? networks = null)
     {
         var at = state.Guide.Count > 0 ? state.Guide[^1].End : now;
         if (startAt > at) at = startAt.Value;
@@ -192,12 +192,11 @@ public static class Planner
         var episodes = new Dictionary<string, ILookup<string, Media>>();
         var commercials = pools["commercials"];
         var bumpers = pools.GetValueOrDefault("bumpers") ?? [];
-        // Network names this channel can ask for: its overrides, and its programs' tags and studios.
-        var names = channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
-            .Concat(pools.Where(x => x.Key is not ("commercials" or "bumpers")).SelectMany(x => x.Value).SelectMany(x => (x.Tags ?? []).Concat(x.Studios ?? [])))
-            .Select(NetworkKey).Where(x => x.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
-        var adPicker = new ClipPicker(channel, "commercials", commercials, names);
-        var bumperPicker = new ClipPicker(channel, "bumpers", bumpers, names);
+        // The scheduler shares one index across channels; on its own, a channel knows its overrides, its programs' tags and studios, and common networks.
+        networks ??= new NetworkIndex(channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
+            .Concat(pools.Where(x => x.Key is not ("commercials" or "bumpers")).SelectMany(x => x.Value).SelectMany(x => (x.Tags ?? []).Concat(x.Studios ?? []))));
+        var adPicker = new ClipPicker(channel, "commercials", commercials, networks);
+        var bumperPicker = new ClipPicker(channel, "bumpers", bumpers, networks);
         // Restrictions must cover a program's own commercial breaks, so estimate their length.
         var breakSeconds = channel.CommercialCount * (commercials.Count > 0 ? commercials.Average(x => x.Seconds) : 0) + 2 * (bumpers.Count > 0 ? bumpers.Average(x => x.Seconds) : 0);
         // Catch-up entries that already ended are pruned below; they must not use the guide cap.
@@ -323,17 +322,22 @@ public static class Planner
         private readonly List<Media> generic;
         private readonly Dictionary<string, Dictionary<int, List<Media>>> eras = new(StringComparer.Ordinal);
 
-        public ClipPicker(ChannelDefinition channel, string prefix, List<Media> clips, IEnumerable<string> names)
+        public ClipPicker(ChannelDefinition channel, string prefix, List<Media> clips, NetworkIndex index)
         {
             (this.channel, this.prefix, this.clips) = (channel, prefix, clips);
-            if (channel.MatchCommercialNetwork && clips.Count > 0)
-                foreach (var name in names)
+            generic = clips;
+            if (!channel.MatchCommercialNetwork || clips.Count == 0) return;
+            generic = [];
+            foreach (var clip in clips)
+            {
+                var found = index.For(clip);
+                if (found.Length == 0) generic.Add(clip);
+                foreach (var name in found)
                 {
-                    var filed = clips.Where(x => FiledUnder(x.Path, name)).ToList();
-                    if (filed.Count > 0) networks[name] = filed;
+                    if (!networks.TryGetValue(name, out var list)) networks[name] = list = [];
+                    list.Add(clip);
                 }
-            var filedIds = networks.Values.SelectMany(x => x).Select(x => x.Id).ToHashSet();
-            generic = clips.Where(x => !filedIds.Contains(x.Id)).ToList();
+            }
         }
 
         public bool Empty => clips.Count == 0;
@@ -359,21 +363,71 @@ public static class Planner
         }
     }
 
+    // Networks recognised in commercial and bumper names even when no program on the server lists them.
+    // Names that are also everyday words (BET, Lifetime, Showtime…) are left out; programs' own studios still add them.
+    public static readonly string[] Networks =
+    [
+        "Nickelodeon", "Nick Jr", "Nick at Nite", "Nicktoons", "TeenNick", "Cartoon Network", "Adult Swim", "Toonami", "Boomerang",
+        "Disney Channel", "Disney Junior", "Disney XD", "Toon Disney", "Jetix", "Fox Kids", "Kids WB", "4Kids", "Qubo", "PBS Kids", "Discovery Kids",
+        "ABC", "NBC", "CBS", "FOX", "PBS", "The WB", "UPN", "CW", "MTV", "VH1", "Comedy Central", "TBS", "TNT", "USA Network", "FX",
+        "AMC", "Syfy", "Sci Fi Channel", "HBO", "Cinemax", "Starz", "TLC", "Discovery Channel", "History Channel",
+        "ESPN", "Food Network", "HGTV", "TV Land", "Fox Family", "ABC Family", "Freeform", "BBC", "CBBC", "CBeebies", "ITV", "Channel 4",
+        "Teletoon", "YTV", "Family Channel",
+    ];
+
+    // Sorts commercials and bumpers by the networks their folder and file names mention, from a set of
+    // known names plus the common networks above. The most specific name wins: "Fox Kids promo" is
+    // Fox Kids, not also FOX. A clip naming no network is a general clip. Results are cached per clip.
+    public sealed class NetworkIndex
+    {
+        private readonly string[] keys;
+        private readonly Dictionary<Guid, string[]> cache = [];
+        private readonly Dictionary<string, string> display = new(StringComparer.Ordinal);
+
+        public NetworkIndex(IEnumerable<string?> names)
+        {
+            foreach (var name in Networks.Concat(names))
+                if (NetworkKey(name) is { Length: > 0 } key) display.TryAdd(key, name!.Trim());
+            keys = display.Keys.ToArray();
+        }
+
+        // Display name for a key, such as "Adult Swim" for "adult swim".
+        public string Name(string key) => display.GetValueOrDefault(key, key);
+
+        public string[] For(Media clip)
+        {
+            lock (cache)
+            {
+                if (cache.TryGetValue(clip.Id, out var known)) return known;
+                var segments = Segments(clip.Path);
+                var found = keys.Where(x => Mentions(segments, x)).ToArray();
+                return cache[clip.Id] = found.Where(x => !found.Any(y => y != x && (" " + y + " ").Contains(" " + x + " ", StringComparison.Ordinal))).ToArray();
+            }
+        }
+    }
+
     // "Adult Swim", "adult_swim" and "AdultSwim" all become "adult swim" or match it compactly.
-    private static string NetworkKey(string? name) => string.Join(' ', System.Text.RegularExpressions.Regex.Split((name ?? "").ToLowerInvariant(), "[^a-z0-9]+").Where(x => x.Length > 0));
+    public static string NetworkKey(string? name) => string.Join(' ', System.Text.RegularExpressions.Regex.Split((name ?? "").ToLowerInvariant(), "[^a-z0-9]+").Where(x => x.Length > 0));
 
     // True when a folder or file name in the path names the network, as whole words ("Adult Swim 2004")
     // or run together ("AdultSwimBumps"); run-together matches need six letters, so "ABC" never matches "abcd".
-    public static bool FiledUnder(string path, string network)
+    public static bool FiledUnder(string path, string network) => Mentions(Segments(path), network);
+
+    // Each folder and file name as space-padded words and as one run-together word.
+    private static (string Words, string Compact)[] Segments(string path)
     {
-        var compactNetwork = network.Replace(" ", "");
         var parts = path.Split('/', '\\');
         parts[^1] = Path.GetFileNameWithoutExtension(parts[^1]);
-        foreach (var part in parts)
+        return parts.Select(NetworkKey).Where(x => x.Length > 0).Select(x => (" " + x + " ", x.Replace(" ", ""))).ToArray();
+    }
+
+    private static bool Mentions((string Words, string Compact)[] segments, string network)
+    {
+        var compactNetwork = network.Replace(" ", "");
+        foreach (var (words, compact) in segments)
         {
-            var words = NetworkKey(part);
-            if ((" " + words + " ").Contains(" " + network + " ", StringComparison.Ordinal)) return true;
-            if (compactNetwork.Length >= 6 && words.Replace(" ", "").Contains(compactNetwork, StringComparison.Ordinal)) return true;
+            if (words.Contains(" " + network + " ", StringComparison.Ordinal)) return true;
+            if (compactNetwork.Length >= 6 && compact.Contains(compactNetwork, StringComparison.Ordinal)) return true;
         }
         return false;
     }

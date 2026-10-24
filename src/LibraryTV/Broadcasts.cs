@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Session;
+using MediaBrowser.Model.Session;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -8,7 +11,8 @@ namespace Jellyfin.Plugin.LibraryTV;
 public sealed record RuntimeStatus(int Viewers, int Recoveries, string? LastProblem, DateTimeOffset? LastProblemAt, string? Playback = null);
 
 // One process per watched channel; no timer, media scan, or process while idle.
-public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log, ITaskManager? tasks = null) : IDisposable
+public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log, ITaskManager? tasks = null,
+    ISessionManager? sessions = null, ILibraryManager? library = null) : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Broadcast> active = [];
@@ -22,6 +26,9 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
     // A program ending this much earlier than the guide says is followed at once by the next one.
     internal static TimeSpan EarlyEnd { get; set; } = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan KeepAlive = TimeSpan.FromMilliseconds(500);
+    // With the "restart" picture shape, players are restarted this long after a program of a new shape starts,
+    // so Jellyfin sizes the restarted stream from the new program.
+    internal static TimeSpan ShapeRestartDelay { get; set; } = TimeSpan.FromSeconds(2);
     // MPEG-TS null packets: clients discard them, but they keep the connection busy during short waits.
     private static readonly byte[] Filler = Enumerable.Range(0, 7).SelectMany(_ => new byte[] { 0x47, 0x1F, 0xFF, 0x10 }.Concat(Enumerable.Repeat((byte)0xFF, 184))).ToArray();
 
@@ -83,6 +90,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         var consecutiveFailures = 0;
         var restarts = 0;
         Airing? restarted = null;
+        double? programShape = null;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -99,9 +107,29 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 }
                 var channel = scheduler.Channels.FirstOrDefault(x => x.Id == id) ?? throw new InvalidOperationException("Channel is disabled.");
                 if (restarted != item) (restarted, restarts) = (item, 0);
+                double? shape = null;
+                var restartPlayers = false;
+                if (channel.PictureShape == "restart")
+                {
+                    // Programs play in their own shape; commercials and bumpers take the shape of the program they follow.
+                    if (item.Commercial) shape = programShape;
+                    else if (await streamer.Shape(item, ct) is { } current)
+                    {
+                        restartPlayers = item.Offset == 0 && programShape is { } before && Math.Abs(current - before) / before > 0.03;
+                        programShape = current;
+                    }
+                }
                 try
                 {
-                    var method = await streamer.Stream(item, channel, chunk => Send(broadcast, chunk, ct), ct);
+                    var method = await streamer.Stream(item, channel, shape, chunk =>
+                    {
+                        if (restartPlayers)
+                        {
+                            restartPlayers = false;
+                            _ = RestartPlayers(id, ct);
+                        }
+                        return Send(broadcast, chunk, ct);
+                    }, ct);
                     lock (gate) playback[id] = method;
                     consecutiveFailures = 0;
                     var remaining = item.End - DateTimeOffset.UtcNow;
@@ -153,6 +181,32 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 if (active.GetValueOrDefault(id) == broadcast) { active.Remove(id); playback.Remove(id); }
             }
         }
+    }
+
+    // Ask every app playing this channel to start it again, so Jellyfin sizes the new stream for the new shape.
+    // Apps that do not accept remote control keep playing as before.
+    private async Task RestartPlayers(string id, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(ShapeRestartDelay, ct);
+            if (sessions is null) return;
+            var watching = sessions.Sessions.Where(x => x.SupportsRemoteControl && x.NowPlayingItem is not null && Watching(x, id)).ToArray();
+            foreach (var session in watching)
+                await sessions.SendPlayCommand(session.Id, session.Id, new PlayRequest { ItemIds = [session.NowPlayingItem.Id], PlayCommand = PlayCommand.PlayNow, ControllingUserId = session.UserId }, ct);
+            if (watching.Length > 0) log.LogInformation("Library TV channel {Channel}: restarted {Count} players for a new picture shape", id, watching.Length);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { log.LogWarning(ex, "Library TV channel {Channel}: could not restart players for a new picture shape", id); }
+    }
+
+    // A session is watching the channel through Live TV or the Library TV folder.
+    private bool Watching(SessionInfo session, string id)
+    {
+        if (session.PlayState?.MediaSourceId == LiveTvService.SourceId(id)) return true;
+        var item = library?.GetItemById(session.NowPlayingItem.Id);
+        return item is not null && item.ExternalId == id
+            && (item is MediaBrowser.Controller.LiveTv.LiveTvChannel { ServiceName: "Library TV" } || item.ChannelId != Guid.Empty && library!.GetItemById(item.ChannelId)?.Name == "Library TV");
     }
 
     private static Task Send(Broadcast broadcast, byte[] chunk, CancellationToken ct)

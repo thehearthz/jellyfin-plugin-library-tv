@@ -17,6 +17,10 @@ public sealed class Configuration : BasePluginConfiguration
     public ChannelDefinition[] Channels { get; set; } = [];
     // Applies to every channel: matching genres or tags never air during these windows.
     public ContentRule[] Restrictions { get; set; } = [];
+    // The shared commercial and bumper libraries, used by every channel that has no clips of its own.
+    // Each refresh sorts them by the year, decade and network in their folder and file names.
+    public Pool SharedCommercials { get; set; } = new();
+    public Pool SharedBumpers { get; set; } = new();
 }
 
 public sealed class ContentRule
@@ -60,7 +64,15 @@ public sealed class ChannelDefinition
     // Normalizes every program to 720p H.264/AAC. Otherwise only incompatible streams are encoded.
     public bool AlwaysEncode { get; set; }
     // Every program is delivered in this picture shape ("16:9", "4:3" or "off"); other shapes get black bars.
+    // "restart" plays programs in their own shape and restarts viewers' players when the shape changes.
     public string PictureShape { get; set; } = "16:9";
+
+    internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
+    {
+        var copy = (ChannelDefinition)MemberwiseClone();
+        (copy.Commercials, copy.Bumpers) = (commercials, bumpers);
+        return copy;
+    }
 }
 
 public sealed class Pool

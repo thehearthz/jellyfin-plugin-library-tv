@@ -120,7 +120,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (string.IsNullOrWhiteSpace(channel.Name) || !System.Text.RegularExpressions.Regex.IsMatch(channel.Id, "^[a-zA-Z0-9_-]{1,80}$")) throw new ArgumentException("Provide a name and a unique channel ID using letters, numbers, underscores or hyphens.");
             if (channel.CommercialCount is < 0 or > 20) throw new ArgumentException("Commercial count must be 0–20.");
             if (channel.EpisodeBreaks is < 0 or > 5 || channel.MovieBreaks is < 0 or > 5) throw new ArgumentException("Breaks during a program must be 0–5.");
-            if (channel.PictureShape is not ("16:9" or "4:3" or "off")) throw new ArgumentException("Picture shape must be 16:9, 4:3 or off.");
+            if (channel.PictureShape is not ("16:9" or "4:3" or "off" or "restart")) throw new ArgumentException("Picture shape must be 16:9, 4:3, off or restart.");
             if (channel.Bumpers is null) throw new ArgumentException("Channel content and schedule lists cannot be null.");
             if (channel.CommercialNetwork is null || channel.CommercialNetwork.Length > 100 || channel.Blocks.Any(x => x is not null && (x.CommercialNetwork is null || x.CommercialNetwork.Length > 100))) throw new ArgumentException("Commercial network names must be 100 characters or fewer.");
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
@@ -137,6 +137,11 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (pool.EpisodesInARow is < 0 or > 100) throw new ArgumentException("Episodes in a row must be 0–100.");
                 foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
             }
+        }
+        foreach (var pool in new[] { c.SharedCommercials, c.SharedBumpers })
+        {
+            if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
+            foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
         }
         if (c.Restrictions is null || c.Restrictions.Length > 50 || c.Restrictions.Any(x => x is null)) throw new ArgumentException("Use at most 50 content restrictions.");
         foreach (var rule in c.Restrictions)
@@ -191,11 +196,18 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             var read = catalog.CreateRefreshReader(false, scan);
             var readCommercials = catalog.CreateRefreshReader(true, scan);
             var chapters = catalog.CreateChapterReader();
+            static bool Picked(Pool pool) => pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length > 0;
+            // One network index for every channel: common networks, every program's tags and studios, and the overrides.
+            var networks = new Planner.NetworkIndex(definitions.SelectMany(x => x.Blocks.Select(b => b.Source).Append(x.Source)).SelectMany(read)
+                .SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
+                .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))));
             DateTimeOffset? rebuiltFrom = null;
             var warnings = new Dictionary<string, string[]>();
-            foreach (var channel in definitions)
+            foreach (var defined in definitions)
             {
                 ct.ThrowIfCancellationRequested();
+                // A channel without clips of its own uses the shared commercial and bumper libraries.
+                var channel = defined.WithClips(Picked(defined.Commercials) ? defined.Commercials : config.SharedCommercials, Picked(defined.Bumpers) ? defined.Bumpers : config.SharedBumpers);
                 if (!working.TryGetValue(channel.Id, out var state)) working[channel.Id] = state = new();
                 var pools = channel.Blocks.ToDictionary(x => x.Id, x => read(x.Source));
                 pools["default"] = read(channel.Source);
@@ -204,7 +216,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 var clipIds = pools["commercials"].Concat(pools["bumpers"]).Select(x => x.Id).ToHashSet();
                 foreach (var key in pools.Keys.Where(x => x is not ("commercials" or "bumpers")).ToArray()) pools[key].RemoveAll(x => clipIds.Contains(x.Id));
                 if (channel.Id == rebuildChannel) rebuiltFrom = Planner.RewindFuture(state, now);
-                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions, chapters);
+                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions, chapters, networks);
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
@@ -224,10 +236,12 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 var keepAutomatic = id.StartsWith("auto-", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(id[5..], out var libraryId) && selectedLibraries.Contains(libraryId);
                 if (!retained.Contains(id) && !keepAutomatic) working.Remove(id);
             }
+            var library = Summarize("Commercials", readCommercials(config.SharedCommercials)).Concat(Summarize("Bumpers", readCommercials(config.SharedBumpers))).ToArray();
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
             await File.WriteAllTextAsync(StatePath + ".tmp", JsonSerializer.Serialize(working), ct);
             File.Move(StatePath + ".tmp", StatePath, true);
             states = working;
+            ClipLibrary = library;
             var byChannel = definitions.ToDictionary(x => x.Id, x => working[x.Id].Guide.OrderBy(p => p.Start).ToArray());
             var guide = byChannel.Values.SelectMany(x => x).OrderBy(x => x.Start).ToArray();
             Volatile.Write(ref published, new PublishedSchedule(definitions, guide, byChannel, warnings));
@@ -235,6 +249,11 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             LastRefreshMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             LastError = null;
             return rebuiltFrom;
+            // How the shared clips were sorted, for the builder: counts per network and decade.
+            IEnumerable<ClipGroup> Summarize(string kind, List<Media> clips) => clips
+                .GroupBy(x => (Network: networks.For(x).Select(networks.Name).DefaultIfEmpty("General").First(), Decade: x.Year / 10 * 10))
+                .OrderBy(x => x.Key.Network == "General").ThenBy(x => x.Key.Network, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Key.Decade)
+                .Select(x => new ClipGroup(kind, x.Key.Network, x.Key.Decade, x.Count()));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -245,6 +264,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         finally { gate.Release(); }
     }
 
+    public ClipGroup[] ClipLibrary { get; private set; } = [];
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);
 
@@ -262,6 +282,9 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         })
     };
 }
+
+// Decade 0 means no year was found.
+public sealed record ClipGroup(string Kind, string Network, int Decade, int Count);
 
 public sealed class RefreshService(IServiceProvider services, ILogger<RefreshService> log, StartupGate startup) : BackgroundService
 {

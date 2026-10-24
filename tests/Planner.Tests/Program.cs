@@ -283,4 +283,15 @@ bumperChannel.CommercialCount = 0;
 var bumpersOnly = new ChannelState();
 Planner.Extend(bumperChannel, bumpersOnly, bumperPools, now, now.AddHours(2.5), TimeZoneInfo.Utc);
 Check(string.Join(" ", bumpersOnly.Guide.Take(4).Select(x => x.Commercial ? "B" : "P")) == "P B P B" && bumpersOnly.Guide.All(x => x.Offset == 0), "Without commercials, one bumper plays between programs and programs are not split");
+
+// Commercials are sorted from their file names alone, using common networks and the most specific name.
+var index = new Planner.NetworkIndex([]);
+Media Named(string file) => new(Guid.NewGuid(), file, "/commercials/" + file, 30, "", 0, 0);
+Check(index.For(Named("Fox Kids promo 1996.mp4")).SequenceEqual(["fox kids"]) && index.For(Named("FOX Sunday night.mp4")).SequenceEqual(["fox"]), "The most specific network name wins, so Fox Kids clips are not FOX clips");
+Check(index.For(Named("Nickelodeon Gak 1994.mp4")).SequenceEqual(["nickelodeon"]) && index.For(Named("Cola 1985.mp4")).Length == 0 && index.Name("adult swim") == "Adult Swim", "Common networks are recognised in file names without network folders");
+var flatAds = new List<Media> { Named("Adult Swim bump.mp4"), Named("Nickelodeon Gak.mp4"), Named("Cola.mp4") };
+var kidsOnly = new ChannelDefinition { Id = "kids", CommercialCount = 1, EpisodeBreaks = 0, MovieBreaks = 0, Source = new Pool { Shuffle = false } };
+var kidsState = new ChannelState();
+Planner.Extend(kidsOnly, kidsState, new Dictionary<string, List<Media>> { ["default"] = [Network("Other", 1995, ["Fox"])], ["commercials"] = flatAds }, now, now.AddHours(3), TimeZoneInfo.Utc);
+Check(kidsState.Guide.Where(x => x.Commercial).All(x => x.Path == "/commercials/Cola.mp4"), "Clips named after a network no program on the channel uses still never play as general commercials");
 Console.WriteLine($"{passed} scheduling checks passed.");

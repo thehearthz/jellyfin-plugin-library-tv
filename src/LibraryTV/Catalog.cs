@@ -202,9 +202,9 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         return episode.SeriesId.ToString("N");
     }
 
-    private static readonly System.Text.RegularExpressions.Regex YearPattern = new(@"(?<![0-9])(?:(?<year>19[2-9][0-9]|20[0-9]{2})(?![0-9])|(?<decade>19[2-9]0|20[0-2]0)'?s\b|(?<short>[2-9]0)'?s\b)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex YearPattern = new(@"(?<![0-9])(?:(?<year>19[2-9][0-9]|20[0-9]{2})(?![0-9])|(?<decade>19[2-9]0|20[0-2]0)'?s\b|(?<short>[2-9]0)'?s\b|'(?<apostrophe>[2-9][0-9])\b)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-    // The last year or decade in a path, such as "1980s/Cola (1985).mp4" (1985) or "80s ads/clip.mp4" (1980).
+    // The last year or decade in a path, such as "1980s/Cola (1985).mp4" (1985), "80s ads/clip.mp4" (1980) or "Gak '94.mp4" (1994).
     public static int? YearFromPath(string path)
     {
         int? found = null;
@@ -212,7 +212,8 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         {
             var value = match.Groups["year"].Success ? int.Parse(match.Groups["year"].Value, System.Globalization.CultureInfo.InvariantCulture)
                 : match.Groups["decade"].Success ? int.Parse(match.Groups["decade"].Value, System.Globalization.CultureInfo.InvariantCulture)
-                : 1900 + int.Parse(match.Groups["short"].Value, System.Globalization.CultureInfo.InvariantCulture);
+                : match.Groups["short"].Success ? 1900 + int.Parse(match.Groups["short"].Value, System.Globalization.CultureInfo.InvariantCulture)
+                : 1900 + int.Parse(match.Groups["apostrophe"].Value, System.Globalization.CultureInfo.InvariantCulture);
             if (value <= DateTime.UtcNow.Year + 1) found = value;
         }
         return found;

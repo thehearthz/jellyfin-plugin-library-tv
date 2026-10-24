@@ -16,6 +16,8 @@ public sealed class SettingsBackup
     public int RefreshMinutes { get; set; } = 60;
     public int MaxActiveChannels { get; set; } = 2;
     public ContentRule[] Restrictions { get; set; } = [];
+    public Pool SharedCommercials { get; set; } = new();
+    public Pool SharedBumpers { get; set; } = new();
 
     public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
 
@@ -33,6 +35,8 @@ public sealed class SettingsBackup
         config.RefreshMinutes = RefreshMinutes;
         config.MaxActiveChannels = MaxActiveChannels;
         config.Restrictions = Restrictions;
+        config.SharedCommercials = SharedCommercials;
+        config.SharedBumpers = SharedBumpers;
         Scheduler.Validate(config);
         return config;
     }

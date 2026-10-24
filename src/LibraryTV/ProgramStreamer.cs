@@ -9,14 +9,20 @@ namespace Jellyfin.Plugin.LibraryTV;
 
 public interface IProgramStreamer
 {
-    // Returns how the program was played, for Channel health.
-    Task<string> Stream(Airing program, ChannelDefinition channel, Func<byte[], Task> output, CancellationToken ct);
+    // Returns how the program was played, for Channel health. A shape, when given, overrides the
+    // channel's picture shape: clips are fitted to the program around them.
+    Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct);
+    // The program's picture shape (width ÷ height as displayed), or null when unknown.
+    Task<double?> Shape(Airing program, CancellationToken ct);
 }
 
 // What the file holds, from Jellyfin's library metadata or FFprobe. Null means unknown.
 // PixelAspect is the sample aspect ratio (1 for square pixels); DisplayAspect is the picture's shape.
 public sealed record SourceFormat(string? Video, string? PixelFormat, int? BitDepth, bool Interlaced, string? Audio, int? Channels, int? SampleRate,
-    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null);
+    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null)
+{
+    public double? Shape => DisplayAspect ?? (Width > 0 && Height > 0 ? Width.Value * (PixelAspect ?? 1) / Height.Value : null);
+}
 
 // Normalize is the always-encode 720p mode; otherwise each stream is copied when compatible.
 // FrameWidth/FrameHeight, when set, is the picture the video is encoded into, with black bars.
@@ -31,14 +37,14 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // Jellyfin sizes its own output from the first program a viewer sees, so a later program of another
     // shape would be stretched. Video in another shape, or with non-square pixels, is therefore encoded
     // into the channel's picture shape with black bars; programs already in that shape are still copied.
-    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel)
+    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null)
     {
         var hasAudio = format is null || format.Audio is not null;
         if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true };
-        double? shape = channel.PictureShape switch { "off" => null, "4:3" => 4.0 / 3, _ => 16.0 / 9 };
+        var shape = shapeOverride ?? channel.PictureShape switch { "off" or "restart" => null, "4:3" => 4.0 / 3, _ => (double?)(16.0 / 9) };
         if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(720 * shape.Value), FrameHeight: shape is null ? 0 : 720);
         var pixel = format.PixelAspect ?? 1;
-        var display = format.DisplayAspect ?? (format.Width > 0 && format.Height > 0 ? format.Width.Value * pixel / format.Height.Value : null);
+        var display = format.Shape;
         var fits = shape is null || display is null || Math.Abs(pixel - 1) <= 0.02 && Math.Abs(display.Value - shape.Value) / shape.Value <= 0.03;
         var video = format.Video == "h264" && format.PixelFormat is null or "yuv420p" or "yuvj420p" && format.BitDepth is null or 8 && !format.Interlaced && fits;
         // Audio is cheap to encode, so anything but stereo 48 kHz AAC is converted to keep one audio layout.
@@ -97,11 +103,13 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         return start;
     }
 
-    public async Task<string> Stream(Airing program, ChannelDefinition channel, Func<byte[], Task> output, CancellationToken ct)
+    public async Task<double?> Shape(Airing program, CancellationToken ct) => (await Format(program, ct))?.Shape;
+
+    public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
-        var plan = StreamPlan.For(await Format(program, ct), channel);
+        var plan = StreamPlan.For(await Format(program, ct), channel, shape);
         Process started;
         try { started = Process.Start(Command(encoder.EncoderPath, program, plan, DateTimeOffset.UtcNow)) ?? throw new EncoderUnavailableException(); }
         catch (System.ComponentModel.Win32Exception) { throw new EncoderUnavailableException(); }
@@ -163,7 +171,18 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     }
 
     // Jellyfin already stores each file's streams; FFprobe is only the fallback for unscanned files.
+    // Shape and Stream both need the format; keep the last few so FFprobe runs once per file.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SourceFormat?> formats = new();
+
     private async Task<SourceFormat?> Format(Airing program, CancellationToken ct)
+    {
+        if (formats.TryGetValue(program.Path, out var known)) return known;
+        var format = await ReadFormat(program, ct);
+        if (formats.Count >= 32) formats.Clear();
+        return formats[program.Path] = format;
+    }
+
+    private async Task<SourceFormat?> ReadFormat(Airing program, CancellationToken ct)
     {
         try
         {

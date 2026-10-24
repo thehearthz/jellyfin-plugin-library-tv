@@ -203,6 +203,43 @@ public static class PlaybackTests
                     && guide.Zip(guide.Skip(1)).All(x => x.First.End <= x.Second.Start), "A missing movie skips its later parts and inner breaks in one step, going straight to the break after it");
                 stop.Cancel(); await IgnoreCancellation(watch);
             }
+            // With the restart picture shape, a program of a new shape restarts the players watching the channel.
+            Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "playback", Name = "Playback", CommercialCount = 1, MovieBreaks = 0, PictureShape = "restart",
+                Source = new Pool { ItemIds = items.Take(3).Select(x => x.Id.ToString()).ToArray(), Shuffle = false }, Commercials = new Pool { ItemIds = [ad.Id.ToString()] } }] });
+            scheduler = await Fresh();
+            var narrow = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
+            var commands = new List<(string Session, MediaBrowser.Model.Session.PlayRequest Request)>();
+            var remote = Proxy<MediaBrowser.Controller.Session.ISessionController>.Make((name, _) => name is "get_IsSessionActive" or "get_SupportsMediaControl" ? true : null);
+            var watcher = new MediaBrowser.Controller.Session.SessionInfo(null!, NullLogger.Instance) { Capabilities = new() { SupportsMediaControl = true }, SessionControllers = [remote], Id = "living-room", UserId = Guid.NewGuid(), NowPlayingItem = new MediaBrowser.Model.Dto.BaseItemDto { Id = Guid.NewGuid() },
+                PlayState = new MediaBrowser.Model.Session.PlayerStateInfo { MediaSourceId = "librarytv-playback" } };
+            var bystander = new MediaBrowser.Controller.Session.SessionInfo(null!, NullLogger.Instance) { Capabilities = new() { SupportsMediaControl = true }, SessionControllers = [remote], Id = "bedroom", NowPlayingItem = new MediaBrowser.Model.Dto.BaseItemDto { Id = Guid.NewGuid() },
+                PlayState = new MediaBrowser.Model.Session.PlayerStateInfo { MediaSourceId = "something-else" } };
+            var sessionManager = Proxy<MediaBrowser.Controller.Session.ISessionManager>.Make((name, args) =>
+            {
+                if (name == "get_Sessions") return new[] { watcher, bystander };
+                if (name == "SendPlayCommand") { lock (commands) commands.Add(((string)args![1]!, (MediaBrowser.Model.Session.PlayRequest)args[2]!)); return Task.CompletedTask; }
+                throw new NotSupportedException(name);
+            });
+            Broadcasts.ShapeRestartDelay = TimeSpan.FromMilliseconds(50);
+            var shaped = new DelegateStreamer(async (item, _, write, ct) =>
+            {
+                await write(new byte[188]);
+                if (item.ItemId != narrow.ItemId && item.ItemId != ad.Id) await Task.Delay(Timeout.Infinite, ct);
+            }, item => item.ItemId == narrow.ItemId ? 4.0 / 3 : 16.0 / 9);
+            using (var live = new Broadcasts(scheduler, shaped, NullLogger<Broadcasts>.Instance, null, sessionManager))
+            using (var stop = new CancellationTokenSource())
+            {
+                var output = new CountingStream();
+                var watch = live.Watch("playback", output, stop.Token);
+                var until = DateTime.UtcNow.AddSeconds(5);
+                while (shaped.Calls < 3 && DateTime.UtcNow < until) await Task.Delay(20);
+                await Task.Delay(300);
+                lock (commands)
+                    check(shaped.Calls == 3 && shaped.Shapes[1] == 4.0 / 3 && commands.Count == 1 && commands[0].Session == "living-room" && commands[0].Request.ItemIds.SequenceEqual([watcher.NowPlayingItem.Id])
+                        && commands[0].Request.PlayCommand == MediaBrowser.Model.Session.PlayCommand.PlayNow,
+                        "When the next program has another shape, only the players watching the channel are restarted, and the commercial before it keeps the earlier program's shape");
+                stop.Cancel(); await IgnoreCancellation(watch);
+            }
             Plugin.Instance.UpdateConfiguration(plainConfiguration);
             scheduler = await Fresh();
             var before = scheduler.Current("playback", DateTimeOffset.UtcNow)!;
@@ -218,11 +255,19 @@ public static class PlaybackTests
     }
 
     private static async Task IgnoreCancellation(Task task) { try { await task.WaitAsync(TimeSpan.FromSeconds(5)); } catch (OperationCanceledException) { } }
-    private sealed class DelegateStreamer(Func<Airing, ChannelDefinition, Func<byte[], Task>, CancellationToken, Task> stream) : IProgramStreamer
+    private sealed class DelegateStreamer(Func<Airing, ChannelDefinition, Func<byte[], Task>, CancellationToken, Task> stream, Func<Airing, double?>? shape = null) : IProgramStreamer
     {
         private int calls;
         public int Calls => Volatile.Read(ref calls);
-        public async Task<string> Stream(Airing program, ChannelDefinition channel, Func<byte[], Task> output, CancellationToken ct) { Interlocked.Increment(ref calls); await stream(program, channel, output, ct); return "Test playback"; }
+        public List<double?> Shapes { get; } = [];
+        public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct)
+        {
+            Interlocked.Increment(ref calls);
+            lock (Shapes) Shapes.Add(shape);
+            await stream(program, channel, output, ct);
+            return "Test playback";
+        }
+        public Task<double?> Shape(Airing program, CancellationToken ct) => Task.FromResult(shape?.Invoke(program));
     }
     private sealed class StalledStream : MemoryStream
     {
