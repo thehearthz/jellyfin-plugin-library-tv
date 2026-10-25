@@ -155,7 +155,7 @@ function install(window, options = {}) {
         items = items.filter((x) => x.Name.toLowerCase().includes(search));
         return { Items: items, TotalRecordCount: items.length };
       }
-      if (path.startsWith("guide/")) return [];
+      if (path.startsWith("guide/")) return data.guide || [];
       throw new Error("Unexpected route: " + path);
     },
   };

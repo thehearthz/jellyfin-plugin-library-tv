@@ -123,6 +123,52 @@ public static class TransportTests
                 "Each program starts seconds ahead of its scheduled time, right after the one before, and plays once in order");
         }
         finally { Plugin.Instance.UpdateConfiguration(savedConfiguration); }
+        // End to end with breaks: real clips, matched to each show, all stream through FFmpeg in order.
+        var breakRoot = Path.Combine(root, "breaks");
+        Directory.CreateDirectory(breakRoot);
+        async Task<string> Make(string file, double seconds)
+        {
+            var path = Path.Combine(breakRoot, file);
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t",seconds.ToString(System.Globalization.CultureInfo.InvariantCulture),"-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2",path]);
+            return path;
+        }
+        MediaBrowser.Controller.Entities.BaseItem Clip(string name, string path, double seconds) => new MediaBrowser.Controller.Entities.Video { Id = Guid.NewGuid(), Name = name, Path = path, RunTimeTicks = TimeSpan.FromSeconds(seconds).Ticks };
+        var rugrats = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid(), Name = "Rugrats", Path = await Make("Rugrats.mp4", 4), RunTimeTicks = TimeSpan.FromSeconds(4).Ticks, ProductionYear = 1993, Studios = ["Nickelodeon"] };
+        var aqua = new MediaBrowser.Controller.Entities.Movies.Movie { Id = Guid.NewGuid(), Name = "Aqua Teen", Path = await Make("Aqua Teen.mp4", 4), RunTimeTicks = TimeSpan.FromSeconds(4).Ticks, ProductionYear = 2003, Studios = ["Williams Street"] };
+        var adClips = new[] { Clip("Nick Gak", await Make("Nick Gak 1995.mp4", 2), 2), Clip("Swim promo", await Make("Adult Swim promo 2004.mp4", 2), 2), Clip("Cola", await Make("Cola.mp4", 2), 2) };
+        var bumperClips = new[] { Clip("Rugrats bumper", await Make("Rugrats bumper.mp4", 1), 1), Clip("Swim bump", await Make("Adult Swim bump.mp4", 1), 1) };
+        var everything = adClips.Concat(bumperClips).Append(rugrats).Append(aqua).ToArray();
+        var breakCatalog = new Catalog(Proxy<MediaBrowser.Controller.Library.ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemById" => everything.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetVirtualFolders" => new List<MediaBrowser.Model.Entities.VirtualFolderInfo>(),
+            _ => throw new NotSupportedException(name)
+        }));
+        var keptBreakConfig = Plugin.Instance.Configuration;
+        Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "e2e", Name = "Breaks", CommercialCount = 1,
+            Source = new Pool { ItemIds = [rugrats.Id.ToString(), aqua.Id.ToString()], Shuffle = false },
+            Commercials = new Pool { ItemIds = adClips.Select(x => x.Id.ToString()).ToArray() }, Bumpers = new Pool { ItemIds = bumperClips.Select(x => x.Id.ToString()).ToArray() } }] });
+        try
+        {
+            var breakScheduler = new Scheduler(breakCatalog, Proxy<MediaBrowser.Common.Configuration.IApplicationPaths>.Make((_, _) => breakRoot), Microsoft.Extensions.Logging.Abstractions.NullLogger<Scheduler>.Instance);
+            await breakScheduler.Refresh(default);
+            var recorder = new RecordingStreamer(streamer);
+            using var live = new Broadcasts(breakScheduler, recorder, Microsoft.Extensions.Logging.Abstractions.NullLogger<Broadcasts>.Instance);
+            using var stop = new CancellationTokenSource();
+            var output = new MemoryStream();
+            var watching = live.Watch("e2e", output, stop.Token);
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (recorder.Finished.Count < 9 && DateTime.UtcNow < deadline) await Task.Delay(100);
+            var status = live.StatusFor("e2e");
+            stop.Cancel();
+            try { await watching.WaitAsync(TimeSpan.FromSeconds(5)); } catch (OperationCanceledException) { }
+            var titles = recorder.Finished.Take(9).Select(x => x.Program.Title).ToArray();
+            var start = Array.IndexOf(titles, "Rugrats");
+            var cycle = titles.Skip(start).Take(8).ToArray();
+            check(cycle.SequenceEqual(["Rugrats", "Rugrats bumper", "Nick Gak", "Rugrats bumper", "Aqua Teen", "Swim bump", "Swim promo", "Swim bump"]) && recorder.Finished.Take(9).All(x => x.Bytes > 0) && status.LastProblem is null,
+                "With real FFmpeg, every break plays bumper, commercial, bumper, each show gets its own bumpers and its network's commercials, and every clip streams video");
+        }
+        finally { Plugin.Instance.UpdateConfiguration(keptBreakConfig); }
         // Without the start-up burst, so the clip still plays in real time when it is canceled.
         ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;
@@ -161,10 +207,14 @@ public static class TransportTests
 sealed class RecordingStreamer(IProgramStreamer inner) : IProgramStreamer
 {
     public System.Collections.Concurrent.ConcurrentQueue<(Airing Program, DateTimeOffset Started)> Played { get; } = new();
-    public Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
+    public System.Collections.Concurrent.ConcurrentQueue<(Airing Program, long Bytes)> Finished { get; } = new();
+    public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
     {
         Played.Enqueue((program, DateTimeOffset.UtcNow));
-        return inner.Stream(program, channel, shape, output, ct, report);
+        long bytes = 0;
+        var result = await inner.Stream(program, channel, shape, chunk => { bytes += chunk.Length; return output(chunk); }, ct, report);
+        Finished.Enqueue((program, bytes));
+        return result;
     }
     public Task<double?> Shape(Airing program, CancellationToken ct) => inner.Shape(program, ct);
 }

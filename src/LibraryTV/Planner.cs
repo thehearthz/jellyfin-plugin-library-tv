@@ -193,8 +193,9 @@ public static class Planner
         var commercials = pools["commercials"];
         var bumpers = pools.GetValueOrDefault("bumpers") ?? [];
         // The scheduler shares one index across channels; on its own, a channel knows its overrides, its programs' tags and studios, and common networks.
+        var programs = pools.Where(x => x.Key is not ("commercials" or "bumpers")).SelectMany(x => x.Value).ToArray();
         networks ??= new NetworkIndex(channel.Blocks.Select(x => x.CommercialNetwork).Append(channel.CommercialNetwork)
-            .Concat(pools.Where(x => x.Key is not ("commercials" or "bumpers")).SelectMany(x => x.Value).SelectMany(x => (x.Tags ?? []).Concat(x.Studios ?? []))));
+            .Concat(programs.SelectMany(x => (x.Tags ?? []).Concat(x.Studios ?? []))), programs.Select(x => x.Show));
         var adPicker = new ClipPicker(channel, "commercials", commercials, networks);
         var bumperPicker = new ClipPicker(channel, "bumpers", bumpers, networks);
         // Restrictions must cover a program's own commercial breaks, so estimate their length.
@@ -240,7 +241,7 @@ public static class Planner
             var first = undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor };
             // The program airs in parts with a commercial break between each, then a break after it.
             var from = 0.0;
-            foreach (var cut in Cuts(next).Append(next.Seconds))
+            foreach (var cut in Cuts(next, network).Append(next.Seconds))
             {
                 Add(next, false, from == 0 ? first : new PlanningUndo("", Guid.Empty, [], false, null, Part: true), from, cut - from);
                 Break(next, network);
@@ -251,10 +252,10 @@ public static class Planner
         // Daily quota entries only need to survive the current planning horizon.
         var keep = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now.AddDays(-1), zone).DateTime).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         foreach (var key in state.DailyCounts.Keys.Where(k => string.CompareOrdinal(k[..10], keep) < 0).ToArray()) state.DailyCounts.Remove(key);
-        void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null)
+        void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null, string? match = null)
         {
             var end = at.AddSeconds(seconds ?? item.Seconds);
-            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset));
+            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset, match));
             if (end < cutoff) stale++;
             at = end;
         }
@@ -269,20 +270,20 @@ public static class Planner
         }
         bool Clip(ClipPicker picker, Media program, string network)
         {
-            if (picker.Empty || state.Guide.Count - stale >= MaxGuideEntries) return false;
-            var (clipKey, clips) = picker.For(program, network);
+            if (picker.Empty || state.Guide.Count - stale >= MaxGuideEntries || picker.For(program, network) is not var (clipKey, clips, why)) return false;
             if (!state.Rotations.TryGetValue(clipKey, out var clipRotation)) state.Rotations[clipKey] = clipRotation = new();
             var seed = channel.Id + (clipKey == "commercials" ? "ads" : clipKey);
             var clip = Next(clips, picker.Pool, clipRotation, seed, out var clipUndo, null, Allowed);
             if (clip is null) return false;
-            Add(clip, true, clipUndo! with { PoolKey = clipKey });
+            Add(clip, true, clipUndo! with { PoolKey = clipKey }, match: why);
             return true;
         }
         // Where to break inside a program: the chapter mark nearest each even split, or the split itself.
-        IEnumerable<double> Cuts(Media program)
+        IEnumerable<double> Cuts(Media program, string network)
         {
             var count = BreakCount(program);
-            if (count == 0) return [];
+            // Only split a program for breaks that will have commercials suited to it.
+            if (count == 0 || adPicker.For(program, network) is null) return [];
             var marks = chapters?.Invoke(program) ?? [];
             var cuts = new List<double>();
             for (var k = 1; k <= count; k++)
@@ -318,48 +319,65 @@ public static class Planner
         private readonly ChannelDefinition channel;
         private readonly string prefix;
         private readonly List<Media> clips;
+        private readonly NetworkIndex index;
+        private readonly Dictionary<string, List<Media>> showClips = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<Media>> networks = new(StringComparer.Ordinal);
-        private readonly List<Media> generic;
+        private readonly List<Media> general = [];
         private readonly Dictionary<string, Dictionary<int, List<Media>>> eras = new(StringComparer.Ordinal);
 
         public ClipPicker(ChannelDefinition channel, string prefix, List<Media> clips, NetworkIndex index)
         {
-            (this.channel, this.prefix, this.clips) = (channel, prefix, clips);
-            generic = clips;
-            if (!channel.MatchCommercialNetwork || clips.Count == 0) return;
-            generic = [];
+            (this.channel, this.prefix, this.clips, this.index) = (channel, prefix, clips, index);
             foreach (var clip in clips)
             {
-                var found = index.For(clip);
-                if (found.Length == 0) generic.Add(clip);
-                foreach (var name in found)
-                {
-                    if (!networks.TryGetValue(name, out var list)) networks[name] = list = [];
-                    list.Add(clip);
-                }
+                // A clip made for a show ("Now back to SpongeBob") only plays with that show.
+                var made = index.ShowsIn(clip);
+                foreach (var show in made) Add(showClips, show, clip);
+                if (made.Length > 0) continue;
+                var found = channel.MatchCommercialNetwork ? index.For(clip) : [];
+                if (found.Length == 0) general.Add(clip);
+                foreach (var name in found) Add(networks, name, clip);
+            }
+            static void Add(Dictionary<string, List<Media>> groups, string key, Media clip)
+            {
+                if (!groups.TryGetValue(key, out var list)) groups[key] = list = [];
+                list.Add(clip);
             }
         }
 
         public bool Empty => clips.Count == 0;
         public Pool Pool => prefix == "bumpers" ? channel.Bumpers : channel.Commercials;
 
-        public (string, List<Media>) For(Media program, string network)
+        // The clips for a program, their rotation key, and why they were chosen (shown in the guide preview).
+        public (string Key, List<Media> Clips, string Why)? For(Media program, string network)
         {
-            var key = prefix;
-            var chosen = clips;
-            if (networks.Count > 0)
-            {
-                var wanted = (program.Tags ?? []).Concat(program.Studios ?? []).Prepend(network).Select(NetworkKey).FirstOrDefault(networks.ContainsKey);
-                // Without a matching network, use clips not filed under any network, so a kids show never gets another network's ads.
-                if (wanted is not null) (key, chosen) = (prefix + "@" + wanted, networks[wanted]);
-                else if (generic.Count > 0) (key, chosen) = (prefix + "@", generic);
-            }
+            string key, why;
+            List<Media> chosen;
+            if (NetworkIndex.ShowKey(program.Show) is { } show && showClips.TryGetValue(show, out var own))
+                (key, chosen, why) = (prefix + "#" + show, own, $"made for {program.Show}");
+            else if (Network() is { } match) (key, chosen, why) = match;
+            else if (networks.Count == 0 && general.Count > 0) (key, chosen, why) = (prefix, general, channel.MatchCommercialNetwork ? "no network clips" : "network matching off");
+            else if (general.Count > 0) (key, chosen, why) = (prefix + "@", general, "general: no clips for this program's network");
+            // Every clip belongs to a network or a show, and none fits: better no clip than another network's.
+            else return null;
             if (!eras.TryGetValue(key, out var decades))
                 eras[key] = decades = chosen.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
-            if (!channel.MatchCommercialEra || program.Year <= 0 || decades.Count == 0) return (key, chosen);
+            if (!channel.MatchCommercialEra || decades.Count == 0) return (key, chosen, why);
+            if (program.Year <= 0) return (key, chosen, why + " · any year (program year unknown)");
             var decade = program.Year / 10 * 10;
             var nearest = decades.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
-            return (key + ":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest]);
+            return (key + ":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest],
+                why + $" · {nearest}s" + (nearest == decade ? "" : $" (closest to {program.Year})"));
+
+            (string, List<Media>, string)? Network()
+            {
+                if (networks.Count == 0) return null;
+                foreach (var (source, name) in (program.Tags ?? []).Select(x => ("tag", x)).Concat((program.Studios ?? []).Select(x => ("studio", x)))
+                    .Prepend(("channel or block setting", network)))
+                    if (index.Resolve(name, networks.ContainsKey) is { } found)
+                        return (prefix + "@" + found, networks[found], $"{index.Name(found)} ({source} “{name.Trim()}”)");
+                return null;
+            }
         }
     }
 
@@ -375,34 +393,70 @@ public static class Planner
         "Teletoon", "YTV", "Family Channel",
     ];
 
-    // Sorts commercials and bumpers by the networks their folder and file names mention, from a set of
-    // known names plus the common networks above. The most specific name wins: "Fox Kids promo" is
+    // Sorts commercials and bumpers by the networks and shows their folder and file names mention, from
+    // known names plus the common networks above. The most specific network wins: "Fox Kids promo" is
     // Fox Kids, not also FOX. A clip naming no network is a general clip. Results are cached per clip.
     public sealed class NetworkIndex
     {
+        // Nicknames and production companies that stand for a network, in clip names and in studios.
+        private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
+        {
+            ["nick"] = "nickelodeon", ["cn"] = "cartoon network", ["williams street"] = "adult swim", ["cartoon network studios"] = "cartoon network",
+            ["nickelodeon animation studio"] = "nickelodeon", ["nickelodeon productions"] = "nickelodeon", ["disney television animation"] = "disney channel",
+        };
         private readonly string[] keys;
-        private readonly Dictionary<Guid, string[]> cache = [];
+        private readonly string[] shows;
+        private readonly Dictionary<Guid, (string[] Networks, string[] Shows)> cache = [];
         private readonly Dictionary<string, string> display = new(StringComparer.Ordinal);
 
-        public NetworkIndex(IEnumerable<string?> names)
+        public NetworkIndex(IEnumerable<string?> names, IEnumerable<string?>? showTitles = null)
         {
             foreach (var name in Networks.Concat(names))
-                if (NetworkKey(name) is { Length: > 0 } key) display.TryAdd(key, name!.Trim());
-            keys = display.Keys.ToArray();
+                if (NetworkKey(name) is { Length: > 0 } key && !Aliases.ContainsKey(key)) display.TryAdd(key, name!.Trim());
+            keys = display.Keys.Concat(Aliases.Keys).Distinct(StringComparer.Ordinal).ToArray();
+            shows = (showTitles ?? []).Select(ShowKey).OfType<string>().Where(x => !keys.Contains(x)).Distinct(StringComparer.Ordinal).ToArray();
         }
 
         // Display name for a key, such as "Adult Swim" for "adult swim".
         public string Name(string key) => display.GetValueOrDefault(key, key);
 
-        public string[] For(Media clip)
+        public string[] For(Media clip) => Read(clip).Networks;
+
+        // Shows the clip is made for, such as "spongebob squarepants" for "SpongeBob bumper 2001.mp4".
+        public string[] ShowsIn(Media clip) => Read(clip).Shows;
+
+        private (string[] Networks, string[] Shows) Read(Media clip)
         {
             lock (cache)
             {
                 if (cache.TryGetValue(clip.Id, out var known)) return known;
                 var segments = Segments(clip.Path);
                 var found = keys.Where(x => Mentions(segments, x)).ToArray();
-                return cache[clip.Id] = found.Where(x => !found.Any(y => y != x && (" " + y + " ").Contains(" " + x + " ", StringComparison.Ordinal))).ToArray();
+                var networks = found.Where(x => !found.Any(y => y != x && (" " + y + " ").Contains(" " + x + " ", StringComparison.Ordinal)))
+                    .Select(x => Aliases.GetValueOrDefault(x, x)).Distinct(StringComparer.Ordinal).ToArray();
+                return cache[clip.Id] = (networks, shows.Where(x => Mentions(segments, x)).ToArray());
             }
+        }
+
+        // The network a program's studio, tag or override stands for: the name itself, a nickname, or a
+        // network inside a longer name ("Nickelodeon Animation Studio" is Nickelodeon); the longest match
+        // wins. Only networks that have clips count.
+        public string? Resolve(string? name, Func<string, bool> hasClips)
+        {
+            var key = NetworkKey(name);
+            if (key.Length == 0) return null;
+            foreach (var candidate in keys.Where(x => (" " + key + " ").Contains(" " + x + " ", StringComparison.Ordinal)).OrderByDescending(x => x == key).ThenByDescending(x => x.Length).Prepend(key))
+                if (Aliases.GetValueOrDefault(candidate, candidate) is var network && hasClips(network)) return network;
+            return null;
+        }
+
+        // A show or movie title usable in clip names: without a leading "The", and at least five letters
+        // long, so short titles like "Up" never match ordinary words.
+        public static string? ShowKey(string? title)
+        {
+            var key = NetworkKey(title);
+            if (key.StartsWith("the ", StringComparison.Ordinal)) key = key[4..];
+            return key.Replace(" ", "").Length >= 5 ? key : null;
         }
     }
 

@@ -146,7 +146,7 @@ try
     var showMedia = showCatalog.Read(new Pool { LibraryIds = [showLibrary.ToString()] });
     Check(showMedia.Select(x => x.Episode).SequenceEqual([1, 2, 3]) && showMedia.Select(x => x.Series).Distinct().Count() == 1, "The same show in two libraries is one show, and a duplicated episode airs once");
     Check(showMedia.All(x => x.Year == 1988 && x.Genres!.Contains("Horror")), "Episodes use their air date for commercial matching and inherit the show's genres for restrictions");
-    Check(showMedia.All(x => x.Studios!.SequenceEqual(["Adult Swim"])), "Episodes inherit the show's network for commercial matching");
+    Check(showMedia.All(x => x.Studios!.SequenceEqual(["Adult Swim"]) && x.Show == "Night Terrors"), "Episodes inherit the show's network and title for commercial and bumper matching");
     Check(showCatalog.Read(new Pool { LibraryIds = [showLibrary.ToString()], Genres = ["horror"] }).Count == 3, "Genre filters also match episodes whose genres are set on the show");
     var sixteenNine = new ChannelDefinition();
     var dvd = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 720, 480, 8.0 / 9, 4.0 / 3), sixteenNine);

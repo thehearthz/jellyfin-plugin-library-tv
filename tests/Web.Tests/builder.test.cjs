@@ -826,3 +826,51 @@ test("the picture shape can restart players instead of adding black bars", async
     dom.window.close();
   }
 });
+
+test("guide preview shows why each commercial and bumper was chosen", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    w.testApi.guide = [
+      {
+        Title: "Rugrats",
+        Start: "2026-10-25T18:00:00Z",
+        End: "2026-10-25T18:11:00Z",
+        Commercial: false,
+        Kind: "Program",
+      },
+      {
+        Title: "Nick bump.mp4",
+        Start: "2026-10-25T18:11:00Z",
+        End: "2026-10-25T18:11:05Z",
+        Commercial: true,
+        Kind: "Bumper",
+        Match: "Nickelodeon (studio “Nickelodeon”) · 1990s",
+      },
+      {
+        Title: "Gak.mp4",
+        Start: "2026-10-25T18:11:05Z",
+        End: "2026-10-25T18:11:35Z",
+        Commercial: true,
+        Kind: "Commercial",
+        Match:
+          "general: no clips for this program's network · any year (program year unknown)",
+      },
+    ];
+    click(w, "Guide preview");
+    click(w, "Load guide");
+    await settle();
+    const items = [...w.document.querySelectorAll(".ltv-guide li")].map(
+      (x) => x.textContent,
+    );
+    assert.match(items[0], /Rugrats/);
+    assert.doesNotMatch(items[0], /Why/);
+    assert.match(
+      items[1],
+      /Bumper.*Why: Nickelodeon \(studio “Nickelodeon”\) · 1990s/,
+    );
+    assert.match(items[2], /Commercial.*Why: general: no clips/);
+  } finally {
+    dom.window.close();
+  }
+});

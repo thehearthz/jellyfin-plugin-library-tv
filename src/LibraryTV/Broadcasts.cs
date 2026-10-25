@@ -97,11 +97,12 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             while (!ct.IsCancellationRequested)
             {
                 var now = DateTimeOffset.UtcNow;
-                var item = scheduler.Current(id, now);
-                // Programs run up to a few seconds ahead of the clock, so the one that just finished may still be
-                // "on now"; the next one starts at once, while the player still has those seconds buffered.
-                if (finished is not null && item is not null && item.Start == finished.Start && item.ItemId == finished.ItemId)
-                    item = scheduler.GuideFor(id).FirstOrDefault(x => x.Start >= finished.End);
+                // Programs run up to a few seconds ahead of the clock, so after one finishes, the clock may still
+                // say it (or, after short clips, an earlier one) is on: always continue with the entry after it.
+                // It starts at once, while the player still has those seconds buffered.
+                var item = finished is null ? scheduler.Current(id, now) : scheduler.GuideFor(id).FirstOrDefault(x => x.Start >= finished.End);
+                // Running behind instead (slow encoding): skip entries that have already ended.
+                if (item is not null && item.End <= now) item = scheduler.Current(id, now);
                 if (item is null || item.Start - now > ProgramStreamer.Lead)
                 {
                     // Content restrictions or an empty pool can leave a short gap. Stay connected through it.

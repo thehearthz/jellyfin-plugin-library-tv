@@ -185,7 +185,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                 : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
             media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
-                episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios));
+                episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios, episode is not null ? episode.SeriesName : x.Name));
         }
         // The same file, or the same episode of the same show in two libraries, airs only once per cycle.
         return media.DistinctBy(x => x.Path, StringComparer.Ordinal)

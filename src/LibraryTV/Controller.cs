@@ -86,7 +86,7 @@ public sealed class Controller : ControllerBase
     }
 
     [HttpGet("guide/{id}")]
-    public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial });
+    public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial, x.Match, Kind = !x.Commercial ? "Program" : x.Undo?.PoolKey.StartsWith("bumpers", StringComparison.Ordinal) == true ? "Bumper" : "Commercial" });
 
     [HttpGet("configuration")]
     public Configuration Configuration() => Plugin.Instance.Configuration;

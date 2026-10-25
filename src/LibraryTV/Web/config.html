@@ -1812,7 +1812,18 @@
                   ),
                   node("strong", {}, item.Title),
                   item.Commercial
-                    ? node("span", { class: "ltv-badge" }, "Commercial")
+                    ? node(
+                        "span",
+                        { class: "ltv-badge" },
+                        item.Kind === "Bumper" ? "Bumper" : "Commercial",
+                      )
+                    : null,
+                  item.Match
+                    ? node(
+                        "span",
+                        { class: "ltv-muted" },
+                        " Why: " + item.Match,
+                      )
                     : null,
                 ),
               );

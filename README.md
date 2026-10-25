@@ -141,7 +141,7 @@ Commercials/
   General/…        ← used for programs from any other network
 ```
 
-Names match as whole words, ignoring case and punctuation, so `Adult Swim`, `adult_swim` and `Adult Swim Bumps 2004` all match Adult Swim. A name of six or more letters also matches when run together, such as `AdultSwim`. Short names like `ABC` must appear as a separate word.
+Names match as whole words, ignoring case and punctuation, so `Adult Swim`, `adult_swim` and `Adult Swim Bumps 2004` all match Adult Swim. A name of six or more letters also matches when run together, such as `AdultSwim`. Short names like `ABC` must appear as a separate word. A few nicknames count too: `Nick` is Nickelodeon (but `Nick Jr` stays Nick Jr), `CN` is Cartoon Network, and `Williams Street` is Adult Swim.
 
 The network for a break is the first of these that has commercials:
 
@@ -150,7 +150,11 @@ The network for a break is the first of these that has commercials:
 3. A tag on the program or its show. Tag a show `Toonami` in Jellyfin to give it Toonami commercials even though its studio is Cartoon Network.
 4. The program's studios. For shows, Jellyfin's metadata usually lists the original network here (Nickelodeon, Adult Swim, Cartoon Network); for movies it lists production companies, which rarely match.
 
-If none matches, the break uses only commercials that are not in any network folder, so a kids show never gets another network's adult commercials. If every commercial is in a network folder, the whole commercial selection is used instead. Era matching then picks the decade within the chosen commercials. Each network and decade keeps its own rotation.
+A studio, tag or setting also counts when it contains a network's name or nickname, so a show whose studio is "Nickelodeon Animation Studio" or "Cartoon Network Studios" gets that network's clips, and "Williams Street" gets Adult Swim's. If none matches, the break uses only commercials that are not in any network folder, so a kids show never gets another network's adult commercials. If there are no such general clips, the program's breaks are left out rather than filled with another network's clips, and the program is not split for them. Era matching then picks the decade within the chosen commercials. Each network and decade keeps its own rotation.
+
+**Show-specific clips.** A commercial or bumper whose name contains a show or movie title, such as `SpongeBob SquarePants bumper.mp4` or `Simpsons promo 1992.mp4`, plays only with that show, before any network matching. A leading "The" is ignored, and titles shorter than five letters (such as "Up") are never matched, so ordinary words in clip names do not tie them to a show.
+
+**Checking the matches.** **Guide preview → Load guide** labels each clip as a commercial or bumper and shows why it was chosen, for example `Why: Nickelodeon (studio “Nickelodeon Animation Studio”) · 1990s`, `Why: made for SpongeBob SquarePants · 2000s` or `Why: general: no clips for this program's network`. A program whose year is unknown shows `any year`; fix its air date or year in Jellyfin to match its era.
 
 ### Era-matched commercials
 

@@ -294,4 +294,32 @@ var kidsOnly = new ChannelDefinition { Id = "kids", CommercialCount = 1, Episode
 var kidsState = new ChannelState();
 Planner.Extend(kidsOnly, kidsState, new Dictionary<string, List<Media>> { ["default"] = [Network("Other", 1995, ["Fox"])], ["commercials"] = flatAds }, now, now.AddHours(3), TimeZoneInfo.Utc);
 Check(kidsState.Guide.Where(x => x.Commercial).All(x => x.Path == "/commercials/Cola.mp4"), "Clips named after a network no program on the channel uses still never play as general commercials");
+
+// Matching commercials and bumpers to the right program, with the reason recorded for the guide preview.
+Media Toon(string show, int year, string[] studios, string[]? tags = null) => new(Guid.NewGuid(), show + " episode", show + ".mkv", 1320, show, 1, 1, year, [], tags ?? [], studios, show);
+Media Ad2(string file, int year = 0) => new(Guid.NewGuid(), file, "/clips/" + file, 15, "", 0, 0, year);
+var sponge = Toon("SpongeBob SquarePants", 2001, ["Nickelodeon Animation Studio"]);
+var rugrats = Toon("Rugrats", 1993, ["Nickelodeon"]);
+var aqua = Toon("Aqua Teen Hunger Force", 2003, ["Williams Street"]);
+var simpsons = Toon("The Simpsons", 1992, ["Fox"]);
+var smallTitle = Toon("Up", 2009, ["Pixar"]);
+var matchAds = new List<Media> { Ad2("Nick Gak 1995.mp4", 1995), Ad2("Nickelodeon promo 2002.mp4", 2002), Ad2("Nick Jr promo 1996.mp4", 1996), Ad2("Adult Swim bump 2004.mp4", 2004),
+    Ad2("SpongeBob SquarePants bumper.mp4", 2001), Ad2("Simpsons promo.mp4", 1992), Ad2("Cola 1990.mp4", 1990), Ad2("Wake Up cereal 2009.mp4", 2009) };
+var matchChannel = new ChannelDefinition { Id = "match", CommercialCount = 1, EpisodeBreaks = 0, MovieBreaks = 0, Source = new Pool { Shuffle = false } };
+var matchState = new ChannelState();
+Planner.Extend(matchChannel, matchState, new Dictionary<string, List<Media>> { ["default"] = [sponge, rugrats, aqua, simpsons, smallTitle], ["commercials"] = matchAds }, now, now.AddHours(2), TimeZoneInfo.Utc);
+Airing After(Media program) => matchState.Guide[matchState.Guide.FindIndex(x => x.ItemId == program.Id) + 1];
+Check(After(sponge).Path.EndsWith("SpongeBob SquarePants bumper.mp4") && After(sponge).Match == "made for SpongeBob SquarePants · 2000s", "A clip named after a show plays with that show");
+Check(After(rugrats).Path.EndsWith("Nick Gak 1995.mp4") && After(rugrats).Match == "Nickelodeon (studio “Nickelodeon”) · 1990s" && matchState.Guide.Select((x, i) => (x, i)).Where(e => e.x.Commercial && e.x.Path.Contains("SpongeBob")).All(e => matchState.Guide.Take(e.i).Last(g => !g.Commercial).ItemId == sponge.Id),
+    "Nicknames such as “Nick” count as the network, and a show's own bumper never plays with another show");
+Check(After(aqua).Path.EndsWith("Adult Swim bump 2004.mp4") && After(aqua).Match!.StartsWith("Adult Swim (studio “Williams Street”)"), "Production companies such as Williams Street stand for their network");
+Check(After(simpsons).Path.EndsWith("Simpsons promo.mp4") && After(smallTitle).Path.EndsWith("Wake Up cereal 2009.mp4") && After(smallTitle).Match == "general: no clips for this program's network · 2000s",
+    "Titles match without a leading “The”, and short titles like “Up” never match ordinary words");
+var nickIndex = new Planner.NetworkIndex([]);
+Check(nickIndex.For(Ad2("Nick Jr promo 1996.mp4")).SequenceEqual(["nick jr"]) && nickIndex.Resolve("Nickelodeon Animation Studio", x => x == "nickelodeon") == "nickelodeon" && nickIndex.Resolve("Cartoon Network Studios", x => x == "cartoon network") == "cartoon network",
+    "Nick Jr clips stay Nick Jr, and studio names containing a network resolve to it");
+var spongeOnly = new ChannelState();
+Planner.Extend(new ChannelDefinition { Id = "sponge", CommercialCount = 2, Source = new Pool() }, spongeOnly,
+    new Dictionary<string, List<Media>> { ["default"] = [rugrats], ["commercials"] = [Ad2("SpongeBob SquarePants bumper.mp4")] }, now, now.AddHours(1), TimeZoneInfo.Utc, null, null, null, new Planner.NetworkIndex([], ["SpongeBob SquarePants"]));
+Check(spongeOnly.Guide.All(x => !x.Commercial && x.Offset == 0), "When no clip suits a program, its breaks are left out instead of playing another show's clips, and it is not split");
 Console.WriteLine($"{passed} scheduling checks passed.");

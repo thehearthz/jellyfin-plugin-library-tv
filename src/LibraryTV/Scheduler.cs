@@ -198,9 +198,9 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             var chapters = catalog.CreateChapterReader();
             static bool Picked(Pool pool) => pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length > 0;
             // One network index for every channel: common networks, every program's tags and studios, and the overrides.
-            var networks = new Planner.NetworkIndex(definitions.SelectMany(x => x.Blocks.Select(b => b.Source).Append(x.Source)).SelectMany(read)
-                .SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
-                .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))));
+            var allPrograms = definitions.SelectMany(x => x.Blocks.Select(b => b.Source).Append(x.Source)).SelectMany(read).ToArray();
+            var networks = new Planner.NetworkIndex(allPrograms.SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
+                .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))), allPrograms.Select(x => x.Show));
             DateTimeOffset? rebuiltFrom = null;
             var warnings = new Dictionary<string, string[]>();
             foreach (var defined in definitions)

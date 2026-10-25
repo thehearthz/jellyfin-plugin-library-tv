@@ -100,9 +100,10 @@ public sealed class TimeBlock
     public string CommercialNetwork { get; set; } = "";
 }
 
-public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null);
+public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null, string? Show = null);
 // Offset is where in the file this entry starts: the later parts of a program split by a commercial break.
-public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0);
+// Match says why a commercial or bumper was chosen, for the guide preview.
+public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
 // program split by a commercial break: the first part holds the selection, so they have nothing to rewind.
