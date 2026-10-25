@@ -260,7 +260,7 @@ public static class PlaybackTests
         private int calls;
         public int Calls => Volatile.Read(ref calls);
         public List<double?> Shapes { get; } = [];
-        public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct)
+        public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
         {
             Interlocked.Increment(ref calls);
             lock (Shapes) Shapes.Add(shape);

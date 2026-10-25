@@ -152,9 +152,10 @@ try
     var dvd = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 720, 480, 8.0 / 9, 4.0 / 3), sixteenNine);
     Check(!dvd.CopyVideo && dvd.CopyAudio && dvd.FrameWidth == 854 && dvd.FrameHeight == 480, "A 4:3 DVD episode is encoded into a 16:9 picture at its own height, keeping its audio");
     var scope = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 800, 1, 2.4), sixteenNine);
-    Check(!scope.CopyVideo && scope.FrameWidth == 1920 && scope.FrameHeight == 1080, "A widescreen film is letterboxed into a 1920×1080 picture");
+    Check(!scope.CopyVideo && scope.FrameWidth == 1280 && scope.FrameHeight == 720, "A 2.4:1 film is letterboxed into a 720p picture, keeping the encoding light");
     var anamorphic = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 720, 480, 32.0 / 27, 16.0 / 9), sixteenNine);
-    Check(!anamorphic.CopyVideo && anamorphic.FrameWidth == 854 && anamorphic.FrameHeight == 480, "Widescreen video with stretched pixels is converted to square pixels");
+    var flat = StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 1040, 1, 1920.0 / 1040), sixteenNine);
+    Check(anamorphic.CopyVideo && flat.CopyVideo, "Widescreen DVD video and 1.85:1 films are close enough to 16:9 to play without encoding");
     Check(StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 1080, 1, 16.0 / 9), sixteenNine).CopyVideo
         && StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720), sixteenNine).CopyVideo, "16:9 H.264 programs are still copied without encoding");
     Check(StreamPlan.For(new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 640, 480, 1, 4.0 / 3), new ChannelDefinition { PictureShape = "4:3" }).CopyVideo

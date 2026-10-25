@@ -11,7 +11,8 @@ public interface IProgramStreamer
 {
     // Returns how the program was played, for Channel health. A shape, when given, overrides the
     // channel's picture shape: clips are fitted to the program around them.
-    Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct);
+    // Report receives how the program is playing as soon as it starts, and problems such as slow encoding (true).
+    Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null);
     // The program's picture shape (width ÷ height as displayed), or null when unknown.
     Task<double?> Shape(Airing program, CancellationToken ct);
 }
@@ -35,7 +36,7 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // them, so they are copied. Anything else is encoded to those formats, so every program on a channel
     // reaches the client in the same codecs. Changing codecs mid-stream is a common cause of freezes.
     // Jellyfin sizes its own output from the first program a viewer sees, so a later program of another
-    // shape would be stretched. Video in another shape, or with non-square pixels, is therefore encoded
+    // shape would be stretched. Video in a visibly different shape is therefore encoded
     // into the channel's picture shape with black bars; programs already in that shape are still copied.
     public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null)
     {
@@ -45,21 +46,27 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(720 * shape.Value), FrameHeight: shape is null ? 0 : 720);
         var pixel = format.PixelAspect ?? 1;
         var display = format.Shape;
-        var fits = shape is null || display is null || Math.Abs(pixel - 1) <= 0.02 && Math.Abs(display.Value - shape.Value) / shape.Value <= 0.03;
+        // Only shapes that would visibly stretch are corrected: 1.85:1 films stay as they are on a 16:9 channel.
+        // Jellyfin scales by the displayed shape, so non-square pixels in the right shape are fine too.
+        var fits = shape is null || display is null || SameShape(display.Value, shape.Value);
         var video = format.Video == "h264" && format.PixelFormat is null or "yuv420p" or "yuvj420p" && format.BitDepth is null or 8 && !format.Interlaced && fits;
         // Audio is cheap to encode, so anything but stereo 48 kHz AAC is converted to keep one audio layout.
         var audio = format.Audio == "aac" && format.Channels is null or 2 && format.SampleRate is null or 48000;
         var plan = new StreamPlan(video, audio, hasAudio, format.Interlaced);
         if (video || shape is not { } target) return plan;
-        // Keep the source's size where possible: wider pictures fit the width, narrower ones the height.
+        // Keep the source's size up to 720p, which keeps the encoding light: wider pictures fit the width,
+        // narrower ones the height.
         var width = (format.Width ?? 1280) * pixel;
         var height = (double)(format.Height ?? 720);
         var wide = (display ?? target) >= target;
-        var frameHeight = wide ? Math.Min(width, 1920) / target : Math.Min(height, 1080);
+        var frameHeight = wide ? Math.Min(width, 720 * target) / target : Math.Min(height, 720);
         return plan with { FrameWidth = Even(frameHeight * target), FrameHeight = Even(frameHeight) };
     }
 
     private static int Even(double x) => (int)Math.Round(x / 2) * 2;
+
+    // Within 8%: 1.85:1 counts as 16:9, while 4:3 and 2.39:1 do not.
+    public static bool SameShape(double a, double b) => Math.Abs(a - b) / b <= 0.08;
 
     public string Describe()
     {
@@ -82,13 +89,22 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     private static string Fit(int width, int height) =>
         $"scale=trunc(iw*sar/2)*2:ih,setsar=1,scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1";
 
-    public static ProcessStartInfo Command(string executable, Airing item, StreamPlan plan, DateTimeOffset now)
+    // Programs run this far ahead of the clock: each one starts with a burst, so the next program's
+    // start-up happens while the player still has a few seconds buffered instead of freezing it.
+    internal static TimeSpan Lead { get; set; } = TimeSpan.FromSeconds(3);
+
+    // A program that starts before its scheduled time (because the one before ran ahead) starts at its
+    // own beginning, with timestamps from its scheduled start. Burst is null when FFmpeg cannot burst.
+    public static ProcessStartInfo Command(string executable, Airing item, StreamPlan plan, DateTimeOffset now, double? burst = null)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         void Args(params string[] values) { foreach (var value in values) start.ArgumentList.Add(value); }
         static string Num(double x) => x.ToString("0.000", CultureInfo.InvariantCulture);
-        var seconds = Num(Math.Max(0.001, (item.End - now).TotalSeconds));
-        Args("-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-ss", Num(item.Offset + Math.Max(0, (now - item.Start).TotalSeconds)), "-i", item.Path);
+        var from = item.Start > now ? item.Start : now;
+        var seconds = Num(Math.Max(0.001, (item.End - from).TotalSeconds));
+        Args("-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:2", "-stats_period", "2");
+        if (burst is { } initial) Args("-readrate", "1", "-readrate_initial_burst", Num(initial)); else Args("-re");
+        Args("-ss", Num(item.Offset + (from - item.Start).TotalSeconds), "-i", item.Path);
         // Programs without audio get a silent track, so the stream layout never changes between programs.
         if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
         Args("-t", seconds, "-map", "0:v:0", "-map", plan.HasAudio ? "0:a:0?" : "1:a:0", "-sn", "-dn");
@@ -99,19 +115,24 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
         else Args("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
-        Args("-output_ts_offset", Num(now.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
+        // Video copied from a later part starts at the keyframe before the cut; make_zero keeps its timestamps after the break's.
+        Args("-avoid_negative_ts", "make_zero", "-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
         return start;
     }
 
     public async Task<double?> Shape(Airing program, CancellationToken ct) => (await Format(program, ct))?.Shape;
 
-    public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct)
+    public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
     {
         ct.ThrowIfCancellationRequested();
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
         var plan = StreamPlan.For(await Format(program, ct), channel, shape);
+        var now = DateTimeOffset.UtcNow;
+        // Burst only up to the lead: a program that already starts ahead of its time needs less.
+        double? burst = await CanBurst(encoder.EncoderPath) ? Math.Max(0, Lead.TotalSeconds - Math.Max(0, (program.Start - now).TotalSeconds)) : null;
+        report?.Invoke(plan.Describe(), false);
         Process started;
-        try { started = Process.Start(Command(encoder.EncoderPath, program, plan, DateTimeOffset.UtcNow)) ?? throw new EncoderUnavailableException(); }
+        try { started = Process.Start(Command(encoder.EncoderPath, program, plan, now, burst)) ?? throw new EncoderUnavailableException(); }
         catch (System.ComponentModel.Win32Exception) { throw new EncoderUnavailableException(); }
         using var process = started;
         void Kill() { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { } }
@@ -148,7 +169,28 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             // Stderr is drained concurrently and never accumulated in memory.
             try { await errors.WaitAsync(TimeSpan.FromSeconds(5)); } catch (TimeoutException) { } catch (IOException) { }
         }
-        async Task DrainErrors() { while (await process.StandardError.ReadLineAsync() is not null) { } }
+        // Stderr carries FFmpeg's progress. Encoding that produces less than 95% of real time over two
+        // ten-second windows cannot keep up, and the stream will freeze: say so in Channel health.
+        async Task DrainErrors()
+        {
+            long windowStart = Environment.TickCount64, windowOutput = -1;
+            var slowWindows = 0;
+            while (await process.StandardError.ReadLineAsync() is { } line)
+            {
+                if (slowWindows < 0 || !line.StartsWith("out_time_us=", StringComparison.Ordinal) || !long.TryParse(line.AsSpan(12), out var output)) continue;
+                var elapsed = Environment.TickCount64 - windowStart;
+                if (windowOutput < 0) (windowStart, windowOutput) = (Environment.TickCount64, output);
+                else if (elapsed >= 10000)
+                {
+                    var speed = (output - windowOutput) / 1000.0 / elapsed;
+                    slowWindows = speed < 0.95 ? slowWindows + 1 : 0;
+                    (windowStart, windowOutput) = (Environment.TickCount64, output);
+                    if (slowWindows < 2) continue;
+                    report?.Invoke($"Encoding runs at {speed:0.00}× real time, too slow to keep up, so the stream freezes. Choose the 4:3 or own-shape picture, or turn off Always encode, so fewer programs are encoded.", true);
+                    slowWindows = -1; // Report once per program.
+                }
+            }
+        }
         async Task Watch()
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -171,6 +213,29 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     }
 
     // Jellyfin already stores each file's streams; FFprobe is only the fallback for unscanned files.
+    // FFmpeg 6.1 and later can burst the start of a program; older versions fall back to -re.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<bool>> bursts = new();
+
+    private static Task<bool> CanBurst(string ffmpeg) => bursts.GetOrAdd(ffmpeg, async path =>
+    {
+        try
+        {
+            var start = new ProcessStartInfo(path) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            foreach (var arg in new[] { "-hide_banner", "-h", "full" }) start.ArgumentList.Add(arg);
+            using var process = Process.Start(start);
+            if (process is null) return false;
+            try
+            {
+                var errors = process.StandardError.ReadToEndAsync();
+                var help = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                await errors.WaitAsync(TimeSpan.FromSeconds(10));
+                return help.Contains("readrate_initial_burst", StringComparison.Ordinal);
+            }
+            finally { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or TimeoutException or InvalidOperationException or IOException) { return false; }
+    });
+
     // Shape and Stream both need the format; keep the last few so FFprobe runs once per file.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SourceFormat?> formats = new();
 

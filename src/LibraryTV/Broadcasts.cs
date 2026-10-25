@@ -90,6 +90,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         var consecutiveFailures = 0;
         var restarts = 0;
         Airing? restarted = null;
+        Airing? finished = null;
         double? programShape = null;
         try
         {
@@ -97,14 +98,19 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             {
                 var now = DateTimeOffset.UtcNow;
                 var item = scheduler.Current(id, now);
-                if (item is null)
+                // Programs run up to a few seconds ahead of the clock, so the one that just finished may still be
+                // "on now"; the next one starts at once, while the player still has those seconds buffered.
+                if (finished is not null && item is not null && item.Start == finished.Start && item.ItemId == finished.ItemId)
+                    item = scheduler.GuideFor(id).FirstOrDefault(x => x.Start >= finished.End);
+                if (item is null || item.Start - now > ProgramStreamer.Lead)
                 {
                     // Content restrictions or an empty pool can leave a short gap. Stay connected through it.
-                    var upcoming = scheduler.GuideFor(id).FirstOrDefault(x => x.Start > now);
+                    var upcoming = item ?? scheduler.GuideFor(id).FirstOrDefault(x => x.Start > now);
                     if (upcoming is null || upcoming.Start - now > MaxGap) throw new InvalidOperationException("No program is scheduled. Check channel health.");
-                    await Hold(broadcast, upcoming.Start - now, ct);
+                    await Hold(broadcast, upcoming.Start - now - ProgramStreamer.Lead, ct);
                     continue;
                 }
+                finished = null;
                 var channel = scheduler.Channels.FirstOrDefault(x => x.Id == id) ?? throw new InvalidOperationException("Channel is disabled.");
                 if (restarted != item) (restarted, restarts) = (item, 0);
                 double? shape = null;
@@ -115,7 +121,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     if (item.Commercial) shape = programShape;
                     else if (await streamer.Shape(item, ct) is { } current)
                     {
-                        restartPlayers = item.Offset == 0 && programShape is { } before && Math.Abs(current - before) / before > 0.03;
+                        restartPlayers = item.Offset == 0 && programShape is { } before && !StreamPlan.SameShape(current, before);
                         programShape = current;
                     }
                 }
@@ -129,17 +135,21 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                             _ = RestartPlayers(id, ct);
                         }
                         return Send(broadcast, chunk, ct);
-                    }, ct);
+                    }, ct, (text, problem) =>
+                    {
+                        if (!problem) { lock (gate) playback[id] = text; return; }
+                        Report(id, text, false);
+                        log.LogWarning("Library TV channel {Channel}: {Problem}", id, text);
+                    });
                     lock (gate) playback[id] = method;
                     consecutiveFailures = 0;
-                    var remaining = item.End - DateTimeOffset.UtcNow;
                     // The file was shorter than its listed runtime: start the next program instead of dead air.
-                    if (remaining > EarlyEnd && await scheduler.SkipFailed(item, DateTimeOffset.UtcNow, ct))
+                    if (item.End - DateTimeOffset.UtcNow > ProgramStreamer.Lead + EarlyEnd && await scheduler.SkipFailed(item, DateTimeOffset.UtcNow, ct))
                     {
                         RequestGuideImport();
                         continue;
                     }
-                    if (remaining > TimeSpan.Zero) await Hold(broadcast, item.End - DateTimeOffset.UtcNow, ct);
+                    finished = item;
                 }
                 catch (PlaybackInterruptedException ex) when (restarts < MaxRestarts)
                 {

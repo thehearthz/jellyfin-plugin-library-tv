@@ -21,6 +21,12 @@ public static class TransportTests
         var Auto = new ChannelDefinition();
         var later = ProgramStreamer.Command(ffmpeg, Item(clips[0]) with { Offset = 60 }, StreamPlan.Copy, DateTimeOffset.UtcNow);
         check(later.ArgumentList[later.ArgumentList.IndexOf("-ss") + 1].StartsWith("60."), "The second part of a program starts where the first part stopped");
+        var clock = DateTimeOffset.UtcNow;
+        var early = new Airing("transport", Guid.NewGuid(), "Next", clips[0], clock.AddSeconds(2), clock.AddSeconds(32), false, Offset: 600);
+        var ahead = ProgramStreamer.Command(ffmpeg, early, StreamPlan.Copy, clock, 1).ArgumentList;
+        string After(IList<string> args, string name) => args[args.IndexOf(name) + 1];
+        check(After(ahead, "-ss") == "600.000" && After(ahead, "-t") == "30.000" && After(ahead, "-output_ts_offset") == (early.Start.ToUnixTimeMilliseconds() / 1000.0).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)
+            && After(ahead, "-readrate_initial_burst") == "1.000", "A program started ahead of time plays from its own start, for its full length, stamped with its scheduled time");
         var command = ProgramStreamer.Command(ffmpeg, Item(clips[0]), StreamPlan.Copy, DateTimeOffset.UtcNow);
         check(!command.UseShellExecute && command.ArgumentList.Contains(clips[0]) && command.ArgumentList.Contains("copy") && !command.ArgumentList.Contains("libx264"), "Compatible files are copied, and paths are passed as individual arguments without shell interpretation");
         using var transport = new MemoryStream();
@@ -46,7 +52,10 @@ public static class TransportTests
         var mixedAudio = await Run(ffprobe, ["-v","error","-select_streams","a:0","-count_packets","-show_entries","stream=codec_name,nb_read_packets","-of","csv=p=0",mixedPath]);
         check(mixedFrames.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Any(x => int.TryParse(x.Trim().TrimEnd(','), out var count) && count > 80) && mixedAudio.Contains("aac"),
             "A copied program followed by an encoded one decodes as one continuous H.264/AAC stream");
-        var directMethod = await streamer.Stream(Item(clips[1], 1), Auto, null, _ => Task.CompletedTask, default);
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        string? reported = null;
+        var directMethod = await streamer.Stream(Item(clips[1], 1), Auto, null, _ => Task.CompletedTask, default, (text, _) => reported ??= text);
+        check(timer.Elapsed < TimeSpan.FromSeconds(1) && reported == directMethod, "Each program starts with a burst, so a short clip is sent faster than real time, and Channel health learns how it plays as it starts");
         check(directMethod.StartsWith("Direct"), "Health reports that compatible files played directly without encoding");
         var libraryFormats = Proxy<MediaBrowser.Controller.Library.IMediaSourceManager>.Make((name, args) => name == "GetMediaStreams" && args![0] is Guid
             ? new List<MediaBrowser.Model.Entities.MediaStream> { new() { Index = 0, Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Codec = "h264", PixelFormat = "yuv420p", BitDepth = 8 }, new() { Index = 1, Type = MediaBrowser.Model.Entities.MediaStreamType.Audio, Codec = "ac3", Channels = 6, SampleRate = 48000 } }
@@ -78,6 +87,44 @@ public static class TransportTests
         var compatiblePath = Path.Combine(root,"compatibility.ts"); await File.WriteAllBytesAsync(compatiblePath,compatibility.ToArray());
         var compatible = JsonDocument.Parse(await Run(ffprobe,["-v","error","-select_streams","v:0","-show_entries","stream=width,height,codec_name","-of","json",compatiblePath]));
         check(compatible.RootElement.GetProperty("streams").EnumerateArray().Any(x=>x.GetProperty("width").GetInt32()==1280&&x.GetProperty("height").GetInt32()==720&&x.GetProperty("codec_name").GetString()=="h264"),"Always encode produces the configured 720p H.264 output in a real FFmpeg run");
+        // End to end: the real scheduler, broadcast and FFmpeg run each program ahead of its time, once, in order.
+        var shows = Path.Combine(root, "lead");
+        Directory.CreateDirectory(shows);
+        var parts = new List<MediaBrowser.Controller.Entities.Video>();
+        for (var n = 0; n < 5; n++)
+        {
+            var file = Path.Combine(shows, $"show{n}.mp4");
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","4","-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2",file]);
+            parts.Add(new() { Id = Guid.NewGuid(), Name = "Show " + n, Path = file, RunTimeTicks = TimeSpan.FromSeconds(4).Ticks });
+        }
+        var leadCatalog = new Catalog(Proxy<MediaBrowser.Controller.Library.ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemById" => parts.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetVirtualFolders" => new List<MediaBrowser.Model.Entities.VirtualFolderInfo>(),
+            _ => throw new NotSupportedException(name)
+        }));
+        var savedConfiguration = Plugin.Instance.Configuration;
+        Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "lead", Name = "Lead", Source = new Pool { ItemIds = parts.Select(x => x.Id.ToString()).ToArray(), Shuffle = false } }] });
+        try
+        {
+            var leadScheduler = new Scheduler(leadCatalog, Proxy<MediaBrowser.Common.Configuration.IApplicationPaths>.Make((_, _) => shows), Microsoft.Extensions.Logging.Abstractions.NullLogger<Scheduler>.Instance);
+            await leadScheduler.Refresh(default);
+            var recorder = new RecordingStreamer(streamer);
+            using var live = new Broadcasts(leadScheduler, recorder, Microsoft.Extensions.Logging.Abstractions.NullLogger<Broadcasts>.Instance);
+            using var stop = new CancellationTokenSource();
+            var watching = live.Watch("lead", new MemoryStream(), stop.Token);
+            await Task.Delay(TimeSpan.FromSeconds(11));
+            stop.Cancel();
+            try { await watching.WaitAsync(TimeSpan.FromSeconds(5)); } catch (OperationCanceledException) { }
+            var played = recorder.Played.ToArray();
+            var guide = leadScheduler.GuideFor("lead");
+            var order = guide.SkipWhile(x => x.Start != played[0].Program.Start).Take(played.Length).Select(x => x.Start);
+            check(played.Length >= 3 && played.Select(x => x.Program.Start).SequenceEqual(order) && played.Skip(1).All(x => x.Started < x.Program.Start - TimeSpan.FromSeconds(1)),
+                "Each program starts seconds ahead of its scheduled time, right after the one before, and plays once in order");
+        }
+        finally { Plugin.Instance.UpdateConfiguration(savedConfiguration); }
+        // Without the start-up burst, so the clip still plays in real time when it is canceled.
+        ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;
         streamer.ProcessStarted = id => pid = id;
         using (var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(250)))
@@ -90,6 +137,7 @@ public static class TransportTests
         try { await streamer.Stream(Item(clips[0]),Auto, null,_=>Task.FromException(new IOException("Disconnected test output")),default).WaitAsync(TimeSpan.FromSeconds(8)); throw new Exception("Output failure was ignored"); }
         catch(IOException) { }
         check(pid>0&&Exited(pid),"A viewer/output failure also terminates its actual FFmpeg process");
+        ProgramStreamer.Lead = TimeSpan.FromSeconds(3);
         var invalid=Path.Combine(root,"broken.mp4"); await File.WriteAllTextAsync(invalid,"not a media file");
         try { await streamer.Stream(Item(invalid),Auto, null,_=>Task.CompletedTask,default).WaitAsync(TimeSpan.FromSeconds(8)); throw new Exception("Unreadable media was accepted"); }
         catch(IOException) { check(true,"Invalid media is reported as a recoverable item failure instead of a successful empty stream"); }
@@ -108,4 +156,15 @@ public static class TransportTests
         if(process.ExitCode!=0)throw new Exception("Media test tool failed: "+error);
         return text;
     }
+}
+
+sealed class RecordingStreamer(IProgramStreamer inner) : IProgramStreamer
+{
+    public System.Collections.Concurrent.ConcurrentQueue<(Airing Program, DateTimeOffset Started)> Played { get; } = new();
+    public Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
+    {
+        Played.Enqueue((program, DateTimeOffset.UtcNow));
+        return inner.Stream(program, channel, shape, output, ct, report);
+    }
+    public Task<double?> Shape(Airing program, CancellationToken ct) => inner.Shape(program, ct);
 }
