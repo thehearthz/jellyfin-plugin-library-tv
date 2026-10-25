@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.7.0.0",
+        "changelog": "Captions for Live TV channels.\n\n- Each channel has a Captions setting: Off (default), Forced only (foreign-language dialogue), or On when the program has captions, plus an optional caption language (English, en or eng).\n- Captions come from subtitle tracks in the file or subtitle files beside it (such as Episode.en.srt). Full captions, then SDH/closed captions, then the default track are preferred.\n- Live TV streams can't carry subtitle tracks, so captions are drawn into the picture: they work in every app, everyone watching the channel sees them, and programs with captions are encoded while they play (up to 720p). Duplicate a channel to offer it with and without captions.\n- Captions stay in sync after commercial breaks and when tuning in part-way through.\n- Embedded CEA-608/708 closed captions are not supported.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.7.0.0/library-tv-0.7.0.0.zip",
+        "checksum": "d1da124f9130e4e43695cb6f6814f165",
+        "timestamp": "2026-10-25T22:05:56Z"
+      },
+      {
         "version": "0.6.1.0",
         "changelog": "Less freezing, and more accurate commercials and bumpers.\n\n- Programs run about three seconds ahead of the clock: the plugin paces the stream from its own timestamps, so the next program, bumper or commercial starts while the player still has seconds buffered. Works on every FFmpeg version.\n- Copied video resuming after a break starts on a keyframe, so timestamps never run backwards.\n- Far less encoding: only pictures more than 8% off the channel's shape are corrected (1.85:1 films and widescreen DVDs now play directly), at no more than 720p. Channel health warns if encoding can't keep up.\n- Studios containing a network name count as that network (\"Nickelodeon Animation Studio\", \"Cartoon Network Studios\"), and nicknames work: Nick, CN, Williams Street.\n- Commercials and bumpers named after a show or movie play only with that show.\n- When no clip suits a program, its breaks are left out instead of using another network's clips.\n- Guide preview shows why each commercial and bumper was chosen, and labels bumpers.",
         "targetAbi": "12.2.0.0",
