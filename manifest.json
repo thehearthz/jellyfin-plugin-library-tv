@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.6.1.0",
+        "changelog": "Less freezing, and more accurate commercials and bumpers.\n\n- Programs run about three seconds ahead of the clock: the plugin paces the stream from its own timestamps, so the next program, bumper or commercial starts while the player still has seconds buffered. Works on every FFmpeg version.\n- Copied video resuming after a break starts on a keyframe, so timestamps never run backwards.\n- Far less encoding: only pictures more than 8% off the channel's shape are corrected (1.85:1 films and widescreen DVDs now play directly), at no more than 720p. Channel health warns if encoding can't keep up.\n- Studios containing a network name count as that network (\"Nickelodeon Animation Studio\", \"Cartoon Network Studios\"), and nicknames work: Nick, CN, Williams Street.\n- Commercials and bumpers named after a show or movie play only with that show.\n- When no clip suits a program, its breaks are left out instead of using another network's clips.\n- Guide preview shows why each commercial and bumper was chosen, and labels bumpers.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.6.1.0/library-tv-0.6.1.0.zip",
+        "checksum": "53a4d40256a71ca99dcef5d4fe997173",
+        "timestamp": "2026-10-25T18:49:03Z"
+      },
+      {
         "version": "0.6.0.0",
         "changelog": "Bumpers, commercial breaks during shows and movies, a shared commercial library sorted automatically by file name, and no more stretched pictures between programs.\n\n- Bumpers: one plays going into and coming out of each commercial break (one between programs on channels without commercials), matched by network and decade like commercials.\n- Commercial breaks during programs: one per episode and two per movie by default (0-5 each), placed at chapter marks when the file has them. A break still follows every program, and the Live TV guide lists each program once.\n- Shared commercial library: choose commercials and bumpers once for every channel. After startup and at each refresh, every file and folder name is read for a year ('94, 1994), decade (90s, 1990s) and network, and each clip is sorted to the programs that match it. Works on channels that mix several networks.\n- Picture shape per channel (16:9 by default, or 4:3): programs in another shape are encoded with black bars so Jellyfin never stretches them. Or choose \"Each program's own shape, restarting players\" to play every program in its own shape and restart the apps watching when the shape changes.\n- A missing program skips its remaining parts in one step.",
         "targetAbi": "12.2.0.0",
