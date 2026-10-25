@@ -122,6 +122,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (channel.EpisodeBreaks is < 0 or > 5 || channel.MovieBreaks is < 0 or > 5) throw new ArgumentException("Breaks during a program must be 0–5.");
             if (channel.PictureShape is not ("16:9" or "4:3" or "off" or "restart")) throw new ArgumentException("Picture shape must be 16:9, 4:3, off or restart.");
             if (channel.Bumpers is null) throw new ArgumentException("Channel content and schedule lists cannot be null.");
+            if (channel.Captions is not ("off" or "forced" or "on") || channel.CaptionLanguage is null || channel.CaptionLanguage.Length > 40) throw new ArgumentException("Captions must be off, forced or on, with a caption language of 40 characters or fewer.");
             if (channel.CommercialNetwork is null || channel.CommercialNetwork.Length > 100 || channel.Blocks.Any(x => x is not null && (x.CommercialNetwork is null || x.CommercialNetwork.Length > 100))) throw new ArgumentException("Commercial network names must be 100 characters or fewer.");
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
             foreach (var block in channel.Blocks)

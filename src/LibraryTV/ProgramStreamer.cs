@@ -20,14 +20,61 @@ public interface IProgramStreamer
 // What the file holds, from Jellyfin's library metadata or FFprobe. Null means unknown.
 // PixelAspect is the sample aspect ratio (1 for square pixels); DisplayAspect is the picture's shape.
 public sealed record SourceFormat(string? Video, string? PixelFormat, int? BitDepth, bool Interlaced, string? Audio, int? Channels, int? SampleRate,
-    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null)
+    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null, CaptionTrack[]? Captions = null)
 {
     public double? Shape => DisplayAspect ?? (Width > 0 && Height > 0 ? Width.Value * (PixelAspect ?? 1) / Height.Value : null);
 }
 
+// A subtitle track in a file, or a separate subtitle file (ExternalPath). EmbeddedIndex is its position
+// among the file's subtitle streams, as FFmpeg counts them (0:s:N); -1 for a separate file.
+public sealed record CaptionTrack(string Codec, string? Language, bool Forced, bool HearingImpaired, bool Default, string? ExternalPath, int EmbeddedIndex)
+{
+    private static readonly string[] TextCodecs = ["subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"];
+    private static readonly string[] ImageCodecs = ["hdmv_pgs_subtitle", "pgssub", "pgs", "dvd_subtitle", "dvdsub", "dvb_subtitle", "dvbsub"];
+    public bool Image => ImageCodecs.Contains(Codec);
+    // Text tracks can be drawn from the file or a separate file; picture tracks only from inside the file.
+    public bool Supported => TextCodecs.Contains(Codec) || Image && ExternalPath is null;
+
+    // The track to burn in for a channel's caption setting, or null. With a language set, only tracks in that
+    // language count. "On" prefers full captions over forced-only tracks, then SDH/closed captions, then the
+    // file's default track.
+    public static CaptionTrack? Pick(IReadOnlyList<CaptionTrack>? tracks, string mode, string language)
+    {
+        if (mode is not ("on" or "forced") || tracks is null) return null;
+        var wanted = Languages(language);
+        var usable = tracks.Where(x => x.Supported && (wanted.Count == 0 || Languages(x.Language).Overlaps(wanted)));
+        if (mode == "forced") usable = usable.Where(x => x.Forced);
+        return usable.OrderBy(x => mode == "on" && x.Forced).ThenByDescending(x => x.HearingImpaired).ThenByDescending(x => x.Default).FirstOrDefault();
+    }
+
+    // ISO 639-2/B codes that differ from the /T codes .NET uses.
+    private static readonly Dictionary<string, string> Bibliographic = new(StringComparer.Ordinal)
+    {
+        ["fre"] = "fra", ["ger"] = "deu", ["dut"] = "nld", ["chi"] = "zho", ["cze"] = "ces", ["gre"] = "ell", ["per"] = "fas", ["rum"] = "ron",
+        ["slo"] = "slk", ["alb"] = "sqi", ["arm"] = "hye", ["baq"] = "eus", ["bur"] = "mya", ["geo"] = "kat", ["ice"] = "isl", ["mac"] = "mkd",
+        ["mao"] = "mri", ["may"] = "msa", ["tib"] = "bod", ["wel"] = "cym",
+    };
+    private static readonly CultureInfo[] Cultures = CultureInfo.GetCultures(CultureTypes.NeutralCultures);
+
+    // "English", "en" and "eng" all become {en, eng, english}, so any of them matches the others.
+    public static HashSet<string> Languages(string? language)
+    {
+        var key = (language ?? "").Trim().ToLowerInvariant();
+        if (key.Length == 0) return [];
+        key = Bibliographic.GetValueOrDefault(key, key);
+        var keys = new HashSet<string>(StringComparer.Ordinal) { key };
+        foreach (var culture in Cultures)
+            if (culture.TwoLetterISOLanguageName == key || culture.ThreeLetterISOLanguageName == key || culture.EnglishName.Equals(key, StringComparison.OrdinalIgnoreCase))
+                keys.UnionWith([culture.TwoLetterISOLanguageName, culture.ThreeLetterISOLanguageName, culture.EnglishName.ToLowerInvariant()]);
+        return keys;
+    }
+}
+
 // Normalize is the always-encode 720p mode; otherwise each stream is copied when compatible.
 // FrameWidth/FrameHeight, when set, is the picture the video is encoded into, with black bars.
-public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0)
+// Captions, when set, is burned into the picture, which always means encoding the video.
+public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
+    CaptionTrack? Captions = null)
 {
     public static readonly StreamPlan Copy = new(true, true);
     public static readonly StreamPlan Encode = new(false, false, Normalize: true, FrameWidth: 1280, FrameHeight: 720);
@@ -41,7 +88,8 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null)
     {
         var hasAudio = format is null || format.Audio is not null;
-        if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true };
+        var captions = CaptionTrack.Pick(format?.Captions, channel.Captions, channel.CaptionLanguage);
+        if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions };
         var shape = shapeOverride ?? channel.PictureShape switch { "off" or "restart" => null, "4:3" => 4.0 / 3, _ => (double?)(16.0 / 9) };
         if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(720 * shape.Value), FrameHeight: shape is null ? 0 : 720);
         var pixel = format.PixelAspect ?? 1;
@@ -49,10 +97,10 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         // Only shapes that would visibly stretch are corrected: 1.85:1 films stay as they are on a 16:9 channel.
         // Jellyfin scales by the displayed shape, so non-square pixels in the right shape are fine too.
         var fits = shape is null || display is null || SameShape(display.Value, shape.Value);
-        var video = format.Video == "h264" && format.PixelFormat is null or "yuv420p" or "yuvj420p" && format.BitDepth is null or 8 && !format.Interlaced && fits;
+        var video = format.Video == "h264" && format.PixelFormat is null or "yuv420p" or "yuvj420p" && format.BitDepth is null or 8 && !format.Interlaced && fits && captions is null;
         // Audio is cheap to encode, so anything but stereo 48 kHz AAC is converted to keep one audio layout.
         var audio = format.Audio == "aac" && format.Channels is null or 2 && format.SampleRate is null or 48000;
-        var plan = new StreamPlan(video, audio, hasAudio, format.Interlaced);
+        var plan = new StreamPlan(video, audio, hasAudio, format.Interlaced, Captions: captions);
         if (video || shape is not { } target) return plan;
         // Keep the source's size up to 720p, which keeps the encoding light: wider pictures fit the width,
         // narrower ones the height.
@@ -70,11 +118,12 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
 
     public string Describe()
     {
-        if (Normalize) return "Encoding to 720p H.264/AAC (always encode)";
+        var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
+        if (Normalize) return "Encoding to 720p H.264/AAC (always encode)" + captions;
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding";
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = !HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo";
-        return video + "; " + audio;
+        return video + "; " + audio + captions;
     }
 }
 
@@ -84,6 +133,13 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     // A live FFmpeg process that sends nothing for this long is stalled, for example on a hung network mount.
     internal TimeSpan FirstOutputTimeout { get; set; } = TimeSpan.FromSeconds(20);
     internal TimeSpan StallTimeout { get; set; } = TimeSpan.FromSeconds(12);
+
+    // A filter option value in single quotes: a quote inside it closes, escapes and reopens the quotes.
+    private static string Quote(string value) => "'" + value.Replace("'", @"'\''") + "'";
+
+    // Protects a filter's arguments from the filter-graph parser, which reads \ ' [ ] , ; itself before
+    // the filter reads its own options; paths with spaces, quotes, colons or brackets then arrive intact.
+    private static string FilterValue(string arguments) => string.Concat(arguments.Select(c => c is '\\' or '\'' or '[' or ']' or ',' or ';' ? "\\" + c : c.ToString()));
 
     // Square the pixels, fit the picture inside the frame, and add black bars to fill it.
     private static string Fit(int width, int height) =>
@@ -108,12 +164,31 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds), "-i", item.Path);
         // Programs without audio get a silent track, so the stream layout never changes between programs.
         if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
-        Args("-t", seconds, "-map", "0:v:0", "-map", plan.HasAudio ? "0:a:0?" : "1:a:0", "-sn", "-dn");
+        var position = seek ?? item.Offset + (from - item.Start).TotalSeconds;
         var deinterlace = plan.Deinterlace ? "yadif," : "";
-        if (plan.Normalize) Args("-vf", deinterlace + Fit(1280, 720) + ",fps=30,format=yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60");
+        var size = plan.Normalize ? Fit(1280, 720) : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight) : "scale=w='min(iw,1280)':h='min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+        var finish = (plan.Normalize ? ",fps=30" : "") + ",format=yuv420p";
+        var video = "0:v:0";
+        if (plan.CopyVideo) Args("-t", seconds);
+        else if (plan.Captions is { Image: true } picture)
+        {
+            // Picture subtitles come from the same file, so they are seeked with the video.
+            Args("-t", seconds, "-filter_complex", $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{finish}[video]");
+            video = "[video]";
+        }
+        else
+        {
+            // Text subtitles are read from the start of their file: shift the picture's clock to the file's position
+            // while drawing them, so captions stay in sync after a seek or a break.
+            var text = plan.Captions is { } track
+                ? $",setpts=PTS+{Num(position)}/TB,subtitles={FilterValue("filename=" + Quote(track.ExternalPath ?? item.Path) + (track.ExternalPath is null ? $":si={track.EmbeddedIndex}" : ""))},setpts=PTS-{Num(position)}/TB"
+                : "";
+            Args("-t", seconds, "-vf", deinterlace + size + text + finish);
+        }
+        Args("-map", video, "-map", plan.HasAudio ? "0:a:0?" : "1:a:0", "-sn", "-dn");
+        if (plan.Normalize) Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60");
         else if (plan.CopyVideo) Args("-c:v", "copy");
-        else Args("-vf", deinterlace + (plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight) : "scale=w='min(iw,1920)':h='min(ih,1080)':force_original_aspect_ratio=decrease:force_divisible_by=2") + ",format=yuv420p",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
+        else Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
         else Args("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
         Args("-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
@@ -258,8 +333,12 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 {
                     var display = Ratio(video.AspectRatio);
                     var pixel = display is not null && video.Width > 0 && video.Height > 0 ? display / ((double)video.Width.Value / video.Height.Value) : null;
+                    // FFmpeg numbers a file's subtitle streams in order; separate files are listed by path.
+                    var embedded = streams.Where(x => x.Type == MediaStreamType.Subtitle && !x.IsExternal).OrderBy(x => x.Index).ToList();
+                    var captions = streams.Where(x => x.Type == MediaStreamType.Subtitle && (!x.IsExternal || !string.IsNullOrEmpty(x.Path)))
+                        .Select(x => new CaptionTrack((x.Codec ?? "").ToLowerInvariant(), x.Language, x.IsForced, x.IsHearingImpaired, x.IsDefault, x.IsExternal ? x.Path : null, x.IsExternal ? -1 : embedded.IndexOf(x))).ToArray();
                     return new(video.Codec?.ToLowerInvariant(), video.PixelFormat, video.BitDepth, video.IsInterlaced, audio?.Codec?.ToLowerInvariant(), audio?.Channels, audio?.SampleRate,
-                        video.Width, video.Height, pixel, display);
+                        video.Width, video.Height, pixel, display, captions);
                 }
             }
         }
@@ -298,7 +377,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
 
     private async Task<SourceFormat?> Probe(string path, CancellationToken ct)
     {
-        var json = await RunProbe(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio", "-of", "json", path], ct);
+        var json = await RunProbe(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio:stream_tags=language:stream_disposition=default,forced,hearing_impaired", "-of", "json", path], ct);
         if (json is null) return null;
         try
         {
@@ -308,11 +387,14 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             var audio = all.FirstOrDefault(x => Text(x, "codec_type") == "audio");
             if (video.ValueKind != JsonValueKind.Object) return null;
             var hasAudio = audio.ValueKind == JsonValueKind.Object;
+            var captions = all.Where(x => Text(x, "codec_type") == "subtitle").Select((x, n) => new CaptionTrack(Text(x, "codec_name") ?? "",
+                x.TryGetProperty("tags", out var tags) ? Text(tags, "language") : null, Flag(x, "forced"), Flag(x, "hearing_impaired"), Flag(x, "default"), null, n)).ToArray();
             return new(Text(video, "codec_name"), Text(video, "pix_fmt"), Number(video, "bits_per_raw_sample"), Text(video, "field_order") is { } order && order != "progressive" && order != "unknown",
                 hasAudio ? Text(audio, "codec_name") : null, hasAudio ? Number(audio, "channels") : null, hasAudio ? Number(audio, "sample_rate") : null,
-                Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")));
+                Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")), captions);
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
+        static bool Flag(JsonElement e, string name) => e.TryGetProperty("disposition", out var d) && d.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.GetInt32() == 1;
         static string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         static int? Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) ? v.ValueKind == JsonValueKind.Number ? v.GetInt32() : int.TryParse(v.GetString(), CultureInfo.InvariantCulture, out var n) ? n : null : null;
     }

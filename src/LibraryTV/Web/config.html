@@ -1440,6 +1440,46 @@
               { class: "ltv-muted" },
               "Every program is shown in this shape, so pictures are never stretched when one program follows another. Programs already in this shape play directly; others are encoded with black bars at the sides or top and bottom. Choose Classic 4:3 for a channel of mostly older shows. “Restarting players” plays every program in its own shape without bars: when a program of a different shape starts, apps watching the channel restart it, with a few seconds of loading. Commercials and bumpers keep the shape of the program they follow. Apps that don't accept remote control keep playing and may stretch. “Each program's own shape” never restarts or adds bars, but some players then stretch programs after the first.",
             ),
+            node(
+              "label",
+              { class: "ltv-field" },
+              node("span", {}, "Captions"),
+              node(
+                "select",
+                {
+                  onChange: (e) => {
+                    c.Captions = e.target.value;
+                    dirty();
+                  },
+                },
+                ...[
+                  ["off", "Off"],
+                  ["forced", "Forced only (foreign-language dialogue)"],
+                  ["on", "On when the program has captions"],
+                ].map(([value, text]) =>
+                  node(
+                    "option",
+                    { value, selected: c.Captions === value ? "" : null },
+                    text,
+                  ),
+                ),
+              ),
+            ),
+            field(
+              "Caption language",
+              c.CaptionLanguage || "",
+              (v) => (c.CaptionLanguage = v.trim()),
+              "text",
+              {
+                placeholder: "e.g. English or eng (blank: any)",
+                maxlength: 40,
+              },
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Captions are drawn into the picture, so everyone watching this channel sees them, in every app. They come from subtitle tracks in the file or subtitle files beside it, such as Episode.en.srt; SDH and closed-caption tracks are preferred. Programs with captions are encoded while they play, which uses more CPU. For a channel with and without captions, duplicate it and turn captions on in the copy.",
+            ),
           );
         }
         if (state.tab === "schedule") {
@@ -1770,6 +1810,8 @@
           MovieBreaks: 2,
           Bumpers: pool(),
           PictureShape: "16:9",
+          Captions: "off",
+          CaptionLanguage: "",
           MatchCommercialEra: true,
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
@@ -2227,6 +2269,8 @@
             if (!Number.isInteger(c.EpisodeBreaks)) c.EpisodeBreaks = 1;
             if (!Number.isInteger(c.MovieBreaks)) c.MovieBreaks = 2;
             c.PictureShape = c.PictureShape || "16:9";
+            c.Captions = c.Captions || "off";
+            c.CaptionLanguage = c.CaptionLanguage || "";
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;

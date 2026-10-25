@@ -66,6 +66,11 @@ public sealed class ChannelDefinition
     // Every program is delivered in this picture shape ("16:9", "4:3" or "off"); other shapes get black bars.
     // "restart" plays programs in their own shape and restarts viewers' players when the shape changes.
     public string PictureShape { get; set; } = "16:9";
+    // Captions burned into the picture for everyone watching: "off", "forced" (forced tracks only, such as
+    // foreign-language dialogue) or "on" (when the program has a caption track). Language may be a code
+    // ("en", "eng") or a name ("English"); blank accepts any language.
+    public string Captions { get; set; } = "off";
+    public string CaptionLanguage { get; set; } = "";
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {

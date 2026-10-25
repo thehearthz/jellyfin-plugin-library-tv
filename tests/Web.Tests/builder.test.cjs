@@ -874,3 +874,24 @@ test("guide preview shows why each commercial and bumper was chosen", async () =
     dom.window.close();
   }
 });
+
+test("captions are off by default and save their mode and language per channel", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const label = (text) =>
+      [...w.document.querySelectorAll("main label.ltv-field")].find((x) =>
+        x.textContent.includes(text),
+      );
+    const mode = label("Captions").querySelector("select");
+    assert.equal(mode.value, "off");
+    change(w, mode, "on");
+    change(w, label("Caption language").querySelector("input"), " English ");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].Captions, "on");
+    assert.equal(w.testApi.saved.Channels[0].CaptionLanguage, "English");
+  } finally {
+    dom.window.close();
+  }
+});

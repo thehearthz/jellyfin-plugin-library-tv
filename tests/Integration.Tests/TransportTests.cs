@@ -93,6 +93,43 @@ public static class TransportTests
         var compatiblePath = Path.Combine(root,"compatibility.ts"); await File.WriteAllBytesAsync(compatiblePath,compatibility.ToArray());
         var compatible = JsonDocument.Parse(await Run(ffprobe,["-v","error","-select_streams","v:0","-show_entries","stream=width,height,codec_name","-of","json",compatiblePath]));
         check(compatible.RootElement.GetProperty("streams").EnumerateArray().Any(x=>x.GetProperty("width").GetInt32()==1280&&x.GetProperty("height").GetInt32()==720&&x.GetProperty("codec_name").GetString()=="h264"),"Always encode produces the configured 720p H.264 output in a real FFmpeg run");
+        // Captions are burned into the picture, in sync after a seek, from inside the file or a separate file.
+        var captionRoot = Path.Combine(root, "captions");
+        Directory.CreateDirectory(captionRoot);
+        var srt = Path.Combine(captionRoot, "embedded.srt");
+        await File.WriteAllTextAsync(srt, "1\n00:00:05,000 --> 00:00:07,500\nHELLO HELLO HELLO\n");
+        var captioned = Path.Combine(captionRoot, "captioned show.mkv");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=black:size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-i",srt,"-t","8",
+            "-map","0:v","-map","1:a","-map","2:s","-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2","-c:s","srt","-metadata:s:s:0","language=eng",captioned]);
+        async Task<double> Brightest(Airing program, ChannelDefinition channel, ProgramStreamer? with = null)
+        {
+            using var captionOutput = new MemoryStream();
+            await (with ?? streamer).Stream(program, channel, null, bytes => { captionOutput.Write(bytes); return Task.CompletedTask; }, default);
+            var path = Path.Combine(captionRoot, Guid.NewGuid().ToString("N") + ".ts");
+            await File.WriteAllBytesAsync(path, captionOutput.ToArray());
+            var stats = await Run(ffprobe, ["-v","error","-f","lavfi","-i","movie=" + path.Replace("\\", "/") + ",signalstats","-show_entries","frame_tags=lavfi.signalstats.YMAX","-of","csv=p=0","-read_intervals","%+1"]);
+            return stats.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(x => double.Parse(x.Trim().TrimEnd(','), System.Globalization.CultureInfo.InvariantCulture)).Max();
+        }
+        var captionClock = DateTimeOffset.UtcNow;
+        var secondHalf = new Airing("captions", Guid.NewGuid(), "Part 2", captioned, captionClock, captionClock.AddSeconds(3), false, Offset: 5);
+        var withCaptions = await Brightest(secondHalf, new ChannelDefinition { Captions = "on", CaptionLanguage = "English" });
+        var withoutCaptions = await Brightest(secondHalf, new ChannelDefinition());
+        var forcedOnly = await Brightest(secondHalf, new ChannelDefinition { Captions = "forced" });
+        check(withCaptions > 150 && withoutCaptions < 40 && forcedOnly < 40,
+            "Captions from inside the file are burned in, in sync when a program starts part-way through, and forced-only mode skips ordinary captions");
+        var oddName = Path.Combine(captionRoot, "it's [a], test: 1.srt");
+        await File.WriteAllTextAsync(oddName, "1\n00:00:00,000 --> 00:00:09,000\nSIDE FILE\n");
+        var sideFile = Proxy<MediaBrowser.Controller.Library.IMediaSourceManager>.Make((name, args) => name == "GetMediaStreams" && args![0] is Guid
+            ? new List<MediaBrowser.Model.Entities.MediaStream> { new() { Index = 0, Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Codec = "h264", PixelFormat = "yuv420p", BitDepth = 8, Width = 320, Height = 180, AspectRatio = "16:9" },
+                new() { Index = 1, Type = MediaBrowser.Model.Entities.MediaStreamType.Audio, Codec = "aac", Channels = 2, SampleRate = 48000 },
+                new() { Index = 3, Type = MediaBrowser.Model.Entities.MediaStreamType.Subtitle, Codec = "subrip", Language = "spa", IsExternal = true, Path = oddName } }
+            : throw new NotSupportedException(name));
+        var plain = Path.Combine(captionRoot, "plain.mp4");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=black:size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","4","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-c:a","aac","-ac","2",plain]);
+        var sideStreamer = new ProgramStreamer(encoder, sideFile);
+        var spanish = await Brightest(new Airing("captions", Guid.NewGuid(), "Plain", plain, captionClock, captionClock.AddSeconds(2), false, Offset: 1), new ChannelDefinition { Captions = "on", CaptionLanguage = "es" }, sideStreamer);
+        var english = await Brightest(new Airing("captions", Guid.NewGuid(), "Plain", plain, captionClock, captionClock.AddSeconds(2), false, Offset: 1), new ChannelDefinition { Captions = "on", CaptionLanguage = "eng" }, sideStreamer);
+        check(spanish > 150 && english < 40, "A separate caption file is burned in even when its name has quotes, brackets, commas and colons, and other languages are left out");
         // A show resuming after a break starts on its keyframe, so timestamps never run backwards into the break.
         var sparse = Path.Combine(root, "sparse keyframes.mp4");
         await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","10","-c:v","libx264","-preset","ultrafast","-g","100","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sparse]);
