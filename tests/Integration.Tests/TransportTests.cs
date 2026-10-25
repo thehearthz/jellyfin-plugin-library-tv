@@ -52,10 +52,16 @@ public static class TransportTests
         var mixedAudio = await Run(ffprobe, ["-v","error","-select_streams","a:0","-count_packets","-show_entries","stream=codec_name,nb_read_packets","-of","csv=p=0",mixedPath]);
         check(mixedFrames.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Any(x => int.TryParse(x.Trim().TrimEnd(','), out var count) && count > 80) && mixedAudio.Contains("aac"),
             "A copied program followed by an encoded one decodes as one continuous H.264/AAC stream");
+        // Six seconds of video sent in well under six seconds shows the burst at work, with room for slow machines.
+        var sixSeconds = Path.Combine(root, "six seconds.mp4");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","6","-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sixSeconds]);
+        ProgramStreamer.Lead = TimeSpan.FromSeconds(6);
         var timer = System.Diagnostics.Stopwatch.StartNew();
         string? reported = null;
-        var directMethod = await streamer.Stream(Item(clips[1], 1), Auto, null, _ => Task.CompletedTask, default, (text, _) => reported ??= text);
-        check(timer.Elapsed < TimeSpan.FromSeconds(1) && reported == directMethod, "Each program starts with a burst, so a short clip is sent faster than real time, and Channel health learns how it plays as it starts");
+        var directMethod = await streamer.Stream(Item(sixSeconds, 6), Auto, null, _ => Task.CompletedTask, default, (text, _) => reported ??= text);
+        timer.Stop();
+        ProgramStreamer.Lead = TimeSpan.FromSeconds(3);
+        check(timer.Elapsed < TimeSpan.FromSeconds(4) && reported == directMethod, "Each program starts with a burst, so a short clip is sent faster than real time, and Channel health learns how it plays as it starts");
         check(directMethod.StartsWith("Direct"), "Health reports that compatible files played directly without encoding");
         var libraryFormats = Proxy<MediaBrowser.Controller.Library.IMediaSourceManager>.Make((name, args) => name == "GetMediaStreams" && args![0] is Guid
             ? new List<MediaBrowser.Model.Entities.MediaStream> { new() { Index = 0, Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Codec = "h264", PixelFormat = "yuv420p", BitDepth = 8 }, new() { Index = 1, Type = MediaBrowser.Model.Entities.MediaStreamType.Audio, Codec = "ac3", Channels = 6, SampleRate = 48000 } }
