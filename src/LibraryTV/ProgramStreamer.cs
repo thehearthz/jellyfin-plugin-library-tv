@@ -89,13 +89,15 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     private static string Fit(int width, int height) =>
         $"scale=trunc(iw*sar/2)*2:ih,setsar=1,scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1";
 
-    // Programs run this far ahead of the clock: each one starts with a burst, so the next program's
-    // start-up happens while the player still has a few seconds buffered instead of freezing it.
+    // Programs run this far ahead of the clock: video is sent up to this long before its time, so the next
+    // program's start-up happens while the player still has a few seconds buffered instead of freezing it.
     internal static TimeSpan Lead { get; set; } = TimeSpan.FromSeconds(3);
 
     // A program that starts before its scheduled time (because the one before ran ahead) starts at its
-    // own beginning, with timestamps from its scheduled start. Burst is null when FFmpeg cannot burst.
-    public static ProcessStartInfo Command(string executable, Airing item, StreamPlan plan, DateTimeOffset now, double? burst = null)
+    // own beginning, with timestamps from its scheduled start. FFmpeg runs unpaced; Stream paces its output
+    // by these timestamps, which works the same on every FFmpeg version.
+    // Seek, when given, replaces the computed start position (a keyframe for copied video, see Stream).
+    public static ProcessStartInfo Command(string executable, Airing item, StreamPlan plan, DateTimeOffset now, double? seek = null)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         void Args(params string[] values) { foreach (var value in values) start.ArgumentList.Add(value); }
@@ -103,8 +105,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         var from = item.Start > now ? item.Start : now;
         var seconds = Num(Math.Max(0.001, (item.End - from).TotalSeconds));
         Args("-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:2", "-stats_period", "2");
-        if (burst is { } initial) Args("-readrate", "1", "-readrate_initial_burst", Num(initial)); else Args("-re");
-        Args("-ss", Num(item.Offset + (from - item.Start).TotalSeconds), "-i", item.Path);
+        Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds), "-i", item.Path);
         // Programs without audio get a silent track, so the stream layout never changes between programs.
         if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
         Args("-t", seconds, "-map", "0:v:0", "-map", plan.HasAudio ? "0:a:0?" : "1:a:0", "-sn", "-dn");
@@ -115,8 +116,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
         else Args("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
-        // Video copied from a later part starts at the keyframe before the cut; make_zero keeps its timestamps after the break's.
-        Args("-avoid_negative_ts", "make_zero", "-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
+        Args("-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
         return start;
     }
 
@@ -128,11 +128,9 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
         var plan = StreamPlan.For(await Format(program, ct), channel, shape);
         var now = DateTimeOffset.UtcNow;
-        // Burst only up to the lead: a program that already starts ahead of its time needs less.
-        double? burst = await CanBurst(encoder.EncoderPath) ? Math.Max(0, Lead.TotalSeconds - Math.Max(0, (program.Start - now).TotalSeconds)) : null;
         report?.Invoke(plan.Describe(), false);
         Process started;
-        try { started = Process.Start(Command(encoder.EncoderPath, program, plan, now, burst)) ?? throw new EncoderUnavailableException(); }
+        try { started = Process.Start(Command(encoder.EncoderPath, program, plan, now, await ResumePoint(program, plan, now, ct))) ?? throw new EncoderUnavailableException(); }
         catch (System.ComponentModel.Win32Exception) { throw new EncoderUnavailableException(); }
         using var process = started;
         void Kill() { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { } }
@@ -148,8 +146,18 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             ProcessStarted?.Invoke(process.Id);
             var buffer = new byte[188 * 64];
             int count;
-            while ((count = await process.StandardOutput.BaseStream.ReadAsync(buffer, ct)) > 0)
+            var clock = new TransportClock(program.Start > now ? program.Start : now);
+            while (true)
             {
+                // The watchdog times each read, not the pauses for pacing below.
+                Volatile.Write(ref lastOutput, Environment.TickCount64);
+                if ((count = await process.StandardOutput.BaseStream.ReadAsync(buffer, ct)) <= 0) break;
+                // Hold video until it is due, less the lead. FFmpeg waits meanwhile, as its pipe fills.
+                if (clock.Read(buffer.AsSpan(0, count)) is { } due && due - Lead - DateTimeOffset.UtcNow is { Ticks: > 0 } wait)
+                {
+                    Volatile.Write(ref lastOutput, Environment.TickCount64 + (long)wait.TotalMilliseconds);
+                    await Task.Delay(wait, ct);
+                }
                 bytes += count;
                 Volatile.Write(ref lastOutput, Environment.TickCount64);
                 await output(buffer.AsSpan(0, count).ToArray());
@@ -213,28 +221,18 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     }
 
     // Jellyfin already stores each file's streams; FFprobe is only the fallback for unscanned files.
-    // FFmpeg 6.1 and later can burst the start of a program; older versions fall back to -re.
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<bool>> bursts = new();
-
-    private static Task<bool> CanBurst(string ffmpeg) => bursts.GetOrAdd(ffmpeg, async path =>
+    // Copied video can only start on a keyframe. Started at a later cut, FFmpeg would begin at the keyframe
+    // before it, stamped seconds before the break that just played, and players stutter or freeze on
+    // timestamps that go backwards. So a later part starts exactly on that keyframe instead: it repeats
+    // those few seconds after the break, with timestamps in order.
+    private async Task<double?> ResumePoint(Airing program, StreamPlan plan, DateTimeOffset now, CancellationToken ct)
     {
-        try
-        {
-            var start = new ProcessStartInfo(path) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-            foreach (var arg in new[] { "-hide_banner", "-h", "full" }) start.ArgumentList.Add(arg);
-            using var process = Process.Start(start);
-            if (process is null) return false;
-            try
-            {
-                var errors = process.StandardError.ReadToEndAsync();
-                var help = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
-                await errors.WaitAsync(TimeSpan.FromSeconds(10));
-                return help.Contains("readrate_initial_burst", StringComparison.Ordinal);
-            }
-            finally { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } }
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or TimeoutException or InvalidOperationException or IOException) { return false; }
-    });
+        if (!plan.CopyVideo || plan.Normalize || program.Offset <= 0 || now > program.Start) return null;
+        var keyframes = await RunProbe(["-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey", "-show_entries", "frame=pts_time", "-of", "csv=p=0",
+            "-read_intervals", $"{Math.Max(0, program.Offset - 15).ToString("0.###", CultureInfo.InvariantCulture)}%{(program.Offset + 0.05).ToString("0.###", CultureInfo.InvariantCulture)}", program.Path], ct);
+        var before = keyframes?.Split('\n').Select(x => double.TryParse(x.Trim().TrimEnd(','), CultureInfo.InvariantCulture, out var t) ? t : -1).Where(x => x >= 0 && x <= program.Offset + 0.05).ToArray();
+        return before is { Length: > 0 } ? before.Max() : null;
+    }
 
     // Shape and Stream both need the format; keep the last few so FFprobe runs once per file.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SourceFormat?> formats = new();
@@ -269,43 +267,100 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         return await Probe(program.Path, ct);
     }
 
-    private async Task<SourceFormat?> Probe(string path, CancellationToken ct)
+    // Runs FFprobe with a ten-second limit; null when it is unavailable or fails.
+    private async Task<string?> RunProbe(string[] args, CancellationToken ct)
     {
         string probe;
         try { probe = encoder.ProbePath; }
         catch (NotSupportedException) { return null; }
         if (string.IsNullOrEmpty(probe)) return null;
         var start = new ProcessStartInfo(probe) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-        foreach (var arg in new[] { "-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio", "-of", "json", path }) start.ArgumentList.Add(arg);
+        foreach (var arg in args) start.ArgumentList.Add(arg);
         try
         {
             using var process = Process.Start(start);
             if (process is null) return null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
-            var errors = process.StandardError.ReadToEndAsync(timeout.Token);
             try
             {
-                var json = await process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+                var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
                 await process.WaitForExitAsync(timeout.Token);
                 await errors;
-                if (process.ExitCode != 0) return null;
-                using var document = JsonDocument.Parse(json);
-                var all = document.RootElement.GetProperty("streams").EnumerateArray().ToArray();
-                var video = all.FirstOrDefault(x => Text(x, "codec_type") == "video");
-                var audio = all.FirstOrDefault(x => Text(x, "codec_type") == "audio");
-                if (video.ValueKind != JsonValueKind.Object) return null;
-                var hasAudio = audio.ValueKind == JsonValueKind.Object;
-                return new(Text(video, "codec_name"), Text(video, "pix_fmt"), Number(video, "bits_per_raw_sample"), Text(video, "field_order") is { } order && order != "progressive" && order != "unknown",
-                    hasAudio ? Text(audio, "codec_name") : null, hasAudio ? Number(audio, "channels") : null, hasAudio ? Number(audio, "sample_rate") : null,
-                    Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")));
+                return process.ExitCode == 0 ? output : null;
             }
             finally { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { return null; }
+    }
+
+    private async Task<SourceFormat?> Probe(string path, CancellationToken ct)
+    {
+        var json = await RunProbe(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio", "-of", "json", path], ct);
+        if (json is null) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var all = document.RootElement.GetProperty("streams").EnumerateArray().ToArray();
+            var video = all.FirstOrDefault(x => Text(x, "codec_type") == "video");
+            var audio = all.FirstOrDefault(x => Text(x, "codec_type") == "audio");
+            if (video.ValueKind != JsonValueKind.Object) return null;
+            var hasAudio = audio.ValueKind == JsonValueKind.Object;
+            return new(Text(video, "codec_name"), Text(video, "pix_fmt"), Number(video, "bits_per_raw_sample"), Text(video, "field_order") is { } order && order != "progressive" && order != "unknown",
+                hasAudio ? Text(audio, "codec_name") : null, hasAudio ? Number(audio, "channels") : null, hasAudio ? Number(audio, "sample_rate") : null,
+                Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")));
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
         static string? Text(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         static int? Number(JsonElement e, string name) => e.TryGetProperty(name, out var v) ? v.ValueKind == JsonValueKind.Number ? v.GetInt32() : int.TryParse(v.GetString(), CultureInfo.InvariantCulture, out var n) ? n : null : null;
+    }
+}
+
+// Reads MPEG-TS timestamps (PTS) as the stream passes, to tell when each piece of video is due on the
+// wall clock. Timestamps wrap every 26.5 hours, so they are placed nearest the program's scheduled time.
+public sealed class TransportClock(DateTimeOffset around)
+{
+    private const double Wrap = 8589934592 / 90000.0;
+    // FFmpeg's MPEG-TS muxer starts timestamps this far after the requested offset.
+    private const double MuxDelay = 0.7;
+    private readonly byte[] partial = new byte[188];
+    private int filled;
+    private double expected = around.ToUnixTimeMilliseconds() / 1000.0;
+
+    // The latest due time in this data, or null when it carries no timestamp.
+    public DateTimeOffset? Read(ReadOnlySpan<byte> data)
+    {
+        double? latest = null;
+        while (data.Length > 0)
+        {
+            var take = Math.Min(188 - filled, data.Length);
+            data[..take].CopyTo(partial.AsSpan(filled));
+            filled += take;
+            data = data[take..];
+            if (filled < 188) break;
+            filled = 0;
+            if (Pts(partial) is { } pts)
+            {
+                var seconds = pts / 90000.0;
+                seconds += Math.Round((expected - seconds) / Wrap) * Wrap;
+                expected = seconds;
+                latest = Math.Max(latest ?? seconds, seconds);
+            }
+        }
+        return latest is { } at ? DateTimeOffset.FromUnixTimeMilliseconds((long)((at - MuxDelay) * 1000)) : null;
+    }
+
+    // The PTS of a packet that starts a PES packet, in 90 kHz units.
+    internal static long? Pts(ReadOnlySpan<byte> packet)
+    {
+        if (packet[0] != 0x47 || (packet[1] & 0x40) == 0) return null;
+        var payload = (packet[3] & 0x30) switch { 0x10 => 4, 0x30 => 5 + packet[4], _ => -1 };
+        if (payload < 0 || payload + 14 > 188) return null;
+        var pes = packet[payload..];
+        if (pes[0] != 0 || pes[1] != 0 || pes[2] != 1 || (pes[7] & 0x80) == 0) return null;
+        return ((long)(pes[9] >> 1) & 7) << 30 | (long)pes[10] << 22 | (long)(pes[11] >> 1) << 15 | (long)pes[12] << 7 | (long)pes[13] >> 1;
     }
 }
 

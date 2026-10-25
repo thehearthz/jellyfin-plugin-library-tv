@@ -23,10 +23,10 @@ public static class TransportTests
         check(later.ArgumentList[later.ArgumentList.IndexOf("-ss") + 1].StartsWith("60."), "The second part of a program starts where the first part stopped");
         var clock = DateTimeOffset.UtcNow;
         var early = new Airing("transport", Guid.NewGuid(), "Next", clips[0], clock.AddSeconds(2), clock.AddSeconds(32), false, Offset: 600);
-        var ahead = ProgramStreamer.Command(ffmpeg, early, StreamPlan.Copy, clock, 1).ArgumentList;
+        var ahead = ProgramStreamer.Command(ffmpeg, early, StreamPlan.Copy, clock).ArgumentList;
         string After(IList<string> args, string name) => args[args.IndexOf(name) + 1];
         check(After(ahead, "-ss") == "600.000" && After(ahead, "-t") == "30.000" && After(ahead, "-output_ts_offset") == (early.Start.ToUnixTimeMilliseconds() / 1000.0).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)
-            && After(ahead, "-readrate_initial_burst") == "1.000", "A program started ahead of time plays from its own start, for its full length, stamped with its scheduled time");
+            && !ahead.Contains("-re") && !ahead.Contains("-readrate"), "A program started ahead of time plays from its own start, for its full length, stamped with its scheduled time");
         var command = ProgramStreamer.Command(ffmpeg, Item(clips[0]), StreamPlan.Copy, DateTimeOffset.UtcNow);
         check(!command.UseShellExecute && command.ArgumentList.Contains(clips[0]) && command.ArgumentList.Contains("copy") && !command.ArgumentList.Contains("libx264"), "Compatible files are copied, and paths are passed as individual arguments without shell interpretation");
         using var transport = new MemoryStream();
@@ -52,7 +52,7 @@ public static class TransportTests
         var mixedAudio = await Run(ffprobe, ["-v","error","-select_streams","a:0","-count_packets","-show_entries","stream=codec_name,nb_read_packets","-of","csv=p=0",mixedPath]);
         check(mixedFrames.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Any(x => int.TryParse(x.Trim().TrimEnd(','), out var count) && count > 80) && mixedAudio.Contains("aac"),
             "A copied program followed by an encoded one decodes as one continuous H.264/AAC stream");
-        // Six seconds of video sent in well under six seconds shows the burst at work, with room for slow machines.
+        // Six seconds of video sent in well under six seconds shows the lead at work, with room for slow machines.
         var sixSeconds = Path.Combine(root, "six seconds.mp4");
         await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","6","-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sixSeconds]);
         ProgramStreamer.Lead = TimeSpan.FromSeconds(6);
@@ -61,7 +61,7 @@ public static class TransportTests
         var directMethod = await streamer.Stream(Item(sixSeconds, 6), Auto, null, _ => Task.CompletedTask, default, (text, _) => reported ??= text);
         timer.Stop();
         ProgramStreamer.Lead = TimeSpan.FromSeconds(3);
-        check(timer.Elapsed < TimeSpan.FromSeconds(4) && reported == directMethod, "Each program starts with a burst, so a short clip is sent faster than real time, and Channel health learns how it plays as it starts");
+        check(timer.Elapsed < TimeSpan.FromSeconds(4) && reported == directMethod, "Video is sent up to the lead ahead of its time, so a short clip arrives faster than real time on any FFmpeg version, and Channel health learns how it plays as it starts");
         check(directMethod.StartsWith("Direct"), "Health reports that compatible files played directly without encoding");
         var libraryFormats = Proxy<MediaBrowser.Controller.Library.IMediaSourceManager>.Make((name, args) => name == "GetMediaStreams" && args![0] is Guid
             ? new List<MediaBrowser.Model.Entities.MediaStream> { new() { Index = 0, Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Codec = "h264", PixelFormat = "yuv420p", BitDepth = 8 }, new() { Index = 1, Type = MediaBrowser.Model.Entities.MediaStreamType.Audio, Codec = "ac3", Channels = 6, SampleRate = 48000 } }
@@ -93,6 +93,20 @@ public static class TransportTests
         var compatiblePath = Path.Combine(root,"compatibility.ts"); await File.WriteAllBytesAsync(compatiblePath,compatibility.ToArray());
         var compatible = JsonDocument.Parse(await Run(ffprobe,["-v","error","-select_streams","v:0","-show_entries","stream=width,height,codec_name","-of","json",compatiblePath]));
         check(compatible.RootElement.GetProperty("streams").EnumerateArray().Any(x=>x.GetProperty("width").GetInt32()==1280&&x.GetProperty("height").GetInt32()==720&&x.GetProperty("codec_name").GetString()=="h264"),"Always encode produces the configured 720p H.264 output in a real FFmpeg run");
+        // A show resuming after a break starts on its keyframe, so timestamps never run backwards into the break.
+        var sparse = Path.Combine(root, "sparse keyframes.mp4");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","10","-c:v","libx264","-preset","ultrafast","-g","100","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sparse]);
+        var resumeAt = DateTimeOffset.UtcNow.AddSeconds(1);
+        using var resumed = new MemoryStream();
+        await streamer.Stream(new Airing("transport", Guid.NewGuid(), "Ad", clips[1], resumeAt.AddSeconds(-2), resumeAt, true), Auto, null, bytes => { resumed.Write(bytes); return Task.CompletedTask; }, default);
+        await streamer.Stream(new Airing("transport", Guid.NewGuid(), "Part 2", sparse, resumeAt, resumeAt.AddSeconds(3), false, Offset: 5), Auto, null, bytes => { resumed.Write(bytes); return Task.CompletedTask; }, default);
+        var resumedPath = Path.Combine(root, "resumed.ts"); await File.WriteAllBytesAsync(resumedPath, resumed.ToArray());
+        var dts = (await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","packet=dts_time","-of","csv=p=0",resumedPath]))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(x => double.Parse(x.Trim().TrimEnd(','), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        var wrap = Math.Pow(2, 33) / 90000;
+        var expectedStart = (resumeAt.ToUnixTimeMilliseconds() / 1000.0 + 0.7) % wrap;
+        check(dts.Zip(dts.Skip(1)).All(x => x.Second >= x.First) && dts.Length >= 90 && Math.Abs(dts.SkipWhile(x => x < expectedStart - 0.1).First() - expectedStart) < 0.1,
+            "A copied show resuming after a break starts on a keyframe at its scheduled time, so timestamps never run backwards");
         // End to end: the real scheduler, broadcast and FFmpeg run each program ahead of its time, once, in order.
         var shows = Path.Combine(root, "lead");
         Directory.CreateDirectory(shows);
@@ -175,7 +189,7 @@ public static class TransportTests
                 "With real FFmpeg, every break plays bumper, commercial, bumper, each show gets its own bumpers and its network's commercials, and every clip streams video");
         }
         finally { Plugin.Instance.UpdateConfiguration(keptBreakConfig); }
-        // Without the start-up burst, so the clip still plays in real time when it is canceled.
+        // Without a lead, so the clip still plays in real time when it is canceled.
         ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;
         streamer.ProcessStarted = id => pid = id;
