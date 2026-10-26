@@ -130,6 +130,25 @@ public static class TransportTests
         var spanish = await Brightest(new Airing("captions", Guid.NewGuid(), "Plain", plain, captionClock, captionClock.AddSeconds(2), false, Offset: 1), new ChannelDefinition { Captions = "on", CaptionLanguage = "es" }, sideStreamer);
         var english = await Brightest(new Airing("captions", Guid.NewGuid(), "Plain", plain, captionClock, captionClock.AddSeconds(2), false, Offset: 1), new ChannelDefinition { Captions = "on", CaptionLanguage = "eng" }, sideStreamer);
         check(spanish > 150 && english < 40, "A separate caption file is burned in even when its name has quotes, brackets, commas and colons, and other languages are left out");
+        // The preferred audio language plays that track: here the default Spanish track is silent and English is a tone.
+        var bilingual = Path.Combine(captionRoot, "bilingual.mkv");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=black:size=320x180:rate=25","-f","lavfi","-i","anullsrc=channel_layout=stereo:sample_rate=48000","-f","lavfi","-i","sine=frequency=440:sample_rate=48000",
+            "-t","3","-map","0:v","-map","1:a","-map","2:a","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-c:a","aac","-ac","2",
+            "-metadata:s:a:0","language=spa","-metadata:s:a:1","language=eng","-disposition:a:0","default","-disposition:a:1","0",bilingual]);
+        async Task<double> Loudness(ChannelDefinition channel)
+        {
+            using var sound = new MemoryStream();
+            var started = DateTimeOffset.UtcNow;
+            await streamer.Stream(new Airing("audio", Guid.NewGuid(), "Bilingual", bilingual, started, started.AddSeconds(2), false), channel, null, bytes => { sound.Write(bytes); return Task.CompletedTask; }, default);
+            var path = Path.Combine(captionRoot, Guid.NewGuid().ToString("N") + ".ts");
+            await File.WriteAllBytesAsync(path, sound.ToArray());
+            var levels = await Run(ffprobe, ["-v","error","-f","lavfi","-i","amovie=" + path.Replace("\\", "/") + ",astats=metadata=1:reset=0","-show_entries","frame_tags=lavfi.astats.Overall.RMS_level","-of","csv=p=0"]);
+            var last = levels.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last().Trim().TrimEnd(',');
+            return last.StartsWith("-inf", StringComparison.OrdinalIgnoreCase) ? double.NegativeInfinity : double.Parse(last, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        var englishAudio = await Loudness(new ChannelDefinition { AudioLanguage = "English" });
+        var defaultAudio = await Loudness(new ChannelDefinition());
+        check(englishAudio > -40 && defaultAudio < -80, "The preferred audio language plays that track instead of the file's default");
         // A show resuming after a break starts on its keyframe, so timestamps never run backwards into the break.
         var sparse = Path.Combine(root, "sparse keyframes.mp4");
         await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","10","-c:v","libx264","-preset","ultrafast","-g","100","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sparse]);

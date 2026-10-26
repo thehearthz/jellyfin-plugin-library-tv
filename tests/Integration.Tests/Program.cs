@@ -168,6 +168,15 @@ try
     var subtitled = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1920, 1080, 1, 16.0 / 9, [Track("eng")]);
     Check(!StreamPlan.For(subtitled, new ChannelDefinition { Captions = "on" }).CopyVideo && StreamPlan.For(subtitled, new ChannelDefinition()).CopyVideo
         && StreamPlan.For(subtitled, new ChannelDefinition { Captions = "on" }).Describe().Contains("captions burned in (eng)"), "Captions mean encoding the video, only when a caption track is used, and Channel health says so");
+    AudioTrack Sound(string language, int index, bool isDefault = false, bool commentary = false, string codec = "aac", int channels = 2) => new(codec, language, channels, 48000, isDefault, commentary, index);
+    var sounds = new[] { Sound("spa", 0, isDefault: true, codec: "ac3", channels: 6), Sound("eng", 1, commentary: true), Sound("eng", 2), Sound("fre", 3) };
+    Check(AudioTrack.Pick(sounds, "English") == sounds[2] && AudioTrack.Pick(sounds, "") == sounds[0] && AudioTrack.Pick(sounds, "German") == sounds[0] && AudioTrack.Pick(sounds, "fr") == sounds[3] && AudioTrack.Pick([], "eng") is null,
+        "The preferred audio language picks that track, skipping commentary, and otherwise the file's default track plays");
+    var dubbed = new SourceFormat("h264", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9, null, sounds);
+    var englishPlan = StreamPlan.For(dubbed, new ChannelDefinition { AudioLanguage = "eng" });
+    var defaultPlan = StreamPlan.For(dubbed, new ChannelDefinition());
+    Check(englishPlan.AudioIndex == 2 && englishPlan.CopyAudio && englishPlan.Describe().Contains("(eng audio)") && defaultPlan.AudioIndex == 0 && !defaultPlan.CopyAudio,
+        "The chosen audio track decides whether audio is copied, and Channel health names its language");
     var pgsPlan = StreamPlan.For(subtitled with { Captions = [Track("eng", codec: "hdmv_pgs_subtitle") with { EmbeddedIndex = 2 }] }, new ChannelDefinition { Captions = "on" });
     var pgsArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "Show", "/media/show.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), pgsPlan, DateTimeOffset.UtcNow).ArgumentList;
     Check(pgsArgs[pgsArgs.IndexOf("-filter_complex") + 1].StartsWith("[0:v:0][0:s:2]overlay") && pgsArgs[pgsArgs.IndexOf("-map") + 1] == "[video]" && !pgsArgs.Contains("-vf"),
@@ -255,7 +264,7 @@ try
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
     using var rulesWriter = new StringWriter();
     serializer.Serialize(rulesWriter, new Configuration { SharedCommercials = new Pool { FolderIds = [Guid.Empty.ToString()] }, SharedBumpers = new Pool { LibraryIds = [Guid.Empty.ToString()] }, Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
-        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English" }] });
+        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English", AudioLanguage = "Japanese" }] });
     var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
     Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra
         && !rules.Channels[0].MatchCommercialNetwork && rules.Channels[0].CommercialNetwork == "Toonami" && rules.Channels[0].Blocks[0].CommercialNetwork == "Adult Swim", "Content restrictions, commercial matching and playback settings survive XML storage");
@@ -265,12 +274,12 @@ try
     if (olderXml == rulesWriter.ToString()) throw new Exception("Test XML was not rewritten");
     var older = (Configuration)serializer.Deserialize(new StringReader(olderXml))!;
     var legacyChannel = (Configuration)serializer.Deserialize(new StringReader(System.Text.RegularExpressions.Regex.Replace(olderXml, @"\s*<MatchCommercialNetwork>false</MatchCommercialNetwork>", "")))!;
-    var oldestXml = System.Text.RegularExpressions.Regex.Replace(olderXml, @"\s*<(EpisodeBreaks|MovieBreaks|PictureShape|Captions|CaptionLanguage)>[^<]*</\1>|\s*<Bumpers>.*?</Bumpers>", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+    var oldestXml = System.Text.RegularExpressions.Regex.Replace(olderXml, @"\s*<(EpisodeBreaks|MovieBreaks|PictureShape|Captions|CaptionLanguage|AudioLanguage)>[^<]*</\1>|\s*<Bumpers>.*?</Bumpers>", "", System.Text.RegularExpressions.RegexOptions.Singleline);
     var oldest = (Configuration)serializer.Deserialize(new StringReader(oldestXml))!;
     Check(oldestXml != olderXml && legacyChannel.Channels[0].MatchCommercialNetwork && oldest.Channels[0].EpisodeBreaks == 1 && oldest.Channels[0].MovieBreaks == 2 && oldest.Channels[0].PictureShape == "16:9" && oldest.Channels[0].Bumpers.FolderIds.Length == 0,
         "Channels saved by older versions match networks, break inside programs and use a 16:9 picture");
     Check(!older.Channels[0].AlwaysEncode && older.Channels[0].MatchCommercialEra, "Channels saved by older versions switch to encode-only-when-needed playback and era-matched commercials");
-    Check(rules.Channels[0].Captions == "forced" && rules.Channels[0].CaptionLanguage == "English" && oldest.Channels[0].Captions == "off", "Caption settings survive XML storage, and older channels start with captions off");
+    Check(rules.Channels[0].Captions == "forced" && rules.Channels[0].CaptionLanguage == "English" && rules.Channels[0].AudioLanguage == "Japanese" && oldest.Channels[0].Captions == "off" && oldest.Channels[0].AudioLanguage == "", "Caption settings survive XML storage, and older channels start with captions off");
     foreach (var bad in new[] { new ContentRule { Genres = [], Tags = [] }, new ContentRule { Start = "9pm" }, new ContentRule { Days = [] } })
     {
         try { Scheduler.Validate(new Configuration { Restrictions = [bad] }); throw new Exception("Invalid content restriction accepted"); }
@@ -279,7 +288,7 @@ try
     Check(true, "Content restrictions need a genre or tag, valid times and at least one day");
     try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { CommercialNetwork = new string('n', 101) }] }); throw new Exception("Overlong network accepted"); }
     catch (ArgumentException) { Check(true, "Overlong commercial network names are rejected"); }
-    foreach (var bad in new[] { new ChannelDefinition { EpisodeBreaks = 6 }, new ChannelDefinition { MovieBreaks = -1 }, new ChannelDefinition { PictureShape = "21:9" }, new ChannelDefinition { Captions = "always" } })
+    foreach (var bad in new[] { new ChannelDefinition { EpisodeBreaks = 6 }, new ChannelDefinition { MovieBreaks = -1 }, new ChannelDefinition { PictureShape = "21:9" }, new ChannelDefinition { Captions = "always" }, new ChannelDefinition { AudioLanguage = new string('a', 41) } })
     {
         try { Scheduler.Validate(new Configuration { Channels = [bad] }); throw new Exception("Invalid break or picture setting accepted"); }
         catch (ArgumentException) { }

@@ -895,3 +895,20 @@ test("captions are off by default and save their mode and language per channel",
     dom.window.close();
   }
 });
+
+test("the preferred audio language saves per channel", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const input = [...w.document.querySelectorAll("main label.ltv-field")]
+      .find((x) => x.textContent.includes("Preferred audio language"))
+      .querySelector("input");
+    assert.equal(input.value, "");
+    change(w, input, " Japanese ");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].AudioLanguage, "Japanese");
+  } finally {
+    dom.window.close();
+  }
+});

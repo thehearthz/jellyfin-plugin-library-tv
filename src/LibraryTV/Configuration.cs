@@ -71,6 +71,9 @@ public sealed class ChannelDefinition
     // ("en", "eng") or a name ("English"); blank accepts any language.
     public string Captions { get; set; } = "off";
     public string CaptionLanguage { get; set; } = "";
+    // The audio track to play when a program has several, by language name or code; blank uses the
+    // file's default track. Programs without that language play their default track.
+    public string AudioLanguage { get; set; } = "";
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {

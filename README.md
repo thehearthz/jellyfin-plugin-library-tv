@@ -111,6 +111,10 @@ Each channel has a **Captions** setting on its Content tab: **Off** (the default
 
 Live TV streams cannot carry text subtitle tracks, so captions are drawn into the picture: everyone watching the channel sees them, in every Jellyfin app, and they cannot be turned off per viewer. A program with captions is encoded while it plays (at no more than 720p), which uses more CPU; programs without captions still play directly. To offer both, duplicate the channel and turn captions on in the copy. Captions stay in sync when a program starts part-way through, after a break or when you tune in. Text tracks (SRT, ASS/SSA, WebVTT, MP4 text) are drawn with Jellyfin FFmpeg's libass; picture tracks from discs (PGS, DVD, DVB) are overlaid from inside the file. Embedded CEA-608/708 closed captions in the video itself are not supported.
 
+### Audio language
+
+**Preferred audio language** (also on the Content tab) picks the soundtrack when a program has several, such as an English dub over a Japanese original: type a name or code like `English`, `en` or `eng`. Commentary tracks are skipped, and among several matching tracks the file's default wins. Programs without that language, and channels with the setting blank, play the file's default soundtrack. The chosen track is copied when it is stereo 48 kHz AAC and encoded otherwise, like any other audio, and Channel health names its language.
+
 ## Build an evening channel
 
 1. Click **New channel**, enter a name and number, then open **Content → Choose shows & movies**.
@@ -245,7 +249,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.7.0.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.7.1.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -257,7 +261,7 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.7.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.7.1.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

@@ -1475,10 +1475,20 @@
                 maxlength: 40,
               },
             ),
+            field(
+              "Preferred audio language",
+              c.AudioLanguage || "",
+              (v) => (c.AudioLanguage = v.trim()),
+              "text",
+              {
+                placeholder: "e.g. English or eng (blank: file's default)",
+                maxlength: 40,
+              },
+            ),
             node(
               "p",
               { class: "ltv-muted" },
-              "Captions are drawn into the picture, so everyone watching this channel sees them, in every app. They come from subtitle tracks in the file or subtitle files beside it, such as Episode.en.srt; SDH and closed-caption tracks are preferred. Programs with captions are encoded while they play, which uses more CPU. For a channel with and without captions, duplicate it and turn captions on in the copy.",
+              "Captions are drawn into the picture, so everyone watching this channel sees them, in every app. They come from subtitle tracks in the file or subtitle files beside it, such as Episode.en.srt; SDH and closed-caption tracks are preferred. Programs with captions are encoded while they play, which uses more CPU. For a channel with and without captions, duplicate it and turn captions on in the copy. The preferred audio language picks that soundtrack when a program has several, avoiding commentary tracks; programs without it play their default soundtrack.",
             ),
           );
         }
@@ -1812,6 +1822,7 @@
           PictureShape: "16:9",
           Captions: "off",
           CaptionLanguage: "",
+          AudioLanguage: "",
           MatchCommercialEra: true,
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
@@ -2271,6 +2282,7 @@
             c.PictureShape = c.PictureShape || "16:9";
             c.Captions = c.Captions || "off";
             c.CaptionLanguage = c.CaptionLanguage || "";
+            c.AudioLanguage = c.AudioLanguage || "";
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
