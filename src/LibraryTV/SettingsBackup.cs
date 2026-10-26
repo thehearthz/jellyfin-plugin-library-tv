@@ -18,6 +18,7 @@ public sealed class SettingsBackup
     public ContentRule[] Restrictions { get; set; } = [];
     public Pool SharedCommercials { get; set; } = new();
     public Pool SharedBumpers { get; set; } = new();
+    public int AutomaticCommercialCount { get; set; } = 2;
 
     public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
 
@@ -37,6 +38,7 @@ public sealed class SettingsBackup
         config.Restrictions = Restrictions;
         config.SharedCommercials = SharedCommercials;
         config.SharedBumpers = SharedBumpers;
+        config.AutomaticCommercialCount = AutomaticCommercialCount;
         Scheduler.Validate(config);
         return config;
     }

@@ -124,6 +124,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (channel.Bumpers is null) throw new ArgumentException("Channel content and schedule lists cannot be null.");
             if (channel.Captions is not ("off" or "forced" or "on") || channel.CaptionLanguage is null || channel.CaptionLanguage.Length > 40) throw new ArgumentException("Captions must be off, forced or on, with a caption language of 40 characters or fewer.");
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
+            if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
             if (channel.CommercialNetwork is null || channel.CommercialNetwork.Length > 100 || channel.Blocks.Any(x => x is not null && (x.CommercialNetwork is null || x.CommercialNetwork.Length > 100))) throw new ArgumentException("Commercial network names must be 100 characters or fewer.");
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
             foreach (var block in channel.Blocks)
@@ -145,6 +146,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
             foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
         }
+        if (c.AutomaticCommercialCount is < 0 or > 20) throw new ArgumentException("Commercials per break on automatic channels must be 0–20.");
         if (c.Restrictions is null || c.Restrictions.Length > 50 || c.Restrictions.Any(x => x is null)) throw new ArgumentException("Use at most 50 content restrictions.");
         foreach (var rule in c.Restrictions)
         {
@@ -198,6 +200,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             var read = catalog.CreateRefreshReader(false, scan);
             var readCommercials = catalog.CreateRefreshReader(true, scan);
             var chapters = catalog.CreateChapterReader();
+            var credits = catalog.CreateCreditsReader();
             static bool Picked(Pool pool) => pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length > 0;
             // One network index for every channel: common networks, every program's tags and studios, and the overrides.
             var allPrograms = definitions.SelectMany(x => x.Blocks.Select(b => b.Source).Append(x.Source)).SelectMany(read).ToArray();
@@ -217,13 +220,28 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 pools["bumpers"] = readCommercials(channel.Bumpers);
                 var clipIds = pools["commercials"].Concat(pools["bumpers"]).Select(x => x.Id).ToHashSet();
                 foreach (var key in pools.Keys.Where(x => x is not ("commercials" or "bumpers")).ToArray()) pools[key].RemoveAll(x => clipIds.Contains(x.Id));
-                if (channel.Id == rebuildChannel) rebuiltFrom = Planner.RewindFuture(state, now);
-                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), channel.Id == rebuildChannel ? rebuiltFrom : null, config.Restrictions, chapters, networks);
+                // Changed schedule settings (content, blocks, breaks, clips, credits, restrictions) apply after the
+                // current program, without a manual rebuild; the guide planned days ahead would otherwise keep the old ones.
+                var plannedWith = Fingerprint(channel, config);
+                DateTimeOffset? from = null;
+                if (channel.Id == rebuildChannel || state.PlannedWith != plannedWith && state.Guide.Any(x => x.Start > now)) from = Planner.RewindFuture(state, now);
+                if (channel.Id == rebuildChannel) rebuiltFrom = from;
+                Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), from, config.Restrictions, chapters, networks, credits);
+                state.PlannedWith = plannedWith;
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
                 if (channel.CommercialCount > 0 && pools["commercials"].Count == 0) notes.Add("Commercial breaks are enabled but no readable commercial clips were found.");
                 if (channel.Bumpers.LibraryIds.Length + channel.Bumpers.FolderIds.Length + channel.Bumpers.ItemIds.Length > 0 && pools["bumpers"].Count == 0) notes.Add("Bumpers are selected but no readable bumper clips were found.");
+                // Say why breaks are missing, rather than leaving viewers to wonder.
+                var ahead = state.Guide.Where(x => x.End > now).ToArray();
+                var aired = ahead.Any(x => !x.Commercial);
+                bool Planned(string kind) => ahead.Any(x => x.Commercial && x.Undo?.PoolKey.StartsWith(kind, StringComparison.Ordinal) == true);
+                if (channel.CommercialCount == 0 && pools["commercials"].Count > 0) notes.Add("Commercials are available, but Clips to play in each break is 0, so no commercials play.");
+                if (channel.CommercialCount > 0 && pools["commercials"].Count > 0 && aired && !Planned("commercials"))
+                    notes.Add("No commercials fit this channel's programs: every clip is named after a network or show these programs don't match. Add some commercials without a network in their name, or check each program's network in Guide preview.");
+                if (pools["bumpers"].Count > 0 && aired && !Planned("bumpers")) notes.Add("No bumpers fit this channel's programs: every bumper is named after a network or show these programs don't match.");
+                if (channel.CreditsSpeed > 1 && aired && !ahead.Any(x => x.Speed > 1)) notes.Add("None of the upcoming programs have credits markers, so their credits play at normal speed. Add credits chapters or an Outro media segment (for example with the Intro Skipper plugin).");
                 var upcoming = state.Guide.Where(x => x.End > now).ToArray();
                 if (upcoming.Zip(upcoming.Skip(1)).Any(x => x.Second.Start - x.First.End > TimeSpan.FromMinutes(1)))
                     notes.Add("Some times have nothing allowed to air, so the channel goes off the air until the next program. Add content or narrow the content restrictions.");
@@ -267,6 +285,14 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
     }
 
     public ClipGroup[] ClipLibrary { get; private set; } = [];
+
+    // The settings that shape a channel's schedule. Names, numbers and playback-only settings are left out,
+    // so changing them never rebuilds the guide.
+    private static string Fingerprint(ChannelDefinition c, Configuration config) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
+        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId
+    })));
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);
 
@@ -275,6 +301,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
         Guide = new List<Airing>(state.Guide), // Airing is immutable; share records, not mutable lists.
         DailyCounts = new Dictionary<string, int>(state.DailyCounts),
         Series = new Dictionary<string, SeriesCursor>(state.Series), // SeriesCursor is immutable.
+        PlannedWith = state.PlannedWith,
         Rotations = state.Rotations.ToDictionary(x => x.Key, x => new Rotation
         {
             Last = x.Value.Last,

@@ -203,6 +203,20 @@ public static class PlaybackTests
                     && guide.Zip(guide.Skip(1)).All(x => x.First.End <= x.Second.Start), "A missing movie skips its later parts and inner breaks in one step, going straight to the break after it");
                 stop.Cancel(); await IgnoreCancellation(watch);
             }
+            // Settings that shape the schedule rebuild the future at the next refresh; other changes keep it.
+            scheduler = await Fresh();
+            var planned = scheduler.GuideFor("playback").Select(x => (x.ItemId, x.Start, x.Commercial)).ToArray();
+            await scheduler.Refresh(default);
+            var renamed = Plugin.Instance.Configuration;
+            renamed.Channels[0].Name = "Renamed";
+            await scheduler.Refresh(default);
+            check(planned.SequenceEqual(scheduler.GuideFor("playback").Select(x => (x.ItemId, x.Start, x.Commercial))), "Refreshing or renaming a channel keeps its planned guide");
+            renamed.Channels[0].CommercialCount = 0;
+            await scheduler.Refresh(default);
+            var refreshed = scheduler.GuideFor("playback");
+            check(refreshed.Any(x => x.Commercial) && refreshed.Where(x => x.Start > DateTimeOffset.UtcNow.AddHours(2)).All(x => !x.Commercial) && refreshed[0].Start == planned[0].Start
+                && scheduler.WarningsFor("playback").Any(x => x.Contains("Clips to play in each break is 0")),
+                "Changing break settings rebuilds the guide after the current program, without a manual rebuild, and Channel health explains missing commercials");
             // With the restart picture shape, a program of a new shape restarts the players watching the channel.
             Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "playback", Name = "Playback", CommercialCount = 1, MovieBreaks = 0, PictureShape = "restart",
                 Source = new Pool { ItemIds = items.Take(3).Select(x => x.Id.ToString()).ToArray(), Shuffle = false }, Commercials = new Pool { ItemIds = [ad.Id.ToString()] } }] });

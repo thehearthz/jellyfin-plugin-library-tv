@@ -322,4 +322,27 @@ var spongeOnly = new ChannelState();
 Planner.Extend(new ChannelDefinition { Id = "sponge", CommercialCount = 2, Source = new Pool() }, spongeOnly,
     new Dictionary<string, List<Media>> { ["default"] = [rugrats], ["commercials"] = [Ad2("SpongeBob SquarePants bumper.mp4")] }, now, now.AddHours(1), TimeZoneInfo.Utc, null, null, null, new Planner.NetworkIndex([], ["SpongeBob SquarePants"]));
 Check(spongeOnly.Guide.All(x => !x.Commercial && x.Offset == 0), "When no clip suits a program, its breaks are left out instead of playing another show's clips, and it is not split");
+
+// Speeding through credits: the credits become a faster part, anything after them plays normally.
+var withCredits = Episode(1, "credits") with { Seconds = 1320 };
+var creditsChannel = new ChannelDefinition { Id = "credits", CommercialCount = 1, CreditsSpeed = 4, Source = new Pool { Shuffle = false } };
+var creditsPools = new Dictionary<string, List<Media>> { ["default"] = [withCredits], ["commercials"] = [ad30], ["bumpers"] = [] };
+(double, double)? CreditsAt(Media m) => (1200, 1300);
+var creditsState = new ChannelState();
+Planner.Extend(creditsChannel, creditsState, creditsPools, now, now.AddHours(1), TimeZoneInfo.Utc, null, null, null, null, CreditsAt);
+var secondStart = creditsState.Guide.FindIndex(1, x => !x.Commercial && x.Offset == 0);
+var firstAiring = creditsState.Guide.Take(secondStart).ToArray();
+var creditsPart = firstAiring.Single(x => x.Speed > 1);
+Check(creditsPart.Offset == 1200 && (creditsPart.End - creditsPart.Start).TotalSeconds == 25 && creditsPart.Speed == 4
+    && firstAiring.Last(x => !x.Commercial).Offset == 1300 && (firstAiring.Last(x => !x.Commercial).End - firstAiring.Last(x => !x.Commercial).Start).TotalSeconds == 20
+    && firstAiring.SkipWhile(x => x.Speed == 1).TakeWhile(x => !x.Commercial).Count() == 2 && firstAiring.Last().Commercial,
+    "Credits play four times faster as their own part, a scene after them plays normally, and the break comes after the program");
+Check(firstAiring.Where(x => !x.Commercial && x.Speed == 1 && x.Offset < 1200).All(x => x.Offset + (x.End - x.Start).TotalSeconds <= 1200.001), "Breaks inside a program fall before its credits");
+var creditsPlan = creditsState.Guide.Select(x => (x.ItemId, x.Start, x.Offset, x.Speed)).ToArray();
+var creditsBoundary = Planner.RewindFuture(creditsState, creditsPart.Start.AddSeconds(5));
+Planner.Extend(creditsChannel, creditsState, creditsPools, creditsPart.Start.AddSeconds(5), now.AddHours(1), TimeZoneInfo.Utc, creditsBoundary, null, null, null, CreditsAt);
+Check(creditsPlan.SequenceEqual(creditsState.Guide.Select(x => (x.ItemId, x.Start, x.Offset, x.Speed))), "Rebuilding during sped-up credits keeps the rest of the program and reproduces the plan");
+var normalSpeed = new ChannelState();
+Planner.Extend(creditsChannel, normalSpeed, creditsPools, now, now.AddHours(1), TimeZoneInfo.Utc);
+Check(normalSpeed.Guide.All(x => x.Speed == 1), "Programs without credits markers play at normal speed");
 Console.WriteLine($"{passed} scheduling checks passed.");

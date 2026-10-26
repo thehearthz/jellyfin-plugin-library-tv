@@ -438,10 +438,19 @@
               max="999999"
               data-setting="AutoChannelStartNumber"
           /></label>
+          <label class="ltv-field"
+            ><span>Commercials per break on automatic channels</span
+            ><input
+              type="number"
+              min="0"
+              max="20"
+              data-setting="AutomaticCommercialCount"
+          /></label>
           <div data-ui="auto-libraries"></div>
           <p class="ltv-muted">
-            Automatic channels use the whole library. Use the channel builder
-            above for a hand-picked lineup.
+            Automatic channels use the whole library, with commercials and
+            bumpers from the shared Commercial library below. Use the channel
+            builder above for a hand-picked lineup.
           </p>
         </div>
       </details>
@@ -1486,6 +1495,37 @@
               },
             ),
             node(
+              "label",
+              { class: "ltv-field" },
+              node("span", {}, "Credits"),
+              node(
+                "select",
+                {
+                  onChange: (e) => {
+                    c.CreditsSpeed = Number(e.target.value);
+                    dirty();
+                  },
+                },
+                ...[
+                  [1, "Play at normal speed"],
+                  [2, "Speed through at 2×"],
+                  [4, "Speed through at 4×"],
+                  [8, "Speed through at 8×"],
+                ].map(([value, text]) =>
+                  node(
+                    "option",
+                    { value, selected: c.CreditsSpeed === value ? "" : null },
+                    text,
+                  ),
+                ),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Speeding through credits rolls them faster while their music plays at normal speed and fades out into the next program. It needs credits markers: a chapter named “Credits”, “End Credits”, “Outro” or “Ending”, or an Outro segment from a plugin such as Intro Skipper. Programs without one play their credits normally, and a scene after the credits plays at normal speed.",
+            ),
+            node(
               "p",
               { class: "ltv-muted" },
               "Captions are drawn into the picture, so everyone watching this channel sees them, in every app. They come from subtitle tracks in the file or subtitle files beside it, such as Episode.en.srt; SDH and closed-caption tracks are preferred. Programs with captions are encoded while they play, which uses more CPU. For a channel with and without captions, duplicate it and turn captions on in the copy. The preferred audio language picks that soundtrack when a program has several, avoiding commentary tracks; programs without it play their default soundtrack.",
@@ -1619,7 +1659,7 @@
             node(
               "p",
               { class: "ltv-muted" },
-              "This is the saved rolling guide. Unsaved edits are not included. Existing programs stay fixed; new selections enter the unplanned tail.",
+              "This is the saved rolling guide. Unsaved edits are not included. Saved changes to content, schedule, breaks or credits apply after the current program.",
             ),
             button("Load guide", () => loadGuide(c, body)),
             button("Rebuild future slots", () => rebuildFuture(c, body)),
@@ -1815,7 +1855,7 @@
           Source: pool(),
           Blocks: [],
           Commercials: pool(),
-          CommercialCount: 0,
+          CommercialCount: 2,
           EpisodeBreaks: 1,
           MovieBreaks: 2,
           Bumpers: pool(),
@@ -1823,6 +1863,7 @@
           Captions: "off",
           CaptionLanguage: "",
           AudioLanguage: "",
+          CreditsSpeed: 1,
           MatchCommercialEra: true,
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
@@ -1869,6 +1910,13 @@
                         "span",
                         { class: "ltv-badge" },
                         item.Kind === "Bumper" ? "Bumper" : "Commercial",
+                      )
+                    : null,
+                  item.Speed > 1
+                    ? node(
+                        "span",
+                        { class: "ltv-badge" },
+                        "Credits " + item.Speed + "×",
                       )
                     : null,
                   item.Match
@@ -2081,6 +2129,12 @@
           ["RefreshMinutes", 5, 1440, "Refresh interval"],
           ["MaxActiveChannels", 1, 16, "Maximum active channels"],
           ["AutoChannelStartNumber", 1, 999999, "Automatic starting number"],
+          [
+            "AutomaticCommercialCount",
+            0,
+            20,
+            "Commercials per break on automatic channels",
+          ],
         ]) {
           if (
             !Number.isInteger(state.config[key]) ||
@@ -2272,6 +2326,8 @@
           );
           state.config.AutoChannelStartNumber =
             state.config.AutoChannelStartNumber ?? 100;
+          state.config.AutomaticCommercialCount =
+            state.config.AutomaticCommercialCount ?? 2;
           state.libraries = libraries;
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
@@ -2283,6 +2339,7 @@
             c.Captions = c.Captions || "off";
             c.CaptionLanguage = c.CaptionLanguage || "";
             c.AudioLanguage = c.AudioLanguage || "";
+            if (![1, 2, 4, 8].includes(c.CreditsSpeed)) c.CreditsSpeed = 1;
             c.Blocks = c.Blocks || [];
             for (const b of c.Blocks) b.Source = normalize(b.Source);
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;

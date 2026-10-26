@@ -181,7 +181,8 @@ public static class Planner
     }
 
     public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone,
-        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null, NetworkIndex? networks = null)
+        DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null, NetworkIndex? networks = null,
+        Func<Media, (double Start, double End)?>? credits = null)
     {
         var at = state.Guide.Count > 0 ? state.Guide[^1].End : now;
         if (startAt > at) at = startAt.Value;
@@ -239,23 +240,33 @@ public static class Planner
             }
             if (key != "default" && countKey is not null) state.DailyCounts[countKey] = state.DailyCounts.GetValueOrDefault(countKey) + 1;
             var first = undo! with { PoolKey = key, QuotaKey = key == "default" ? null : countKey, Series = next.Series.Length > 0 ? next.Series : null, PreviousCursor = previousCursor };
-            // The program airs in parts with a commercial break between each, then a break after it.
+            // The program airs in parts with a commercial break between each, then a break after it. With a
+            // credits speed, its credits are a faster part of their own, and anything after them plays normally.
+            var run = channel.CreditsSpeed > 1 ? credits?.Invoke(next) : null;
+            var content = run?.Start ?? next.Seconds;
             var from = 0.0;
-            foreach (var cut in Cuts(next, network).Append(next.Seconds))
+            foreach (var cut in Cuts(next, network, content).Append(content))
             {
-                Add(next, false, from == 0 ? first : new PlanningUndo("", Guid.Empty, [], false, null, Part: true), from, cut - from);
-                Break(next, network);
+                Add(next, false, from == 0 ? first : Part(), from, cut - from);
+                if (cut < content) Break(next, network);
                 from = cut;
             }
+            if (run is { } creditsRun)
+            {
+                Add(next, false, Part(), creditsRun.Start, (creditsRun.End - creditsRun.Start) / channel.CreditsSpeed, channel.CreditsSpeed);
+                if (creditsRun.End < next.Seconds - 1) Add(next, false, Part(), creditsRun.End, next.Seconds - creditsRun.End);
+            }
+            Break(next, network);
         }
         if (stale > 0) state.Guide.RemoveAll(x => x.End < cutoff);
         // Daily quota entries only need to survive the current planning horizon.
         var keep = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now.AddDays(-1), zone).DateTime).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         foreach (var key in state.DailyCounts.Keys.Where(k => string.CompareOrdinal(k[..10], keep) < 0).ToArray()) state.DailyCounts.Remove(key);
-        void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null, string? match = null)
+        static PlanningUndo Part() => new("", Guid.Empty, [], false, null, Part: true);
+        void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null, double speed = 1, string? match = null)
         {
             var end = at.AddSeconds(seconds ?? item.Seconds);
-            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset, match));
+            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset, match, speed));
             if (end < cutoff) stale++;
             at = end;
         }
@@ -279,7 +290,8 @@ public static class Planner
             return true;
         }
         // Where to break inside a program: the chapter mark nearest each even split, or the split itself.
-        IEnumerable<double> Cuts(Media program, string network)
+        // Length is the program before its credits.
+        IEnumerable<double> Cuts(Media program, string network, double length)
         {
             var count = BreakCount(program);
             // Only split a program for breaks that will have commercials suited to it.
@@ -288,9 +300,9 @@ public static class Planner
             var cuts = new List<double>();
             for (var k = 1; k <= count; k++)
             {
-                var target = program.Seconds * k / (count + 1);
+                var target = length * k / (count + 1);
                 var previous = cuts.Count > 0 ? cuts[^1] : 0;
-                var mark = marks.Where(x => Math.Abs(x - target) <= program.Seconds * 0.1 && x > previous + 120 && x < program.Seconds - 120).OrderBy(x => Math.Abs(x - target)).Cast<double?>().FirstOrDefault();
+                var mark = marks.Where(x => Math.Abs(x - target) <= length * 0.1 && x > previous + 120 && x < length - 120).OrderBy(x => Math.Abs(x - target)).Cast<double?>().FirstOrDefault();
                 cuts.Add(mark ?? target);
             }
             return cuts;

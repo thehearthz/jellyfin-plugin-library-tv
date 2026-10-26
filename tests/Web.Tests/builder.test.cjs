@@ -912,3 +912,63 @@ test("the preferred audio language saves per channel", async () => {
     dom.window.close();
   }
 });
+
+test("credits speed, automatic channel breaks and new channel breaks save", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const credits = [...w.document.querySelectorAll("main label.ltv-field")]
+      .find((x) => x.textContent.includes("Credits"))
+      .querySelector("select");
+    assert.equal(credits.value, "1");
+    change(w, credits, "4");
+    const automatic = w.document.querySelector(
+      "[data-setting=AutomaticCommercialCount]",
+    );
+    assert.equal(automatic.value, "2");
+    change(w, automatic, "3");
+    click(w, "+ New channel");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].CreditsSpeed, 4);
+    assert.equal(w.testApi.saved.AutomaticCommercialCount, 3);
+    assert.equal(w.testApi.saved.Channels[1].CommercialCount, 2);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("guide preview marks credits that are sped up", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    w.testApi.guide = [
+      {
+        Title: "Show",
+        Start: "2026-10-26T18:00:00Z",
+        End: "2026-10-26T18:20:00Z",
+        Commercial: false,
+        Kind: "Program",
+        Speed: 1,
+      },
+      {
+        Title: "Show",
+        Start: "2026-10-26T18:20:00Z",
+        End: "2026-10-26T18:20:25Z",
+        Commercial: false,
+        Kind: "Program",
+        Speed: 4,
+      },
+    ];
+    click(w, "Guide preview");
+    click(w, "Load guide");
+    await settle();
+    const items = [...w.document.querySelectorAll(".ltv-guide li")].map(
+      (x) => x.textContent,
+    );
+    assert.doesNotMatch(items[0], /Credits/);
+    assert.match(items[1], /Credits 4×/);
+  } finally {
+    dom.window.close();
+  }
+});

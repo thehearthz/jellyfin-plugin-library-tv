@@ -149,6 +149,19 @@ public static class TransportTests
         var englishAudio = await Loudness(new ChannelDefinition { AudioLanguage = "English" });
         var defaultAudio = await Loudness(new ChannelDefinition());
         check(englishAudio > -40 && defaultAudio < -80, "The preferred audio language plays that track instead of the file's default");
+        // Credits run faster with their music at normal speed: the picture brightens with time, so the last frame shows how far it got.
+        var ramp = Path.Combine(captionRoot, "ramp.mp4");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=black:s=320x180:r=25,geq=lum='min(250,T*20)':cb=128:cr=128","-f","lavfi","-i","sine=frequency=440:sample_rate=48000",
+            "-t","12","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-c:a","aac","-ac","2",ramp]);
+        using var credited = new MemoryStream();
+        var creditsStart = DateTimeOffset.UtcNow;
+        var creditsMethod = await streamer.Stream(new Airing("credits", Guid.NewGuid(), "Credits", ramp, creditsStart, creditsStart.AddSeconds(2), false, Offset: 2, Speed: 4), Auto, null, bytes => { credited.Write(bytes); return Task.CompletedTask; }, default);
+        var creditedPath = Path.Combine(captionRoot, "credited.ts"); await File.WriteAllBytesAsync(creditedPath, credited.ToArray());
+        var brightness = (await Run(ffprobe, ["-v","error","-f","lavfi","-i","movie=" + creditedPath.Replace("\\", "/") + ",signalstats","-show_entries","frame_tags=lavfi.signalstats.YAVG","-of","csv=p=0"]))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(x => double.Parse(x.Trim().TrimEnd(','), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        var soundLength = double.Parse((await Run(ffprobe, ["-v","error","-select_streams","a:0","-show_entries","format=duration","-of","csv=p=0",creditedPath])).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+        check(brightness.Last() > 170 && brightness.First() < 70 && soundLength is > 1.5 and < 2.6 && creditsMethod.Contains("credits at 4× speed"),
+            "Sped-up credits cover four times as much picture in the same time, with the music playing at normal speed until the next program");
         // A show resuming after a break starts on its keyframe, so timestamps never run backwards into the break.
         var sparse = Path.Combine(root, "sparse keyframes.mp4");
         await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","10","-c:v","libx264","-preset","ultrafast","-g","100","-pix_fmt","yuv420p","-c:a","aac","-ac","2",sparse]);

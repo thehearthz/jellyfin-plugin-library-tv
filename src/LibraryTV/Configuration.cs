@@ -21,6 +21,8 @@ public sealed class Configuration : BasePluginConfiguration
     // Each refresh sorts them by the year, decade and network in their folder and file names.
     public Pool SharedCommercials { get; set; } = new();
     public Pool SharedBumpers { get; set; } = new();
+    // Commercials per break on automatic library channels, which use the shared commercials and bumpers.
+    public int AutomaticCommercialCount { get; set; } = 2;
 }
 
 public sealed class ContentRule
@@ -74,6 +76,9 @@ public sealed class ChannelDefinition
     // The audio track to play when a program has several, by language name or code; blank uses the
     // file's default track. Programs without that language play their default track.
     public string AudioLanguage { get; set; } = "";
+    // Credits play this many times faster (1 = normal), with their music at normal speed until the next
+    // program. Needs a credits marker: an Outro media segment or a chapter named like "Credits".
+    public int CreditsSpeed { get; set; } = 1;
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {
@@ -111,7 +116,9 @@ public sealed class TimeBlock
 public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null, string? Show = null);
 // Offset is where in the file this entry starts: the later parts of a program split by a commercial break.
 // Match says why a commercial or bumper was chosen, for the guide preview.
-public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null);
+// Speed above 1 plays the picture that many times faster (credits), keeping the sound at normal speed.
+public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null,
+    double Speed = 1);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
 // program split by a commercial break: the first part holds the selection, so they have nothing to rewind.
@@ -132,4 +139,6 @@ public sealed class ChannelState
     public Dictionary<string, int> DailyCounts { get; set; } = [];
     // Last episode aired per series on this channel, shared by every lineup and block.
     public Dictionary<string, SeriesCursor> Series { get; set; } = [];
+    // The schedule settings the future guide was planned with; a change rebuilds the future.
+    public string? PlannedWith { get; set; }
 }

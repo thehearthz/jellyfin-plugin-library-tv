@@ -9,8 +9,44 @@ using System.Text.Json;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Catalog(ILibraryManager library, StartupGate? startup = null, MediaBrowser.Controller.Chapters.IChapterManager? chapterManager = null)
+public sealed class Catalog(ILibraryManager library, StartupGate? startup = null, MediaBrowser.Controller.Chapters.IChapterManager? chapterManager = null,
+    MediaBrowser.Controller.MediaSegments.IMediaSegmentManager? segmentManager = null)
 {
+    private static readonly System.Text.RegularExpressions.Regex CreditsChapter = new(@"\b(end\s*credits|credits|outro|ending|closing)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // Where a program's credits run, in seconds: an Outro media segment (added by plugins such as Intro
+    // Skipper), else a chapter named like "Credits", "Outro" or "Ending". Only credits in the second half,
+    // at least ten seconds long, count. Read only for programs being scheduled, cached for one refresh.
+    public Func<Media, (double Start, double End)?> CreateCreditsReader()
+    {
+        var cache = new Dictionary<Guid, (double Start, double End)?>();
+        return media =>
+        {
+            if (cache.TryGetValue(media.Id, out var known)) return known;
+            (double Start, double End)? found = null;
+            try
+            {
+                if (segmentManager is not null && library.GetItemById(media.Id) is { } item
+                    && segmentManager.GetSegmentsAsync(item, [MediaSegmentType.Outro], library.GetLibraryOptions(item), true).GetAwaiter().GetResult().OrderBy(x => x.StartTicks).LastOrDefault() is { } outro)
+                    found = (Seconds(outro.StartTicks), Seconds(outro.EndTicks));
+                if (found is null && chapterManager is not null)
+                {
+                    var chapters = chapterManager.GetChapters(media.Id).OrderBy(x => x.StartPositionTicks).ToList();
+                    var index = chapters.FindLastIndex(x => x.Name is { } name && CreditsChapter.IsMatch(name));
+                    if (index >= 0) found = (Seconds(chapters[index].StartPositionTicks), index + 1 < chapters.Count ? Seconds(chapters[index + 1].StartPositionTicks) : media.Seconds);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { found = null; }
+            if (found is { } credits)
+            {
+                var end = Math.Min(credits.End, media.Seconds);
+                found = credits.Start >= media.Seconds / 2 && end - credits.Start >= 10 ? (credits.Start, end) : null;
+            }
+            return cache[media.Id] = found;
+        };
+        static double Seconds(long ticks) => TimeSpan.FromTicks(ticks).TotalSeconds;
+    }
+
     // Chapter start times in seconds, read only for programs being scheduled and cached for one refresh.
     public Func<Media, double[]> CreateChapterReader()
     {
@@ -108,7 +144,8 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             {
                 var entry = config.AutomaticChannels.FirstOrDefault(x => Guid.Parse(x.LibraryId) == Guid.Parse(folder.ItemId))
                     ?? throw new ArgumentException("Automatic channel numbers must be assigned before building channels.");
-                manual.Add(new ChannelDefinition { Id = "auto-" + folder.ItemId, Name = string.IsNullOrWhiteSpace(entry.Name) ? folder.Name : entry.Name.Trim(), Number = entry.Number.Trim(), Source = new Pool { LibraryIds = [folder.ItemId] } });
+                manual.Add(new ChannelDefinition { Id = "auto-" + folder.ItemId, Name = string.IsNullOrWhiteSpace(entry.Name) ? folder.Name : entry.Name.Trim(), Number = entry.Number.Trim(), Source = new Pool { LibraryIds = [folder.ItemId] },
+                    CommercialCount = config.AutomaticCommercialCount });
             }
         if (manual.Select(x => x.Id).Distinct().Count() != manual.Count) throw new ArgumentException("Channel IDs must be unique.");
         ChannelNumbers.ValidateUnique(manual);

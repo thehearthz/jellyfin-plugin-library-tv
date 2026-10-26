@@ -134,9 +134,17 @@ Select clips under the **Bumpers** tab to add bumpers. One plays going into each
 
 If a program's file is missing or fails, its remaining parts and the breaks inside it are skipped together and the break after it starts.
 
+### Speeding through credits
+
+**Credits** on a channel's Content tab can speed through end credits at 2×, 4× or 8×: the credits roll that much faster while their music keeps playing at normal speed, fading out into the next program. Four minutes of credits at 4× take one minute. A scene after the credits plays at normal speed. The credits part is encoded while it plays.
+
+This needs to know where the credits are: an Outro media segment (added by plugins such as Intro Skipper, which detects credits) or a chapter named like `Credits`, `End Credits`, `Outro` or `Ending`. Credits must start in the second half of the program and last at least ten seconds; opening credits are never sped up. Programs without a marker play their credits normally, and Channel health says when no upcoming program has one. Commercial breaks inside a program always fall before its credits.
+
 ### Shared commercial library
 
-Open **Commercial library** to choose commercials and bumpers once for every channel; a channel uses them whenever its own **Commercials** or **Bumpers** selection is empty. Point it at a whole commercial library or folder. Files don't need to be sorted into folders: after Jellyfin finishes starting up (the same deferred startup as the rest of the plugin, never during it), and again at each library refresh, Library TV reads every file and folder name for a year (`1994`, `'94`), a decade (`1990s`, `90s`) and a network, and sorts each clip to the programs that match it. **How your clips were sorted** shows the result, for example `Nickelodeon: 1990s 42 · 2000s 17`.
+Open **Commercial library** to choose commercials and bumpers once for every channel; a channel uses them whenever its own **Commercials** or **Bumpers** selection is empty. Automatic library channels use them too, with **Commercials per break on automatic channels** (2 by default) under **Automatic channels**. New manual channels start with two commercials per break.
+
+When a channel has no breaks, Channel health says why: no commercials selected, **Clips to play in each break** set to 0, or no clip fitting its programs' networks or shows. Point it at a whole commercial library or folder. Files don't need to be sorted into folders: after Jellyfin finishes starting up (the same deferred startup as the rest of the plugin, never during it), and again at each library refresh, Library TV reads every file and folder name for a year (`1994`, `'94`), a decade (`1990s`, `90s`) and a network, and sorts each clip to the programs that match it. **How your clips were sorted** shows the result, for example `Nickelodeon: 1990s 42 · 2000s 17`.
 
 Networks are recognised from the studios and tags of every program on your channels, the networks you type on channels and blocks, and a built-in list of common networks (Nickelodeon, Nick Jr, Cartoon Network, Adult Swim, Toonami, Boomerang, Disney Channel, Fox Kids, Kids WB, ABC, NBC, CBS, FOX, PBS, MTV, Comedy Central, HBO and others). Names that are also everyday words, such as BET or Lifetime, are only recognised when one of your programs lists them. The most specific name wins, so `Fox Kids promo.mp4` is a Fox Kids clip, not a FOX one. A clip that names a known network is never used as a general commercial, even on channels that have no program from that network.
 
@@ -207,7 +215,7 @@ Library, folder and item selectors are combined. An empty source selects nothing
 
 ## Updating schedules
 
-Saving settings refreshes the plugin schedule and extends its unplanned tail. To apply saved content or schedule changes sooner, open **Guide preview → Rebuild future slots**. The current program and its commercial break finish, then reversible future entries are rebuilt from the saved settings. Episode progress, movie rotation and daily quotas are rewound only for discarded future selections. Newly generated entries carry compact undo metadata; no complete rotation snapshot is stored for every program.
+Saving settings refreshes the plugin schedule. When a channel's content, time blocks, commercial breaks, commercials, bumpers, credits speed or the content restrictions change, its future guide is rebuilt automatically after the current program, the same way as **Guide preview → Rebuild future slots**; renaming, renumbering and playback settings (picture shape, captions, audio language) never rebuild it. **Rebuild future slots** remains for applying newly added media sooner. The current program and its commercial break finish, then reversible future entries are rebuilt from the saved settings. Episode progress, movie rotation and daily quotas are rewound only for discarded future selections. Newly generated entries carry compact undo metadata; no complete rotation snapshot is stored for every program.
 
 Schedules created before v0.4 do not contain enough information to safely rewind every selection. Their existing future entries stay protected until they air; any newer tail can be rebuilt. The builder reports the actual **Applied from** time. This preserves episode progress instead of guessing at an older cursor. A failed scan or write keeps the previous published schedule and saved state.
 
@@ -249,7 +257,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.7.1.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.8.0.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -261,8 +269,8 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.7.1.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.8.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
-Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
+Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
 License: GPL-3.0-only.

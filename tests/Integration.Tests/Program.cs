@@ -58,6 +58,8 @@ try
     autoConfig.AutomaticChannels[0].Name = "Custom station";
     autoConfig.AutomaticChannels[0].Number = "7-10";
     Check(autoCatalog.Channels(autoConfig).Any(x => x.Name == "Custom station" && x.Number == "7-10"), "Automatic channels use custom names and subchannel numbers");
+    autoConfig.AutomaticCommercialCount = 3;
+    Check(autoCatalog.Channels(autoConfig).Where(x => x.Id.StartsWith("auto-")).All(x => x.CommercialCount == 3), "Automatic channels get commercial breaks from the shared library");
     autoConfig.Channels[0].Number = "7.10";
     try { autoCatalog.Channels(autoConfig); throw new Exception("Manual/automatic number conflict accepted"); }
     catch (ArgumentException) { Check(true, "Manual and automatic channels cannot share the same number"); }
@@ -109,6 +111,17 @@ try
     Check(Catalog.YearFromPath("/media/Commercials/1980s/Cola (1985) 1080p.mp4") == 1985 && Catalog.YearFromPath("/media/ads/80s/Cola.mp4") == 1980
         && Catalog.YearFromPath("/media/ads/1990s/clip.mkv") == 1990 && Catalog.YearFromPath("/media/ads/clip 1080p x264.mkv") is null, "Commercial years come from year or decade names in folders and files, ignoring resolutions and codecs");
     Check(Catalog.YearFromPath("/ads/Nickelodeon Gak '94.mp4") == 1994, "Short years with an apostrophe are recognised");
+    MediaBrowser.Model.Entities.ChapterInfo Chapter(string name, double seconds) => new() { Name = name, StartPositionTicks = TimeSpan.FromSeconds(seconds).Ticks };
+    var chapterLists = new Dictionary<Guid, List<MediaBrowser.Model.Entities.ChapterInfo>>();
+    var chapterCatalog = new Catalog(Proxy<ILibraryManager>.Make((_, _) => null), null, Proxy<MediaBrowser.Controller.Chapters.IChapterManager>.Make((name, args) => name == "GetChapters" ? chapterLists[(Guid)args![0]!] : throw new NotSupportedException(name)));
+    var endCredits = new Media(Guid.NewGuid(), "Episode", "e.mkv", 1320, "show", 1, 1);
+    var openingOnly = endCredits with { Id = Guid.NewGuid() };
+    var midCredits = endCredits with { Id = Guid.NewGuid() };
+    chapterLists[endCredits.Id] = [Chapter("Intro", 0), Chapter("Episode", 60), Chapter("End Credits", 1250)];
+    chapterLists[openingOnly.Id] = [Chapter("Opening Credits", 0), Chapter("Episode", 90)];
+    chapterLists[midCredits.Id] = [Chapter("Episode", 0), Chapter("Credits", 1200), Chapter("Stinger", 1290)];
+    var creditsAt = chapterCatalog.CreateCreditsReader();
+    Check(creditsAt(endCredits) == (1250, 1320) && creditsAt(openingOnly) is null && creditsAt(midCredits) == (1200, 1290), "Credits are found from chapter names, ignoring opening credits and ending before a scene after them");
     // A shared commercial library is sorted by network and decade, then used by channels without their own clips.
     var sharedFolder = Path.Combine(directory, "shared commercials");
     Directory.CreateDirectory(sharedFolder);
@@ -264,7 +277,7 @@ try
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
     using var rulesWriter = new StringWriter();
     serializer.Serialize(rulesWriter, new Configuration { SharedCommercials = new Pool { FolderIds = [Guid.Empty.ToString()] }, SharedBumpers = new Pool { LibraryIds = [Guid.Empty.ToString()] }, Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
-        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English", AudioLanguage = "Japanese" }] });
+        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English", AudioLanguage = "Japanese", CreditsSpeed = 4 }], AutomaticCommercialCount = 5 });
     var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
     Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra
         && !rules.Channels[0].MatchCommercialNetwork && rules.Channels[0].CommercialNetwork == "Toonami" && rules.Channels[0].Blocks[0].CommercialNetwork == "Adult Swim", "Content restrictions, commercial matching and playback settings survive XML storage");
@@ -279,7 +292,7 @@ try
     Check(oldestXml != olderXml && legacyChannel.Channels[0].MatchCommercialNetwork && oldest.Channels[0].EpisodeBreaks == 1 && oldest.Channels[0].MovieBreaks == 2 && oldest.Channels[0].PictureShape == "16:9" && oldest.Channels[0].Bumpers.FolderIds.Length == 0,
         "Channels saved by older versions match networks, break inside programs and use a 16:9 picture");
     Check(!older.Channels[0].AlwaysEncode && older.Channels[0].MatchCommercialEra, "Channels saved by older versions switch to encode-only-when-needed playback and era-matched commercials");
-    Check(rules.Channels[0].Captions == "forced" && rules.Channels[0].CaptionLanguage == "English" && rules.Channels[0].AudioLanguage == "Japanese" && oldest.Channels[0].Captions == "off" && oldest.Channels[0].AudioLanguage == "", "Caption settings survive XML storage, and older channels start with captions off");
+    Check(rules.Channels[0].Captions == "forced" && rules.Channels[0].CaptionLanguage == "English" && rules.Channels[0].AudioLanguage == "Japanese" && rules.Channels[0].CreditsSpeed == 4 && rules.AutomaticCommercialCount == 5 && oldest.Channels[0].Captions == "off" && oldest.Channels[0].AudioLanguage == "", "Caption settings survive XML storage, and older channels start with captions off");
     foreach (var bad in new[] { new ContentRule { Genres = [], Tags = [] }, new ContentRule { Start = "9pm" }, new ContentRule { Days = [] } })
     {
         try { Scheduler.Validate(new Configuration { Restrictions = [bad] }); throw new Exception("Invalid content restriction accepted"); }
@@ -288,7 +301,7 @@ try
     Check(true, "Content restrictions need a genre or tag, valid times and at least one day");
     try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { CommercialNetwork = new string('n', 101) }] }); throw new Exception("Overlong network accepted"); }
     catch (ArgumentException) { Check(true, "Overlong commercial network names are rejected"); }
-    foreach (var bad in new[] { new ChannelDefinition { EpisodeBreaks = 6 }, new ChannelDefinition { MovieBreaks = -1 }, new ChannelDefinition { PictureShape = "21:9" }, new ChannelDefinition { Captions = "always" }, new ChannelDefinition { AudioLanguage = new string('a', 41) } })
+    foreach (var bad in new[] { new ChannelDefinition { EpisodeBreaks = 6 }, new ChannelDefinition { MovieBreaks = -1 }, new ChannelDefinition { PictureShape = "21:9" }, new ChannelDefinition { Captions = "always" }, new ChannelDefinition { AudioLanguage = new string('a', 41) }, new ChannelDefinition { CreditsSpeed = 9 } })
     {
         try { Scheduler.Validate(new Configuration { Channels = [bad] }); throw new Exception("Invalid break or picture setting accepted"); }
         catch (ArgumentException) { }
