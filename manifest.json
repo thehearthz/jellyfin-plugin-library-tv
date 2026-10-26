@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.7.1.0",
+        "changelog": "Preferred audio language per channel.\n\n- Each channel's Content tab has a Preferred audio language (a name or code such as English, en or eng). When a program has several soundtracks, that language plays, skipping commentary tracks.\n- Programs without that language, and channels with it blank, play the file's default soundtrack (previously always the first track).\n- Channel health names the audio language that is playing.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.7.1.0/library-tv-0.7.1.0.zip",
+        "checksum": "04062b9e856705838fb9175890108867",
+        "timestamp": "2026-10-26T00:42:22Z"
+      },
+      {
         "version": "0.7.0.0",
         "changelog": "Captions for Live TV channels.\n\n- Each channel has a Captions setting: Off (default), Forced only (foreign-language dialogue), or On when the program has captions, plus an optional caption language (English, en or eng).\n- Captions come from subtitle tracks in the file or subtitle files beside it (such as Episode.en.srt). Full captions, then SDH/closed captions, then the default track are preferred.\n- Live TV streams can't carry subtitle tracks, so captions are drawn into the picture: they work in every app, everyone watching the channel sees them, and programs with captions are encoded while they play (up to 720p). Duplicate a channel to offer it with and without captions.\n- Captions stay in sync after commercial breaks and when tuning in part-way through.\n- Embedded CEA-608/708 closed captions are not supported.",
         "targetAbi": "12.2.0.0",
