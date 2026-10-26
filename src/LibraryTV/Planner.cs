@@ -7,6 +7,8 @@ namespace Jellyfin.Plugin.LibraryTV;
 public static class Planner
 {
     public const int MaxGuideEntries = 10000;
+    // Breaks draw from at least this many different clips when the library has them, so they don't repeat.
+    internal static int MinimumVariety { get; set; } = 8;
     public static Media? Next(List<Media> media, Pool pool, Rotation rotation, string seed)
         => Next(media, pool, rotation, seed, out _);
 
@@ -361,35 +363,73 @@ public static class Planner
         public Pool Pool => prefix == "bumpers" ? channel.Bumpers : channel.Commercials;
 
         // The clips for a program, their rotation key, and why they were chosen (shown in the guide preview).
+        // The clips for a program, their rotation key, and why they were chosen (shown in the guide preview).
+        // The most accurate clips come first: made for the show, then the program's network in its decade, the
+        // network in any year, general clips in the decade, then any general clips. Less accurate steps are only
+        // added while there are too few clips to keep breaks from repeating, and never another network's clips.
         public (string Key, List<Media> Clips, string Why)? For(Media program, string network)
         {
-            string key, why;
-            List<Media> chosen;
-            if (NetworkIndex.ShowKey(program.Show) is { } show && showClips.TryGetValue(show, out var own))
-                (key, chosen, why) = (prefix + "#" + show, own, $"made for {program.Show}");
-            else if (Network() is { } match) (key, chosen, why) = match;
-            else if (networks.Count == 0 && general.Count > 0) (key, chosen, why) = (prefix, general, channel.MatchCommercialNetwork ? "no network clips" : "network matching off");
-            else if (general.Count > 0) (key, chosen, why) = (prefix + "@", general, "general: no clips for this program's network");
-            // Every clip belongs to a network or a show, and none fits: better no clip than another network's.
-            else return null;
-            if (!eras.TryGetValue(key, out var decades))
-                eras[key] = decades = chosen.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
-            if (!channel.MatchCommercialEra || decades.Count == 0) return (key, chosen, why);
-            if (program.Year <= 0) return (key, chosen, why + " · any year (program year unknown)");
-            var decade = program.Year / 10 * 10;
-            var nearest = decades.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
-            return (key + ":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest],
-                why + $" · {nearest}s" + (nearest == decade ? "" : $" (closest to {program.Year})"));
+            var steps = new List<(string Key, List<Media> Clips, string Why)>();
+            if (NetworkIndex.ShowKey(program.Show) is { } show && showClips.TryGetValue(show, out var own)) steps.Add(("#" + show, own, $"made for {program.Show}"));
+            var matched = Network();
+            if (matched is { } m)
+            {
+                if (Decade(m.Key, m.Clips) is { } inDecade) steps.Add((m.Key + inDecade.Key, inDecade.Clips, m.Why + inDecade.Why));
+                steps.Add((m.Key, m.Clips, m.Why + (Decade(m.Key, m.Clips) is null ? Era(m.Clips) : " · any year")));
+            }
+            if (general.Count > 0)
+            {
+                // Without network clips the keys keep their earlier form, so saved rotations carry on.
+                var key = networks.Count == 0 ? "" : "@";
+                var reason = networks.Count == 0 ? (channel.MatchCommercialNetwork ? "general clips" : "network matching off") : "general: no clips for this program's network";
+                if (Decade(key, general) is { } inDecade) steps.Add((key + inDecade.Key, inDecade.Clips, reason + inDecade.Why));
+                steps.Add((key, general, reason + (Decade(key, general) is null ? Era(general) : " · any year")));
+            }
+            // Every clip belongs to another network or show: better no clip than another network's.
+            if (steps.Count == 0) return null;
+            var wanted = MinimumVariety > 1 ? Math.Max(MinimumVariety, channel.CommercialCount * 3) : 1;
+            var used = new List<(string Key, List<Media> Clips, string Why)>();
+            var clips = new List<Media>();
+            foreach (var step in steps)
+            {
+                if (used.Count > 0 && clips.Count >= wanted) break;
+                var added = step.Clips.Where(x => !clips.Contains(x)).ToList();
+                if (added.Count == 0 && used.Count > 0) continue;
+                used.Add(step);
+                clips.AddRange(added);
+            }
+            var why = used[0].Why + (used.Count > 1 ? $"; widened with {string.Join(", ", used.Skip(1).Select(x => Describe(x.Key)))} so breaks don't repeat" : "");
+            return (prefix + string.Join("+", used.Select(x => x.Key)), clips, why);
 
-            (string, List<Media>, string)? Network()
+            (string Key, List<Media> Clips, string Why)? Network()
             {
                 if (networks.Count == 0) return null;
                 foreach (var (source, name) in (program.Tags ?? []).Select(x => ("tag", x)).Concat((program.Studios ?? []).Select(x => ("studio", x)))
                     .Prepend(("channel or block setting", network)))
                     if (index.Resolve(name, networks.ContainsKey) is { } found)
-                        return (prefix + "@" + found, networks[found], $"{index.Name(found)} ({source} “{name.Trim()}”)");
+                        return ("@" + found, networks[found], $"{index.Name(found)} ({source} “{name.Trim()}”)");
                 return null;
             }
+            // The clips from the decade nearest the program's, when era matching applies.
+            (string Key, List<Media> Clips, string Why)? Decade(string key, List<Media> pool)
+            {
+                if (!channel.MatchCommercialEra || program.Year <= 0) return null;
+                if (!eras.TryGetValue(key, out var decades))
+                    eras[key] = decades = pool.Where(x => x.Year > 0).GroupBy(x => x.Year / 10 * 10).ToDictionary(g => g.Key, g => g.ToList());
+                if (decades.Count == 0) return null;
+                var decade = program.Year / 10 * 10;
+                var nearest = decades.Keys.OrderBy(x => Math.Abs(x - decade)).ThenBy(x => x).First();
+                return (":" + nearest.ToString(System.Globalization.CultureInfo.InvariantCulture), decades[nearest], $" · {nearest}s" + (nearest == decade ? "" : $" (closest to {program.Year})"));
+            }
+            string Era(List<Media> pool) => channel.MatchCommercialEra && program.Year <= 0 && pool.Any(x => x.Year > 0) ? " · any year (program year unknown)" : "";
+            string Describe(string key) => key switch
+            {
+                "" or "@" => "all general clips",
+                [':', ..] or ['@', ':', ..] => "general clips from the " + key[(key.IndexOf(':') + 1)..] + "s",
+                ['@', ..] when key.Contains(':') => $"{index.Name(key[1..key.IndexOf(':')])} clips from the {key[(key.IndexOf(':') + 1)..]}s",
+                ['@', ..] => $"{index.Name(key[1..])} clips from any year",
+                _ => key,
+            };
         }
     }
 

@@ -240,6 +240,10 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (channel.CommercialCount == 0 && pools["commercials"].Count > 0) notes.Add("Commercials are available, but Clips to play in each break is 0, so no commercials play.");
                 if (channel.CommercialCount > 0 && pools["commercials"].Count > 0 && aired && !Planned("commercials"))
                     notes.Add("No commercials fit this channel's programs: every clip is named after a network or show these programs don't match. Add some commercials without a network in their name, or check each program's network in Guide preview.");
+                var adsAhead = ahead.Where(x => x.Commercial && x.Undo?.PoolKey.StartsWith("commercials", StringComparison.Ordinal) == true).ToArray();
+                var different = adsAhead.Select(x => x.ItemId).Distinct().Count();
+                if (different > 0 && different < 8 && adsAhead.Length >= 3 * different)
+                    notes.Add($"Only {different} different commercials fit this channel's programs, so they repeat often. Add more commercials, especially general ones without a network in their name.");
                 if (pools["bumpers"].Count > 0 && aired && !Planned("bumpers")) notes.Add("No bumpers fit this channel's programs: every bumper is named after a network or show these programs don't match.");
                 if (channel.CreditsSpeed > 1 && aired && !ahead.Any(x => x.Speed > 1)) notes.Add("None of the upcoming programs have credits markers, so their credits play at normal speed. Add credits chapters or an Outro media segment (for example with the Intro Skipper plugin).");
                 var upcoming = state.Guide.Where(x => x.End > now).ToArray();
@@ -286,10 +290,14 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
 
     public ClipGroup[] ClipLibrary { get; private set; } = [];
 
+    // Raised when planning rules change, so updating the plugin replans the future with the new rules.
+    private const int PlanningRules = 2;
+
     // The settings that shape a channel's schedule. Names, numbers and playback-only settings are left out,
     // so changing them never rebuilds the guide.
     private static string Fingerprint(ChannelDefinition c, Configuration config) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
     {
+        PlanningRules,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
         c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId
     })));

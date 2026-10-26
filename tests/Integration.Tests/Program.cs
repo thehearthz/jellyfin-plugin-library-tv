@@ -139,7 +139,9 @@ try
     plugin.UpdateConfiguration(new Configuration { GuideDays = 1, SharedCommercials = new Pool { ItemIds = sharedClips.Select(x => x.Id.ToString()).ToArray() },
         Channels = [new ChannelDefinition { Id = "kids", Name = "Kids", CommercialCount = 1, MovieBreaks = 0, Source = new Pool { ItemIds = [kidsMovie.Id.ToString()] } }] });
     var sharedScheduler = new Scheduler(sharedCatalog, sharedPaths, NullLogger<Scheduler>.Instance);
+    Planner.MinimumVariety = 1; // A three-clip library: this checks accurate matching, not widening for variety.
     await sharedScheduler.Refresh(default);
+    Planner.MinimumVariety = 8;
     plugin.UpdateConfiguration(keptConfig);
     Check(sharedScheduler.ClipLibrary.Select(x => $"{x.Kind}:{x.Network}:{x.Decade}:{x.Count}").SequenceEqual(["Commercials:Adult Swim:2000:1", "Commercials:Nickelodeon:1990:1", "Commercials:General:0:1"]),
         "Each refresh sorts the shared commercial library by the network and year in its file names");

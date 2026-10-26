@@ -172,6 +172,8 @@ The network for a break is the first of these that has commercials:
 
 A studio, tag or setting also counts when it contains a network's name or nickname, so a show whose studio is "Nickelodeon Animation Studio" or "Cartoon Network Studios" gets that network's clips, and "Williams Street" gets Adult Swim's. If none matches, the break uses only commercials that are not in any network folder, so a kids show never gets another network's adult commercials. If there are no such general clips, the program's breaks are left out rather than filled with another network's clips, and the program is not split for them. Era matching then picks the decade within the chosen commercials. Each network and decade keeps its own rotation.
 
+**Variety.** A break draws from at least eight different clips (or three per commercial slot, if more) when your library has them, so the same few never repeat break after break. The most accurate clips come first: clips made for the show, then the program's network in its decade, the network in any year, general clips from the decade, then any general clips. Less accurate steps are added only while there are too few clips, and never another network's or show's clips. Within the chosen clips every one plays before any repeats. Guide preview's **Why** says when a break was widened, and Channel health warns when a channel still has fewer than eight different commercials.
+
 **Show-specific clips.** A commercial or bumper whose name contains a show or movie title, such as `SpongeBob SquarePants bumper.mp4` or `Simpsons promo 1992.mp4`, plays only with that show, before any network matching. A leading "The" is ignored, and titles shorter than five letters (such as "Up") are never matched, so ordinary words in clip names do not tie them to a show.
 
 **Checking the matches.** **Guide preview → Load guide** labels each clip as a commercial or bumper and shows why it was chosen, for example `Why: Nickelodeon (studio “Nickelodeon Animation Studio”) · 1990s`, `Why: made for SpongeBob SquarePants · 2000s` or `Why: general: no clips for this program's network`. A program whose year is unknown shows `any year`; fix its air date or year in Jellyfin to match its era.
@@ -257,7 +259,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.8.0.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.8.1.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -269,7 +271,7 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.8.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.8.1.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

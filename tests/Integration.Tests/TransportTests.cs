@@ -103,6 +103,9 @@ public static class TransportTests
             "-map","0:v","-map","1:a","-map","2:s","-c:v","libx264","-preset","ultrafast","-g","25","-pix_fmt","yuv420p","-c:a","aac","-ac","2","-c:s","srt","-metadata:s:s:0","language=eng",captioned]);
         async Task<double> Brightest(Airing program, ChannelDefinition channel, ProgramStreamer? with = null)
         {
+            // Each stream starts now, so a slow machine never streams a program whose time has already passed.
+            var startsNow = DateTimeOffset.UtcNow;
+            program = program with { Start = startsNow, End = startsNow + (program.End - program.Start) };
             using var captionOutput = new MemoryStream();
             await (with ?? streamer).Stream(program, channel, null, bytes => { captionOutput.Write(bytes); return Task.CompletedTask; }, default);
             var path = Path.Combine(captionRoot, Guid.NewGuid().ToString("N") + ".ts");
@@ -213,6 +216,8 @@ public static class TransportTests
         }
         finally { Plugin.Instance.UpdateConfiguration(savedConfiguration); }
         // End to end with breaks: real clips, matched to each show, all stream through FFmpeg in order.
+        // A tiny clip library, so widening for variety is off: this checks accurate matching.
+        Planner.MinimumVariety = 1;
         var breakRoot = Path.Combine(root, "breaks");
         Directory.CreateDirectory(breakRoot);
         async Task<string> Make(string file, double seconds)
@@ -257,7 +262,7 @@ public static class TransportTests
             check(cycle.SequenceEqual(["Rugrats", "Rugrats bumper", "Nick Gak", "Rugrats bumper", "Aqua Teen", "Swim bump", "Swim promo", "Swim bump"]) && recorder.Finished.Take(9).All(x => x.Bytes > 0) && status.LastProblem is null,
                 "With real FFmpeg, every break plays bumper, commercial, bumper, each show gets its own bumpers and its network's commercials, and every clip streams video");
         }
-        finally { Plugin.Instance.UpdateConfiguration(keptBreakConfig); }
+        finally { Plugin.Instance.UpdateConfiguration(keptBreakConfig); Planner.MinimumVariety = 8; }
         // Without a lead, so the clip still plays in real time when it is canceled.
         ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;

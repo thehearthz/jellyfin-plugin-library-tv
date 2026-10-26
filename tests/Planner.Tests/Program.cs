@@ -181,6 +181,8 @@ Planner.Extend(restrictedChannel, onlyHorror, new Dictionary<string, List<Media>
 Check(onlyHorror.Guide.All(x => x.ItemId == horror.Id) && onlyHorror.Guide.Zip(onlyHorror.Guide.Skip(1)).Any(x => x.Second.Start > x.First.End) && onlyHorror.Guide.All(x => !Planner.Restricted(horror, x.Start, x.End, daytime, TimeZoneInfo.Utc))
     && onlyHorror.Rotations["default"].Remaining.Concat(onlyHorror.Rotations["default"].Seen).Count(x => x == horror.Id) == 1, "A pool with nothing allowed leaves a gap instead of breaking its rules, and its rotation stays intact");
 
+// The matching tests below use tiny libraries; widening for variety is tested separately at the end.
+Planner.MinimumVariety = 1;
 // Commercials follow the decade of the program they come after.
 Media Ad(int year) => new(Guid.NewGuid(), "Ad " + year, "ad.mp4", 30, "", 0, 0, year);
 var adPool = new List<Media> { Ad(1983), Ad(1987), Ad(1994), Ad(1998), Ad(2006) };
@@ -309,7 +311,7 @@ var matchChannel = new ChannelDefinition { Id = "match", CommercialCount = 1, Ep
 var matchState = new ChannelState();
 Planner.Extend(matchChannel, matchState, new Dictionary<string, List<Media>> { ["default"] = [sponge, rugrats, aqua, simpsons, smallTitle], ["commercials"] = matchAds }, now, now.AddHours(2), TimeZoneInfo.Utc);
 Airing After(Media program) => matchState.Guide[matchState.Guide.FindIndex(x => x.ItemId == program.Id) + 1];
-Check(After(sponge).Path.EndsWith("SpongeBob SquarePants bumper.mp4") && After(sponge).Match == "made for SpongeBob SquarePants · 2000s", "A clip named after a show plays with that show");
+Check(After(sponge).Path.EndsWith("SpongeBob SquarePants bumper.mp4") && After(sponge).Match == "made for SpongeBob SquarePants", "A clip named after a show plays with that show");
 Check(After(rugrats).Path.EndsWith("Nick Gak 1995.mp4") && After(rugrats).Match == "Nickelodeon (studio “Nickelodeon”) · 1990s" && matchState.Guide.Select((x, i) => (x, i)).Where(e => e.x.Commercial && e.x.Path.Contains("SpongeBob")).All(e => matchState.Guide.Take(e.i).Last(g => !g.Commercial).ItemId == sponge.Id),
     "Nicknames such as “Nick” count as the network, and a show's own bumper never plays with another show");
 Check(After(aqua).Path.EndsWith("Adult Swim bump 2004.mp4") && After(aqua).Match!.StartsWith("Adult Swim (studio “Williams Street”)"), "Production companies such as Williams Street stand for their network");
@@ -345,4 +347,30 @@ Check(creditsPlan.SequenceEqual(creditsState.Guide.Select(x => (x.ItemId, x.Star
 var normalSpeed = new ChannelState();
 Planner.Extend(creditsChannel, normalSpeed, creditsPools, now, now.AddHours(1), TimeZoneInfo.Utc);
 Check(normalSpeed.Guide.All(x => x.Speed == 1), "Programs without credits markers play at normal speed");
+
+// Small matches are widened step by step so breaks don't repeat, without ever using another network's clips.
+Planner.MinimumVariety = 8;
+Media Filed(string name, int year) => new(Guid.NewGuid(), name, "/clips/" + name + ".mp4", 30, "", 0, 0, year);
+var nick90s = Enumerable.Range(1, 2).Select(n => Filed($"Nickelodeon 199{n} ad {n}", 1990 + n)).ToList();
+var nick00s = Enumerable.Range(1, 3).Select(n => Filed($"Nickelodeon 200{n} ad {n}", 2000 + n)).ToList();
+var general90s = Enumerable.Range(1, 2).Select(n => Filed($"Cola 199{n} ad {n}", 1990 + n)).ToList();
+var generalAny = Enumerable.Range(1, 6).Select(n => Filed($"Cereal 201{n} ad {n}", 2010 + n)).ToList();
+var swim = Enumerable.Range(1, 5).Select(n => Filed($"Adult Swim bump {n}", 2004)).ToList();
+var varietyShow = new Media(Guid.NewGuid(), "Doug", "doug.mkv", 1320, "doug", 1, 1, 1993, [], [], ["Nickelodeon"], "Doug Funnie Show");
+var varietyChannel = new ChannelDefinition { Id = "variety", CommercialCount = 2, EpisodeBreaks = 1, Source = new Pool() };
+var varietyState = new ChannelState();
+Planner.Extend(varietyChannel, varietyState, new Dictionary<string, List<Media>> { ["default"] = [varietyShow], ["commercials"] = [.. nick90s, .. nick00s, .. general90s, .. generalAny, .. swim] }, now, now.AddHours(6), TimeZoneInfo.Utc);
+var varietyAds = varietyState.Guide.Where(x => x.Commercial).ToArray();
+var firstEight = varietyAds.Take(8).Select(x => x.ItemId).ToArray();
+Check(firstEight.Distinct().Count() == 8 && varietyAds.Select(x => x.ItemId).Distinct().Count() == 13 && varietyAds.All(x => !swim.Any(a => a.Id == x.ItemId)),
+    "A show with few matching commercials gets at least eight different ones before any repeats, never another network's");
+Check(varietyAds.Select(x => x.ItemId).Intersect(nick90s.Concat(nick00s).Select(x => x.Id)).Count() == 5 && varietyAds.Select(x => x.ItemId).Intersect(general90s.Select(x => x.Id)).Count() == 2 && varietyAds.Select(x => x.ItemId).Intersect(generalAny.Select(x => x.Id)).Count() == 6,
+    "Widening adds the network's other years, then general clips from the decade, then other general clips, until there are enough");
+Check(varietyAds[0].Match == "Nickelodeon (studio “Nickelodeon”) · 1990s; widened with Nickelodeon clips from any year, general clips from the 1990s, all general clips so breaks don't repeat",
+    "Guide preview says when and how a break was widened");
+var plenty = Enumerable.Range(1, 10).Select(n => Filed($"Nickelodeon 199{n % 10} ad {n}", 1995)).ToList();
+var preciseState = new ChannelState();
+Planner.Extend(varietyChannel, preciseState, new Dictionary<string, List<Media>> { ["default"] = [varietyShow], ["commercials"] = [.. plenty, .. generalAny] }, now, now.AddHours(3), TimeZoneInfo.Utc);
+Check(preciseState.Guide.Where(x => x.Commercial).All(x => plenty.Any(p => p.Id == x.ItemId)) && preciseState.Guide.First(x => x.Commercial).Match == "Nickelodeon (studio “Nickelodeon”) · 1990s",
+    "With enough accurate clips, breaks stay accurate and are not widened");
 Console.WriteLine($"{passed} scheduling checks passed.");
