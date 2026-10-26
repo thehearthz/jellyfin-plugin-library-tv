@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.8.1.0",
+        "changelog": "Commercial breaks no longer repeat the same few clips.\n\n- Each break now draws from at least eight different commercials when the library has them (more with more commercials per break). Matching widens step by step: clips made for the show, the network in the program's decade, the network in any year, general clips from the decade, then any general clips. Accurate clips still come first, and other networks' or shows' clips are never used.\n- Every clip plays before any repeats.\n- Guide preview's Why says when a break was widened, and Channel health warns when a channel still has fewer than eight different commercials.\n- Updating replans already-scheduled breaks once, after the current program.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.8.1.0/library-tv-0.8.1.0.zip",
+        "checksum": "96adf8af07112619732bb3b48f6886e8",
+        "timestamp": "2026-10-26T15:45:24Z"
+      },
+      {
         "version": "0.8.0.0",
         "changelog": "Commercials and bumpers that reliably appear, and speeding through credits.\n\n- Automatic library channels now get commercial breaks, using the shared commercials and bumpers (Commercials per break on automatic channels, 2 by default).\n- Changing a channel's content, breaks, commercials, bumpers, credits speed or content restrictions rebuilds its guide after the current program, instead of waiting days for the planned guide to run out. Updating rebuilds every channel's upcoming schedule once.\n- New channels start with two commercials per break.\n- Channel health explains missing breaks: zero commercials per break, or no clip fitting the channel's programs.\n- Credits can speed through at 2x, 4x or 8x: the credits roll faster while their music plays at normal speed and fades into the next program. Needs credits chapters or an Outro media segment (for example from the Intro Skipper plugin).",
         "targetAbi": "12.2.0.0",
