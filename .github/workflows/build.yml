@@ -16,7 +16,16 @@ jobs:
       - run: dotnet build src/LibraryTV/LibraryTV.csproj -c Release
       - run: dotnet run --project tests/Planner.Tests -c Release
       - name: Install transport test tools
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+        # A slow package mirror must fail and retry rather than hang the job.
+        timeout-minutes: 15
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 240 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq \
+              && timeout 300 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ffmpeg; then exit 0; fi
+            echo "Installing FFmpeg failed (attempt $attempt); retrying"
+            sleep 15
+          done
+          exit 1
       - run: dotnet run --project tests/Integration.Tests -c Release
         env:
           LIBRARY_TV_FFMPEG: /usr/bin/ffmpeg
