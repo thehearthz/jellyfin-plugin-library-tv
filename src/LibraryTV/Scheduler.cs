@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null)
+public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null)
 {
     public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
@@ -222,7 +222,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 foreach (var key in pools.Keys.Where(x => x is not ("commercials" or "bumpers")).ToArray()) pools[key].RemoveAll(x => clipIds.Contains(x.Id));
                 // Changed schedule settings (content, blocks, breaks, clips, credits, restrictions) apply after the
                 // current program, without a manual rebuild; the guide planned days ahead would otherwise keep the old ones.
-                var plannedWith = Fingerprint(channel, config);
+                var plannedWith = Fingerprint(channel, config, detections?.Generation ?? 0);
                 DateTimeOffset? from = null;
                 if (channel.Id == rebuildChannel || state.PlannedWith != plannedWith && state.Guide.Any(x => x.Start > now)) from = Planner.RewindFuture(state, now);
                 if (channel.Id == rebuildChannel) rebuiltFrom = from;
@@ -245,7 +245,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 if (different > 0 && different < 8 && adsAhead.Length >= 3 * different)
                     notes.Add($"Only {different} different commercials fit this channel's programs, so they repeat often. Add more commercials, especially general ones without a network in their name.");
                 if (pools["bumpers"].Count > 0 && aired && !Planned("bumpers")) notes.Add("No bumpers fit this channel's programs: every bumper is named after a network or show these programs don't match.");
-                if (channel.CreditsSpeed > 1 && aired && !ahead.Any(x => x.Speed > 1)) notes.Add("None of the upcoming programs have credits markers, so their credits play at normal speed. Add credits chapters or an Outro media segment (for example with the Intro Skipper plugin).");
+                if (channel.CreditsSpeed > 1 && aired && !ahead.Any(x => x.Speed > 1)) notes.Add("None of the upcoming programs have credits markers, so their credits play at normal speed. Credits detection may still be scanning them; otherwise add credits chapters or an Outro media segment (for example with the Intro Skipper plugin).");
                 var upcoming = state.Guide.Where(x => x.End > now).ToArray();
                 if (upcoming.Zip(upcoming.Skip(1)).Any(x => x.Second.Start - x.First.End > TimeSpan.FromMinutes(1)))
                     notes.Add("Some times have nothing allowed to air, so the channel goes off the air until the next program. Add content or narrow the content restrictions.");
@@ -295,9 +295,10 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
 
     // The settings that shape a channel's schedule. Names, numbers and playback-only settings are left out,
     // so changing them never rebuilds the guide.
-    private static string Fingerprint(ChannelDefinition c, Configuration config) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+    // Newly detected credits count too: they move breaks before the credits and speed the credits up.
+    private static string Fingerprint(ChannelDefinition c, Configuration config, int detectedCredits) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
     {
-        PlanningRules,
+        PlanningRules, DetectedCredits = config.DetectCredits ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
         c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId
     })));

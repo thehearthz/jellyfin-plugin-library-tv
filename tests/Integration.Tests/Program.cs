@@ -29,6 +29,7 @@ try
     await StartupTests.Run(Check, paths);
     await PlaybackTests.Run(Check, directory);
     await TransportTests.Run(Check, directory);
+    await CreditsTests.Run(Check, directory, paths);
     var services = new ServiceCollection();
     new Services().RegisterServices(services, null!);
     Check(services.Any(x => x.ServiceType == typeof(ILiveTvService) && x.ImplementationType == typeof(LiveTvService)), "Plugin registers its native Live TV provider in dependency injection");

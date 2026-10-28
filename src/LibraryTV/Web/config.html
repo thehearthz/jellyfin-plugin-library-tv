@@ -485,6 +485,27 @@
         </div>
       </details>
       <details class="ltv-panel">
+        <summary>Credits detection</summary>
+        <div>
+          <label class="ltv-check"
+            ><input type="checkbox" data-setting="DetectCredits" />Find where
+            credits start in every program</label
+          >
+          <p class="ltv-muted">
+            In the background, after Jellyfin finishes starting, Library TV
+            reads the end of every program on your channels once. Episodes of a
+            show are compared with each other to find their shared closing
+            music; movies, and shows whose credits differ, are checked for a
+            long dark stretch with text. Commercial breaks then fall before the
+            credits, and Credits speed can roll them faster. Credits chapters
+            and Outro segments are used instead when a program has them. It
+            runs at low priority, one file at a time; changed files are read
+            again.
+          </p>
+          <div data-ui="credits-scan" aria-live="polite"></div>
+        </div>
+      </details>
+      <details class="ltv-panel">
         <summary>Channel health</summary>
         <div>
           <p class="ltv-muted">
@@ -952,11 +973,46 @@
           target.append(box);
         }
       }
+      function renderCreditsScan(scan) {
+        const target = ui("credits-scan");
+        if (!target) return;
+        target.replaceChildren();
+        if (!scan) return;
+        const lines = [];
+        if (!scan.Enabled) lines.push("Credits detection is off.");
+        else if (scan.Running)
+          lines.push(
+            "Scanning: " +
+              scan.Remaining +
+              " of " +
+              scan.Programs +
+              " programs left" +
+              (scan.Current ? " · now reading " + scan.Current : "") +
+              ".",
+          );
+        else if (scan.LastPass)
+          lines.push(
+            "Up to date: last checked " +
+              new Date(scan.LastPass).toLocaleString() +
+              ".",
+          );
+        else lines.push("Waiting for the first schedule refresh.");
+        lines.push(
+          "Credits found in " +
+            scan.Found +
+            " of " +
+            scan.Scanned +
+            " scanned files.",
+        );
+        for (const line of lines)
+          target.append(node("p", { class: "ltv-muted" }, line));
+      }
       async function refreshHealth() {
         const target = ui("health");
         target.textContent = "Checking saved channels…";
         try {
           const result = await api("status");
+          renderCreditsScan(result.CreditsScan);
           target.replaceChildren();
           if (result.LastError)
             target.append(
@@ -1523,7 +1579,7 @@
             node(
               "p",
               { class: "ltv-muted" },
-              "Speeding through credits rolls them faster while their music plays at normal speed and fades out into the next program. It needs credits markers: a chapter named “Credits”, “End Credits”, “Outro” or “Ending”, or an Outro segment from a plugin such as Intro Skipper. Programs without one play their credits normally, and a scene after the credits plays at normal speed.",
+              "Speeding through credits rolls them faster while their music plays at normal speed and fades out into the next program. It needs to know where the credits are: from Credits detection (on by default), a chapter named “Credits”, “End Credits”, “Outro” or “Ending”, or an Outro segment from a plugin such as Intro Skipper. Programs whose credits aren't found play them normally, and a scene after the credits plays at normal speed.",
             ),
             node(
               "p",
@@ -2328,6 +2384,7 @@
             state.config.AutoChannelStartNumber ?? 100;
           state.config.AutomaticCommercialCount =
             state.config.AutomaticCommercialCount ?? 2;
+          state.config.DetectCredits = state.config.DetectCredits ?? true;
           state.libraries = libraries;
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
@@ -2389,6 +2446,7 @@
           renderAutomaticChannels();
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary);
+          renderCreditsScan(status.CreditsScan);
           ui("plugin-pages").textContent =
             status.PluginPages || "Plugin Pages status unavailable.";
           ui("body").hidden = false;

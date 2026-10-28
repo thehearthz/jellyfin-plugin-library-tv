@@ -29,7 +29,10 @@ public sealed class Services : IPluginServiceRegistrator
         services.AddSingleton<IProgramStreamer, ProgramStreamer>();
         services.AddSingleton<MediaBrowser.Controller.LiveTv.ILiveTvService, LiveTvService>();
         services.AddSingleton<MediaBrowser.Controller.Channels.IChannel, LibraryChannel>();
+        services.AddSingleton<CreditsStore>();
+        services.AddSingleton<CreditsScanner>();
         services.AddHostedService<RefreshService>();
+        services.AddHostedService(x => x.GetRequiredService<CreditsScanner>());
         services.AddHostedService<PluginPagesIntegration>();
     }
 }

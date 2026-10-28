@@ -19,6 +19,7 @@ public sealed class SettingsBackup
     public Pool SharedCommercials { get; set; } = new();
     public Pool SharedBumpers { get; set; } = new();
     public int AutomaticCommercialCount { get; set; } = 2;
+    public bool DetectCredits { get; set; } = true;
 
     public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
 
@@ -39,6 +40,7 @@ public sealed class SettingsBackup
         config.SharedCommercials = SharedCommercials;
         config.SharedBumpers = SharedBumpers;
         config.AutomaticCommercialCount = AutomaticCommercialCount;
+        config.DetectCredits = DetectCredits;
         Scheduler.Validate(config);
         return config;
     }

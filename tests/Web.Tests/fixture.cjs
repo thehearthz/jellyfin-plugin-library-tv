@@ -143,6 +143,7 @@ function install(window, options = {}) {
             "Connected — Library TV Builder is registered in Plugin Pages.",
           Channels: data.healthChannels || [],
           ClipLibrary: data.clipLibrary || options.clipLibrary || [],
+          CreditsScan: data.creditsScan || options.creditsScan,
         };
       if (path === "media/resolve")
         return Object.values(content)

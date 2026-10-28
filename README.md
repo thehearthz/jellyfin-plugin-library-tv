@@ -138,7 +138,16 @@ If a program's file is missing or fails, its remaining parts and the breaks insi
 
 **Credits** on a channel's Content tab can speed through end credits at 2×, 4× or 8×: the credits roll that much faster while their music keeps playing at normal speed, fading out into the next program. Four minutes of credits at 4× take one minute. A scene after the credits plays at normal speed. The credits part is encoded while it plays.
 
-This needs to know where the credits are: an Outro media segment (added by plugins such as Intro Skipper, which detects credits) or a chapter named like `Credits`, `End Credits`, `Outro` or `Ending`. Credits must start in the second half of the program and last at least ten seconds; opening credits are never sped up. Programs without a marker play their credits normally, and Channel health says when no upcoming program has one. Commercial breaks inside a program always fall before its credits.
+This needs to know where the credits are: an Outro media segment (added by plugins such as Intro Skipper), a chapter named like `Credits`, `End Credits`, `Outro` or `Ending`, or what **Credits detection** found. Credits must start in the second half of the program and last at least ten seconds; opening credits are never sped up. Programs whose credits aren't found play them normally, and Channel health says when no upcoming program has any. Commercial breaks inside a program always fall before its credits.
+
+### Credits detection
+
+**Credits detection** (on by default) finds where the credits start in every program on your channels, so programs need no chapters or other plugins. It starts after Jellyfin has finished starting and the first schedule is built, then reads each file once, in the background, one at a time, at low priority, beginning with whatever airs soonest:
+
+- **Episodes** are compared with the episodes next to them in the same show. Shows close with the same music every week, so the longest stretch of matching sound (at least 15 seconds) in the last quarter of an episode is its credits.
+- **Movies**, and shows whose credits change every episode, are checked for a long, mostly black stretch near the end (at least 20 seconds), which is what credits on a black background look like. Only keyframes are decoded, at a tiny size.
+
+Results are saved in `library-tv/credits.json` in Jellyfin's data folder. A file that changes is read again; a program where nothing was found is tried again after two weeks. When a scan finds new credits, the planned guide is rebuilt once, after the current program, so breaks and **Credits** speed use them. Chapters and Outro segments take priority when a program has them. Open **Credits detection** in the builder to turn it off or see its progress.
 
 ### Shared commercial library
 
@@ -259,7 +268,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.8.1.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.9.0.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -271,7 +280,7 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.8.1.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.9.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

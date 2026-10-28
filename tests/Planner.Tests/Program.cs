@@ -373,4 +373,20 @@ var preciseState = new ChannelState();
 Planner.Extend(varietyChannel, preciseState, new Dictionary<string, List<Media>> { ["default"] = [varietyShow], ["commercials"] = [.. plenty, .. generalAny] }, now, now.AddHours(3), TimeZoneInfo.Utc);
 Check(preciseState.Guide.Where(x => x.Commercial).All(x => plenty.Any(p => p.Id == x.ItemId)) && preciseState.Guide.First(x => x.Commercial).Match == "Nickelodeon (studio “Nickelodeon”) · 1990s",
     "With enough accurate clips, breaks stay accurate and are not widened");
+var noise = new Random(7);
+uint[] Noise(int count) => Enumerable.Range(0, count).Select(_ => (uint)noise.NextInt64(0, 1L << 32)).ToArray();
+var sharedCredits = Noise(200);
+var printA = Noise(300).Concat(sharedCredits).ToArray();
+var printB = Noise(250).Concat(sharedCredits).Concat(Noise(20)).ToArray();
+// A few noisy bits and one dropout in the shared credits still match.
+printB[260] ^= 0b10101; printB[300] = ~printB[300];
+var creditsMatch = CreditsDetector.Match(printA, printB);
+Check(creditsMatch is { StartA: 300, EndA: 500, StartB: 250, EndB: 450 }, "Matching closing music is found in two episodes at different times, despite small differences");
+Check(CreditsDetector.Match(Noise(400), Noise(400)) is null, "Episodes with different endings share no credits");
+Check(CreditsDetector.Match(Noise(300).Concat(sharedCredits.Take(80)).ToArray(), Noise(300).Concat(sharedCredits.Take(80)).ToArray()) is null, "A shared sting shorter than fifteen seconds is not credits");
+var sampled = Enumerable.Range(0, 60).Select(n => (Time: 100.0 + n * 2, Black: n is >= 30 and < 55 ? (n == 40 ? 20 : 95) : 10)).ToList();
+Check(CreditsDetector.BlackRun(sampled, 220) == (160, 210), "Credits on black run past a single logo frame and stop where the picture returns");
+Check(CreditsDetector.BlackRun(sampled.Select(x => x with { Black = x.Time >= 200 ? 95 : 10 }).ToList(), 220) == (200, 220), "Black credits at the very end run to the end of the file");
+Check(CreditsDetector.BlackRun(sampled.Select(x => x with { Black = x.Time is >= 150 and < 160 ? 95 : 10 }).ToList(), 220) is null, "A short fade to black is not credits");
+Check(CreditsDetector.ParseBlackFrames("[Parsed_blackframe_1 @ 0x1] frame:3 pblack:97 pts:768 t:6.000000 type:I last_keyframe:3", 100).SequenceEqual([(106.0, 97)]), "Black frame times are read relative to where the scan started");
 Console.WriteLine($"{passed} scheduling checks passed.");

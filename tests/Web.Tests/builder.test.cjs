@@ -972,3 +972,33 @@ test("guide preview marks credits that are sped up", async () => {
     dom.window.close();
   }
 });
+
+test("credits detection can be turned off and shows its scan progress", async () => {
+  const dom = await ready({
+    creditsScan: {
+      Enabled: true,
+      Running: true,
+      Programs: 40,
+      Scanned: 12,
+      Found: 9,
+      Remaining: 28,
+      Current: "Doug — S01E03",
+    },
+  });
+  try {
+    const w = dom.window;
+    const status = w.document.querySelector("[data-ui=credits-scan]");
+    assert.match(status.textContent, /28 of 40 programs left/);
+    assert.match(status.textContent, /now reading Doug — S01E03/);
+    assert.match(status.textContent, /Credits found in 9 of 12 scanned files/);
+    const toggle = w.document.querySelector("[data-setting=DetectCredits]");
+    assert.equal(toggle.checked, true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new w.Event("change", { bubbles: true }));
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.DetectCredits, false);
+  } finally {
+    dom.window.close();
+  }
+});

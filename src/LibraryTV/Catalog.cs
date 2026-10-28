@@ -10,14 +10,15 @@ using System.Text.Json;
 namespace Jellyfin.Plugin.LibraryTV;
 
 public sealed class Catalog(ILibraryManager library, StartupGate? startup = null, MediaBrowser.Controller.Chapters.IChapterManager? chapterManager = null,
-    MediaBrowser.Controller.MediaSegments.IMediaSegmentManager? segmentManager = null)
+    MediaBrowser.Controller.MediaSegments.IMediaSegmentManager? segmentManager = null, CreditsStore? detections = null)
 {
     private static readonly System.Text.RegularExpressions.Regex CreditsChapter = new(@"\b(end\s*credits|credits|outro|ending|closing)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     // Where a program's credits run, in seconds: an Outro media segment (added by plugins such as Intro
-    // Skipper), else a chapter named like "Credits", "Outro" or "Ending". Only credits in the second half,
-    // at least ten seconds long, count. Read only for programs being scheduled, cached for one refresh.
-    public Func<Media, (double Start, double End)?> CreateCreditsReader()
+    // Skipper), else a chapter named like "Credits", "Outro" or "Ending", else what credits detection found.
+    // Only credits in the second half, at least ten seconds long, count. Read only for programs being
+    // scheduled, cached for one refresh.
+    public Func<Media, (double Start, double End)?> CreateCreditsReader(bool detected = true)
     {
         var cache = new Dictionary<Guid, (double Start, double End)?>();
         return media =>
@@ -35,6 +36,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                     var index = chapters.FindLastIndex(x => x.Name is { } name && CreditsChapter.IsMatch(name));
                     if (index >= 0) found = (Seconds(chapters[index].StartPositionTicks), index + 1 < chapters.Count ? Seconds(chapters[index + 1].StartPositionTicks) : media.Seconds);
                 }
+                if (found is null && detected) found = detections?.For(media);
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { found = null; }
             if (found is { } credits)

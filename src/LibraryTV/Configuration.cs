@@ -23,6 +23,9 @@ public sealed class Configuration : BasePluginConfiguration
     public Pool SharedBumpers { get; set; } = new();
     // Commercials per break on automatic library channels, which use the shared commercials and bumpers.
     public int AutomaticCommercialCount { get; set; } = 2;
+    // Reads every program's file in the background to find where its credits start, for programs without
+    // a credits chapter or Outro segment.
+    public bool DetectCredits { get; set; } = true;
 }
 
 public sealed class ContentRule
@@ -77,7 +80,8 @@ public sealed class ChannelDefinition
     // file's default track. Programs without that language play their default track.
     public string AudioLanguage { get; set; } = "";
     // Credits play this many times faster (1 = normal), with their music at normal speed until the next
-    // program. Needs a credits marker: an Outro media segment or a chapter named like "Credits".
+    // program. Needs a credits marker: an Outro media segment, a chapter named like "Credits", or credits
+    // detection.
     public int CreditsSpeed { get; set; } = 1;
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
