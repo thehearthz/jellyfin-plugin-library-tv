@@ -348,6 +348,56 @@
     .ltv-unsaved {
       color: var(--ltv-accent);
     }
+    .ltv-scroll {
+      overflow-x: auto;
+      margin: 8px 0 16px;
+    }
+    .ltv-table {
+      border-collapse: collapse;
+      min-width: 360px;
+    }
+    .ltv-table th,
+    .ltv-table td {
+      padding: 6px 12px;
+      border: 1px solid var(--ltv-border);
+      text-align: right;
+      font-weight: 400;
+    }
+    .ltv-table th[scope="row"],
+    .ltv-table thead th:first-child {
+      text-align: left;
+      font-weight: 600;
+    }
+    .ltv-table td.ltv-thin {
+      background: rgba(255, 190, 90, 0.2);
+    }
+    .ltv-clip-filters {
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      margin-bottom: 8px;
+    }
+    .ltv-clip {
+      border-bottom: 1px solid var(--ltv-border);
+    }
+    .ltv-clip-head {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 2fr) 90px minmax(0, 1.2fr) 70px minmax(0, 0.8fr);
+      gap: 10px;
+      align-items: center;
+      padding: 6px 0;
+    }
+    .ltv-app button.ltv-clip-title {
+      text-align: left;
+      border: 0;
+      background: none;
+      padding: 6px 0;
+      min-height: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ltv-clip-detail {
+      padding: 6px 0 16px 38px;
+    }
     @media (max-width: 760px) {
       .ltv-shell {
         padding: 20px 16px 70px;
@@ -361,6 +411,12 @@
       }
       .ltv-results {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .ltv-clip-head {
+        grid-template-columns: 28px minmax(0, 1fr) 70px;
+      }
+      .ltv-clip-detail {
+        padding-left: 0;
       }
       .ltv-sidebar {
         margin-bottom: 0;
@@ -482,6 +538,28 @@
           <div data-ui="shared-clips"></div>
           <h3>How your clips were sorted</h3>
           <div data-ui="clip-library" aria-live="polite"></div>
+          <h3>Browse and fix clips</h3>
+          <p class="ltv-muted">
+            Every clip as filed, from your last saved refresh. Open a clip to
+            change its network, year or show, preview it, or see which
+            programs it plays with. Tick several to change them together.
+            Changes apply when you save, and nothing is renamed on disk.
+          </p>
+          <div data-ui="clip-browser"></div>
+          <h3>Rules</h3>
+          <p class="ltv-muted">
+            A rule changes every clip whose folder or file name contains some
+            text, for example everything with “bump” in its name becomes a
+            bumper, or a whole folder is filed under one network. Later rules
+            win, and edits to single clips win over rules.
+          </p>
+          <div data-ui="clip-rules"></div>
+          <div class="ltv-row">
+            <button type="button" data-action="add-clip-rule">+ Add rule</button>
+            <button type="button" data-action="add-bump-rule">
+              + Treat clips named “bump” as bumpers
+            </button>
+          </div>
         </div>
       </details>
       <details class="ltv-panel">
@@ -640,6 +718,14 @@
         ><button type="button" data-action="next">Next</button>
       </div>
     </dialog>
+    <dialog data-ui="preview" aria-labelledby="ltv-preview-title">
+      <div class="ltv-top">
+        <h2 id="ltv-preview-title" data-ui="preview-title"></h2>
+        <button type="button" data-action="close-preview">Close</button>
+      </div>
+      <video data-ui="preview-video" controls style="width: 100%; max-height: 60vh"></video>
+      <p class="ltv-muted" data-ui="preview-note" aria-live="polite"></p>
+    </dialog>
   </div>
   <script>
     (function () {
@@ -664,6 +750,8 @@
         revision: 0,
         loaded: false,
         backupDraft: null,
+        clips: null,
+        clipMinimum: 8,
       };
       const id = () =>
         globalThis.crypto && crypto.randomUUID
@@ -1303,9 +1391,663 @@
           poolEditor(state.config.SharedBumpers, "Shared bumpers", "bumper"),
         );
       }
-      function renderClipLibrary(groups) {
+      const CLIP_PAGE = 25;
+      function freshClips() {
+        return {
+          filter: { search: "", kind: "", network: "", decade: "", problem: "" },
+          start: 0,
+          total: 0,
+          items: [],
+          networks: [],
+          decades: [],
+          selected: new Set(),
+          open: null,
+          matches: null,
+          error: "",
+          draft: { Network: "", Year: 0, Show: "", Kind: "" },
+          minimum: 8,
+        };
+      }
+      const clipParts = {};
+      const blankEdit = (edit) =>
+        !edit.Network &&
+        !edit.Year &&
+        !edit.Show &&
+        !edit.Kind &&
+        edit.Disabled == null;
+      const findEdit = (clipId) =>
+        state.config.ClipOverrides.find(
+          (x) => canonical(x.ItemId) === canonical(clipId),
+        );
+      function editClips(clipIds, changes) {
+        for (const clipId of clipIds) {
+          let edit = findEdit(clipId);
+          if (!edit) {
+            edit = {
+              Id: id(),
+              ItemId: clipId,
+              Contains: "",
+              Network: "",
+              Year: 0,
+              Show: "",
+              Kind: "",
+              Disabled: null,
+            };
+            state.config.ClipOverrides.push(edit);
+          }
+          Object.assign(edit, changes);
+          if (blankEdit(edit))
+            state.config.ClipOverrides = state.config.ClipOverrides.filter(
+              (x) => x !== edit,
+            );
+        }
+        dirty();
+      }
+      // A clip as it will be filed once the unsaved edits are saved.
+      function effectiveClip(clip) {
+        const edit = findEdit(clip.Id);
+        if (!edit) return clip;
+        const out = { ...clip, Unsaved: true };
+        if (edit.Network)
+          out.Network = edit.Network.toLowerCase() === "general" ? "" : edit.Network;
+        if (edit.Show) out.Show = edit.Show;
+        if (edit.Year) out.Year = edit.Year;
+        if (edit.Kind) out.Kind = edit.Kind === "bumper" ? "Bumper" : "Commercial";
+        if (edit.Disabled != null) out.Disabled = edit.Disabled;
+        return out;
+      }
+      const filedUnder = (clip) =>
+        clip.Show ? "Made for " + clip.Show : clip.Network || "General";
+      function clipQuery(paged) {
+        const query = new URLSearchParams();
+        for (const [key, value] of Object.entries(state.clips.filter))
+          if (value !== "") query.set(key, value);
+        if (paged) {
+          query.set("start", state.clips.start);
+          query.set("limit", CLIP_PAGE);
+        }
+        return query.toString();
+      }
+      async function loadClips() {
+        const c = state.clips;
+        try {
+          const page = await api("clips?" + clipQuery(true));
+          c.items = page.Items;
+          c.total = page.Total;
+          c.networks = page.Networks;
+          c.decades = page.Decades;
+          c.error = "";
+        } catch (e) {
+          c.error = errorMessage(e);
+        }
+        renderClipBrowser();
+      }
+      function plain(label, value, change, type = "text", attrs = {}) {
+        return node(
+          "label",
+          { class: "ltv-field" },
+          node("span", {}, label),
+          node("input", {
+            type,
+            value,
+            ...attrs,
+            onChange: (e) =>
+              change(type === "number" ? Number(e.target.value) : e.target.value),
+          }),
+        );
+      }
+      function choose(label, value, options, change) {
+        return node(
+          "label",
+          { class: "ltv-field" },
+          node("span", {}, label),
+          node(
+            "select",
+            { onChange: (e) => change(e.target.value) },
+            options.map(([optionValue, text]) =>
+              node(
+                "option",
+                { value: optionValue, selected: optionValue === value ? "" : null },
+                text,
+              ),
+            ),
+          ),
+        );
+      }
+      const KIND_OPTIONS = [
+        ["", "Keep as chosen"],
+        ["commercial", "Commercial"],
+        ["bumper", "Bumper"],
+      ];
+      const STATE_OPTIONS = [
+        ["", "As filed"],
+        ["off", "Turned off"],
+        ["on", "Turned on"],
+      ];
+      const stateValue = (edit) =>
+        edit.Disabled == null ? "" : edit.Disabled ? "off" : "on";
+      const stateChange = (value) =>
+        ({ off: { Disabled: true }, on: { Disabled: false } })[value] || {
+          Disabled: null,
+        };
+      function initClipBrowser() {
+        const target = ui("clip-browser");
+        if (clipParts.root === target) return;
+        clipParts.root = target;
+        clipParts.datalist = node("datalist", { id: "ltv-networks" });
+        clipParts.bar = node("div", { class: "ltv-cols ltv-clip-filters" });
+        clipParts.bulk = node("div", { class: "ltv-block" });
+        clipParts.list = node("div", { class: "ltv-clips" });
+        clipParts.pager = node("div", { class: "ltv-row" });
+        let timer;
+        clipParts.search = node("input", {
+          type: "search",
+          placeholder: "Search by name or folder",
+          "aria-label": "Search clips",
+          onInput: (e) => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+              state.clips.filter.search = e.target.value.trim();
+              state.clips.start = 0;
+              loadClips();
+            }, 300);
+          },
+        });
+        clipParts.filters = {};
+        const filterSelect = (key, label) => {
+          const select = node("select", {
+            "aria-label": label,
+            onChange: (e) => {
+              state.clips.filter[key] = e.target.value;
+              state.clips.start = 0;
+              loadClips();
+            },
+          });
+          clipParts.filters[key] = select;
+          return select;
+        };
+        const kind = filterSelect("kind", "Kind");
+        kind.append(
+          ...[
+            ["", "Commercials and bumpers"],
+            ["commercial", "Commercials"],
+            ["bumper", "Bumpers"],
+          ].map(([v, t]) => node("option", { value: v }, t)),
+        );
+        const problem = filterSelect("problem", "Problems");
+        problem.append(
+          ...[
+            ["", "All clips"],
+            ["network", "Not filed under a network"],
+            ["year", "No year"],
+            ["disabled", "Turned off"],
+            ["edited", "Edited or changed by a rule"],
+          ].map(([v, t]) => node("option", { value: v }, t)),
+        );
+        clipParts.bar.append(
+          clipParts.search,
+          filterSelect("network", "Network"),
+          filterSelect("decade", "Year"),
+          kind,
+          problem,
+        );
+        target.append(
+          clipParts.datalist,
+          clipParts.bar,
+          clipParts.bulk,
+          clipParts.list,
+          clipParts.pager,
+        );
+      }
+      function fillFilters() {
+        const c = state.clips;
+        const fill = (key, options) => {
+          const select = clipParts.filters[key];
+          select.replaceChildren(
+            ...options.map(([v, t]) => node("option", { value: v }, t)),
+          );
+          select.value = c.filter[key];
+        };
+        fill("network", [
+          ["", "All networks"],
+          ["General", "General (no network)"],
+          ["Made for a show", "Made for a show"],
+          ...c.networks.map((x) => [x, x]),
+        ]);
+        fill("decade", [
+          ["", "All years"],
+          ["0", "No year"],
+          ...c.decades.filter((x) => x > 0).map((x) => [String(x), x + "s"]),
+        ]);
+        clipParts.datalist.replaceChildren(
+          node("option", { value: "General" }),
+          ...c.networks.map((x) => node("option", { value: x })),
+        );
+      }
+      function renderClipBrowser() {
+        if (!ui("clip-browser")) return;
+        initClipBrowser();
+        fillFilters();
+        renderClipList();
+        renderClipPager();
+      }
+      function clipHead(raw) {
+        const c = state.clips;
+        const clip = effectiveClip(raw);
+        const status = [
+          clip.Disabled ? "Off" : null,
+          clip.Unsaved ? "Unsaved" : clip.Sources.length ? "Edited" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return node(
+          "div",
+          { class: "ltv-clip-head", "data-open": String(c.open === clip.Id) },
+          node("input", {
+            type: "checkbox",
+            checked: c.selected.has(clip.Id),
+            "aria-label": "Select " + clip.Title,
+            onChange: (e) => {
+              if (e.target.checked) c.selected.add(clip.Id);
+              else c.selected.delete(clip.Id);
+              renderClipBulk();
+            },
+          }),
+          node(
+            "button",
+            {
+              type: "button",
+              class: "ltv-clip-title",
+              "aria-expanded": String(c.open === clip.Id),
+              onClick: () => {
+                c.open = c.open === clip.Id ? null : clip.Id;
+                c.matches = null;
+                renderClipList();
+              },
+            },
+            clip.Title,
+          ),
+          node("span", { class: "ltv-muted" }, clip.Kind),
+          node("span", {}, filedUnder(clip)),
+          node("span", {}, clip.Year ? String(clip.Year) : "no year"),
+          node("span", { class: "ltv-muted" }, status),
+        );
+      }
+      function clipDetail(raw) {
+        const c = state.clips;
+        const clip = effectiveClip(raw);
+        const edit = findEdit(clip.Id) || {};
+        const row = (changes) => {
+          editClips([clip.Id], changes);
+          const head = clipParts.list.querySelector(
+            '[data-clip="' + clip.Id + '"] .ltv-clip-head',
+          );
+          head?.replaceWith(clipHead(raw));
+          renderClipBulk();
+        };
+        const box = node(
+          "div",
+          { class: "ltv-clip-detail" },
+          node("p", { class: "ltv-muted" }, raw.Why),
+          node("p", { class: "ltv-muted" }, raw.Path),
+          raw.Sources.length
+            ? node(
+                "p",
+                { class: "ltv-muted" },
+                "Changed by: " + raw.Sources.join(", "),
+              )
+            : null,
+          node(
+            "div",
+            { class: "ltv-cols" },
+            plain(
+              "Network (blank: from the name; “General”: none)",
+              edit.Network || "",
+              (v) => row({ Network: v.trim() }),
+              "text",
+              { list: "ltv-networks", maxlength: 100 },
+            ),
+            plain(
+              "Year (0: from the name)",
+              edit.Year || 0,
+              (v) => row({ Year: v >= 1900 && v <= 2100 ? Math.trunc(v) : 0 }),
+              "number",
+              { min: 0, max: 2100 },
+            ),
+            plain(
+              "Made for show (blank: none)",
+              edit.Show || "",
+              (v) => row({ Show: v.trim() }),
+              "text",
+              { maxlength: 100 },
+            ),
+          ),
+          node(
+            "div",
+            { class: "ltv-cols" },
+            choose("Kind", edit.Kind || "", KIND_OPTIONS, (v) => row({ Kind: v })),
+            choose("Plays", stateValue(edit), STATE_OPTIONS, (v) =>
+              row(stateChange(v)),
+            ),
+          ),
+          node(
+            "div",
+            { class: "ltv-row" },
+            button("Preview", () => previewClip(raw)),
+            button("Where it plays", () => showMatches(raw)),
+            button("Make a rule for this folder", () => ruleForFolder(raw)),
+            button("Undo my edits", () => {
+              editClips([clip.Id], {
+                Network: "",
+                Year: 0,
+                Show: "",
+                Kind: "",
+                Disabled: null,
+              });
+              renderClipList();
+              renderClipBulk();
+            }),
+          ),
+        );
+        if (c.matches)
+          box.append(
+            c.matches.loading
+              ? node("p", { class: "ltv-muted" }, "Checking your programs…")
+              : c.matches.error
+                ? node("p", {}, c.matches.error)
+                : node(
+                    "div",
+                    { "data-ui": "clip-matches" },
+                    node("p", { class: "ltv-muted" }, c.matches.Summary),
+                    node(
+                      "p",
+                      {},
+                      c.matches.Programs.length
+                        ? c.matches.Programs.join(" · ") +
+                            (c.matches.Total > c.matches.Programs.length
+                              ? " … and " +
+                                (c.matches.Total - c.matches.Programs.length) +
+                                " more"
+                              : "")
+                        : "No programs on your channels.",
+                    ),
+                    node(
+                      "p",
+                      { class: "ltv-muted" },
+                      "Based on the last saved refresh.",
+                    ),
+                  ),
+          );
+        return box;
+      }
+      function renderClipList() {
+        const c = state.clips;
+        clipParts.list.replaceChildren();
+        if (c.error) {
+          clipParts.list.append(node("p", {}, c.error));
+          return;
+        }
+        if (!c.items.length) {
+          clipParts.list.append(
+            node(
+              "p",
+              { class: "ltv-muted" },
+              c.total === 0 && Object.values(c.filter).every((x) => x === "")
+                ? "No clips yet. Choose shared commercials or bumpers above and save; clips appear after the next refresh."
+                : "No clips match.",
+            ),
+          );
+        }
+        for (const raw of c.items)
+          clipParts.list.append(
+            node(
+              "div",
+              { class: "ltv-clip", "data-clip": raw.Id },
+              clipHead(raw),
+              c.open === raw.Id ? clipDetail(raw) : null,
+            ),
+          );
+        renderClipBulk();
+      }
+      function renderClipPager() {
+        const c = state.clips;
+        const end = Math.min(c.start + CLIP_PAGE, c.total);
+        clipParts.pager.replaceChildren(
+          node(
+            "span",
+            { class: "ltv-muted" },
+            c.total
+              ? "Showing " + (c.start + 1) + "–" + end + " of " + c.total
+              : "",
+          ),
+          node(
+            "button",
+            {
+              type: "button",
+              disabled: c.start === 0 ? "" : null,
+              onClick: () => {
+                c.start = Math.max(0, c.start - CLIP_PAGE);
+                loadClips();
+              },
+            },
+            "Previous",
+          ),
+          node(
+            "button",
+            {
+              type: "button",
+              disabled: end >= c.total ? "" : null,
+              onClick: () => {
+                c.start += CLIP_PAGE;
+                loadClips();
+              },
+            },
+            "Next",
+          ),
+        );
+      }
+      function renderClipBulk() {
+        const c = state.clips;
+        const count = c.selected.size;
+        const changed = () => {
+          renderClipList();
+          renderClipBulk();
+        };
+        clipParts.bulk.replaceChildren(
+          node(
+            "div",
+            { class: "ltv-row" },
+            node("strong", {}, count + " selected"),
+            button("Select this page", () => {
+              for (const x of c.items) c.selected.add(x.Id);
+              changed();
+            }),
+            button("Select all " + c.total + " matching", async () => {
+              try {
+                for (const x of await api("clips/ids?" + clipQuery(false)))
+                  c.selected.add(x);
+                changed();
+              } catch (e) {
+                notice(errorMessage(e), "error");
+              }
+            }),
+            button("Clear selection", () => {
+              c.selected.clear();
+              changed();
+            }),
+          ),
+        );
+        if (!count) return;
+        const apply = (changes, done) => {
+          editClips([...c.selected], changes);
+          notice(done + " Save to apply " + (count === 1 ? "it." : "them."), "success");
+          changed();
+        };
+        clipParts.bulk.append(
+          node(
+            "div",
+            { class: "ltv-cols" },
+            plain(
+              "Network (“General”: none)",
+              c.draft.Network,
+              (v) => (c.draft.Network = v.trim()),
+              "text",
+              { list: "ltv-networks", maxlength: 100 },
+            ),
+            plain(
+              "Year",
+              c.draft.Year || 0,
+              (v) => (c.draft.Year = v >= 1900 && v <= 2100 ? Math.trunc(v) : 0),
+              "number",
+              { min: 0, max: 2100 },
+            ),
+            plain("Made for show", c.draft.Show, (v) => (c.draft.Show = v.trim()), "text", {
+              maxlength: 100,
+            }),
+            choose("Kind", c.draft.Kind, KIND_OPTIONS, (v) => (c.draft.Kind = v)),
+          ),
+          node(
+            "div",
+            { class: "ltv-row" },
+            button(
+              "Apply to " + count + " selected",
+              () => {
+                const changes = Object.fromEntries(
+                  Object.entries(c.draft).filter(([, v]) => v),
+                );
+                if (!Object.keys(changes).length)
+                  return notice("Choose what to change first.", "error");
+                apply(changes, "Changed " + count + " clips.");
+              },
+              "ltv-primary",
+            ),
+            button("Turn off", () => apply({ Disabled: true }, "Turned off " + count + " clips.")),
+            button("Turn on", () => apply({ Disabled: false }, "Turned on " + count + " clips.")),
+            button("Undo my edits", () =>
+              apply(
+                { Network: "", Year: 0, Show: "", Kind: "", Disabled: null },
+                "Undid your edits to " + count + " clips.",
+              ),
+            ),
+          ),
+        );
+      }
+      function previewClip(clip) {
+        const token = ApiClient.accessToken ? ApiClient.accessToken() : "";
+        const video = ui("preview-video");
+        ui("preview-title").textContent = clip.Title;
+        ui("preview-note").textContent = "";
+        video.onerror = () => {
+          ui("preview-note").textContent =
+            "Your browser can't play this file's format. It will still play on your channels.";
+        };
+        video.src =
+          ApiClient.getUrl("Videos/" + clip.Id + "/stream") +
+          "?static=true" +
+          (token ? "&api_key=" + encodeURIComponent(token) : "");
+        ui("preview").showModal();
+        try {
+          const started = video.play();
+          if (started && started.catch) started.catch(() => {});
+        } catch (_) {}
+      }
+      function closePreview() {
+        const video = ui("preview-video");
+        try {
+          video.pause();
+        } catch (_) {}
+        video.removeAttribute("src");
+        ui("preview").close();
+      }
+      async function showMatches(clip) {
+        const c = state.clips;
+        c.matches = { loading: true };
+        renderClipList();
+        try {
+          c.matches = await api("clips/" + clip.Id + "/matches");
+        } catch (e) {
+          c.matches = { error: errorMessage(e) };
+        }
+        renderClipList();
+      }
+      function newRule(values = {}) {
+        return {
+          Id: id(),
+          ItemId: "",
+          Contains: "",
+          Network: "",
+          Year: 0,
+          Show: "",
+          Kind: "",
+          Disabled: null,
+          ...values,
+        };
+      }
+      function ruleForFolder(clip) {
+        const folders = clip.Path.replace(/\\/g, "/").split("/").slice(0, -1).filter(Boolean);
+        const text = folders.length ? "/" + folders.slice(-2).join("/") + "/" : "";
+        if (!text) return notice("This clip has no folder to make a rule for.", "error");
+        state.config.ClipRules.push(newRule({ Contains: text.slice(-200) }));
+        dirty();
+        renderClipRules();
+        notice("Rule added under Rules below: choose what it should do to “" + text + "”.", "success");
+      }
+      function renderClipRules() {
+        const target = ui("clip-rules");
+        if (!target) return;
+        target.replaceChildren();
+        state.config.ClipRules.forEach((rule, index) => {
+          target.append(
+            node(
+              "section",
+              { class: "ltv-block" },
+              node(
+                "div",
+                { class: "ltv-top" },
+                node("h3", {}, "Rule " + (index + 1)),
+                button("Remove", () => {
+                  state.config.ClipRules.splice(index, 1);
+                  dirty();
+                  renderClipRules();
+                }),
+              ),
+              field("When the clip’s folder or file name contains", rule.Contains, (v) => (rule.Contains = v), "text", { maxlength: 200 }),
+              node(
+                "div",
+                { class: "ltv-cols" },
+                field("Network (“General”: none)", rule.Network, (v) => (rule.Network = v.trim()), "text", { list: "ltv-networks", maxlength: 100 }),
+                field("Year", rule.Year || 0, (v) => (rule.Year = v >= 1900 && v <= 2100 ? Math.trunc(v) : 0), "number", { min: 0, max: 2100 }),
+                field("Made for show", rule.Show, (v) => (rule.Show = v.trim()), "text", { maxlength: 100 }),
+              ),
+              node(
+                "div",
+                { class: "ltv-cols" },
+                choose("Kind", rule.Kind, KIND_OPTIONS, (v) => {
+                  rule.Kind = v;
+                  dirty();
+                }),
+                choose("Plays", stateValue(rule), STATE_OPTIONS, (v) => {
+                  Object.assign(rule, stateChange(v));
+                  dirty();
+                }),
+              ),
+            ),
+          );
+        });
+        if (!state.config.ClipRules.length)
+          target.append(
+            node("p", { class: "ltv-muted" }, "No rules. Clips are filed by their names and your edits."),
+          );
+      }
+      function addClipRule(values) {
+        state.config.ClipRules.push(newRule(values));
+        dirty();
+        renderClipRules();
+      }
+      function renderClipLibrary(groups, minimum) {
         const target = ui("clip-library");
         target.replaceChildren();
+        if (minimum) state.clipMinimum = minimum;
         if (!groups || !groups.length) {
           target.append(
             node(
@@ -1319,29 +2061,80 @@
         for (const kind of ["Commercials", "Bumpers"]) {
           const rows = groups.filter((x) => x.Kind === kind);
           if (!rows.length) continue;
-          const networks = new Map();
-          for (const row of rows)
-            networks.set(row.Network, [
-              ...(networks.get(row.Network) || []),
-              row,
-            ]);
-          target.append(node("strong", {}, kind));
-          for (const [network, decades] of networks)
-            target.append(
+          const decades = [...new Set(rows.map((x) => x.Decade))].sort((a, b) => a - b);
+          const networks = [...new Set(rows.map((x) => x.Network))];
+          const count = (network, decade) =>
+            rows
+              .filter((x) => x.Network === network && x.Decade === decade)
+              .reduce((sum, x) => sum + x.Count, 0);
+          target.append(
+            node("strong", {}, kind),
+            node(
+              "div",
+              { class: "ltv-scroll" },
               node(
-                "p",
-                { class: "ltv-muted" },
-                (network === "General" ? "No network (general)" : network) +
-                  ": " +
-                  decades
-                    .map(
-                      (x) =>
-                        (x.Decade ? x.Decade + "s" : "no year") + " " + x.Count,
-                    )
-                    .join(" · "),
+                "table",
+                { class: "ltv-table" },
+                node(
+                  "thead",
+                  {},
+                  node(
+                    "tr",
+                    {},
+                    node("th", { scope: "col" }, "Network"),
+                    decades.map((d) =>
+                      node("th", { scope: "col" }, d ? d + "s" : "No year"),
+                    ),
+                    node("th", { scope: "col" }, "Total"),
+                  ),
+                ),
+                node(
+                  "tbody",
+                  {},
+                  networks.map((network) =>
+                    node(
+                      "tr",
+                      {},
+                      node(
+                        "th",
+                        { scope: "row" },
+                        network === "General" ? "No network (general)" : network,
+                      ),
+                      decades.map((d) => {
+                        const n = count(network, d);
+                        return node(
+                          "td",
+                          {
+                            class: n > 0 && n < state.clipMinimum ? "ltv-thin" : "",
+                            title:
+                              n > 0 && n < state.clipMinimum
+                                ? "Fewer than " + state.clipMinimum + " clips"
+                                : null,
+                          },
+                          n ? String(n) : "–",
+                        );
+                      }),
+                      node(
+                        "td",
+                        {},
+                        String(decades.reduce((sum, d) => sum + count(network, d), 0)),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            );
+            ),
+          );
         }
+        target.append(
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Highlighted cells have fewer than " +
+              state.clipMinimum +
+              " clips. Breaks there borrow clips from the same network’s other years, then general clips, so they don’t repeat. Add clips to those cells for the best match.",
+          ),
+        );
       }
       function renderEditor() {
         renderSharedClips();
@@ -2180,6 +2973,8 @@
       function validate() {
         if (!state.config.TimeZoneId.trim())
           throw new Error("Choose a schedule time zone.");
+        if (state.config.ClipRules.some((x) => !x.Contains.trim()))
+          throw new Error("Each clip rule needs some text for the clip’s folder or file name to contain.");
         for (const [key, min, max, label] of [
           ["GuideDays", 1, 7, "Days in guide"],
           ["RefreshMinutes", 5, 1440, "Refresh interval"],
@@ -2320,7 +3115,8 @@
           try {
             const result = await api("refresh", "POST");
             ui("plugin-pages").textContent = result.PluginPages || "";
-            renderClipLibrary(result.ClipLibrary);
+            renderClipLibrary(result.ClipLibrary, result.ClipMinimum);
+            loadClips();
             notice(
               state.dirty
                 ? "Earlier changes were saved. You made more edits while saving; save again to apply those."
@@ -2385,6 +3181,8 @@
           state.config.AutomaticCommercialCount =
             state.config.AutomaticCommercialCount ?? 2;
           state.config.DetectCredits = state.config.DetectCredits ?? true;
+          state.config.ClipRules = state.config.ClipRules || [];
+          state.config.ClipOverrides = state.config.ClipOverrides || [];
           state.libraries = libraries;
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
@@ -2445,8 +3243,11 @@
           }
           renderAutomaticChannels();
           renderRestrictions();
-          renderClipLibrary(status.ClipLibrary);
+          renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
+          state.clips = freshClips();
+          renderClipRules();
+          await loadClips();
           ui("plugin-pages").textContent =
             status.PluginPages || "Plugin Pages status unavailable.";
           ui("body").hidden = false;
@@ -2487,6 +3288,21 @@
       page
         .querySelector('[data-action="add-restriction"]')
         .addEventListener("click", addRestriction);
+      page
+        .querySelector('[data-action="add-clip-rule"]')
+        .addEventListener("click", () => addClipRule());
+      page
+        .querySelector('[data-action="add-bump-rule"]')
+        .addEventListener("click", () =>
+          addClipRule({ Contains: "bump", Kind: "bumper" }),
+        );
+      page
+        .querySelector("[data-action=close-preview]")
+        .addEventListener("click", closePreview);
+      ui("preview").addEventListener("cancel", (e) => {
+        e.preventDefault();
+        closePreview();
+      });
       page
         .querySelector("[data-action=close-picker]")
         .addEventListener("click", closePicker);

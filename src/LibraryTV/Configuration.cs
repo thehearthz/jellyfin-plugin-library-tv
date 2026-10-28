@@ -26,6 +26,26 @@ public sealed class Configuration : BasePluginConfiguration
     // Reads every program's file in the background to find where its credits start, for programs without
     // a credits chapter or Outro segment.
     public bool DetectCredits { get; set; } = true;
+    // Changes to how clips are filed, on top of what their folder and file names say: rules for every clip
+    // whose path contains some text, and edits to single clips, which win over the rules.
+    public ClipEdit[] ClipRules { get; set; } = [];
+    public ClipEdit[] ClipOverrides { get; set; } = [];
+}
+
+public sealed class ClipEdit
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    // A single clip's item ID (edits), or text its path must contain (rules), such as "bump" or "/Adult Swim/2000s/".
+    public string ItemId { get; set; } = "";
+    public string Contains { get; set; } = "";
+    // Blank leaves the clip as its name says. "General" files it under no network.
+    public string Network { get; set; } = "";
+    public int Year { get; set; }
+    // A show the clip was made for, so it airs only with that show.
+    public string Show { get; set; } = "";
+    // "commercial" or "bumper"; blank keeps the kind of the list it was chosen in.
+    public string Kind { get; set; } = "";
+    public bool? Disabled { get; set; }
 }
 
 public sealed class ContentRule

@@ -792,9 +792,19 @@ test("shared commercials are chosen once for every channel and show how they wer
     const summary = w.document.querySelector(
       "[data-ui=clip-library]",
     ).textContent;
-    assert.match(summary, /Nickelodeon: 1990s 42 · 2000s 17/);
-    assert.match(summary, /No network \(general\): no year 3/);
-    assert.match(summary, /Bumpers.*Adult Swim: 2000s 8/);
+    const cells = (label) =>
+      [...w.document.querySelectorAll("[data-ui=clip-library] tr")]
+        .find((row) => row.querySelector("th").textContent === label)
+        .children;
+    const text = (label) => [...cells(label)].map((x) => x.textContent).join(" ");
+    assert.equal(text("Nickelodeon"), "Nickelodeon – 42 17 59");
+    assert.equal(text("No network (general)"), "No network (general) 3 – – 3");
+    assert.equal(text("Adult Swim"), "Adult Swim 8 8");
+    assert.match(summary, /Highlighted cells have fewer than 8 clips/);
+    assert.equal(
+      [...w.document.querySelectorAll("[data-ui=clip-library] td.ltv-thin")].length,
+      1,
+    );
     const shared = w.document.querySelector("[data-ui=shared-clips]");
     click(w, "Choose commercial folders or clips", shared);
     await settle();
@@ -998,6 +1008,111 @@ test("credits detection can be turned off and shows its scan progress", async ()
     click(w, "Save channels");
     await settle();
     assert.equal(w.testApi.saved.DetectCredits, false);
+  } finally {
+    dom.window.close();
+  }
+});
+
+const clipRows = [
+  { Id: "c1000000000000000000000000000001", Title: "Nickelodeon Gak 1994", Path: "/ads/Nickelodeon Gak 1994.mp4", Seconds: 30, Kind: "Commercial", Network: "Nickelodeon", Year: 1994, Show: "", Disabled: false, Sources: [], Why: "Filed under Nickelodeon in the 1990s." },
+  { Id: "c2000000000000000000000000000002", Title: "Cola", Path: "/ads/Cola.mp4", Seconds: 30, Kind: "Commercial", Network: "", Year: 0, Show: "", Disabled: false, Sources: [], Why: "General: plays with programs whose network has no clips of its own." },
+  { Id: "c3000000000000000000000000000003", Title: "Cereal bump", Path: "/ads/Cereal bump.mp4", Seconds: 10, Kind: "Commercial", Network: "", Year: 2001, Show: "", Disabled: false, Sources: [], Why: "General." },
+];
+function pickRow(w, title) {
+  const row = [...w.document.querySelectorAll(".ltv-clip")].find((x) =>
+    x.querySelector(".ltv-clip-title").textContent === title,
+  );
+  assert.ok(row, "Clip " + title);
+  return row;
+}
+
+test("the clip browser lists clips, edits one, previews it and shows where it plays", async () => {
+  const dom = await ready({ clips: clipRows });
+  try {
+    const w = dom.window;
+    const names = [...w.document.querySelectorAll(".ltv-clip-title")].map((x) => x.textContent);
+    assert.deepEqual(names, ["Nickelodeon Gak 1994", "Cola", "Cereal bump"]);
+    assert.match(pickRow(w, "Cola").textContent, /General.*no year/);
+    pickRow(w, "Cola").querySelector(".ltv-clip-title").click();
+    const detail = w.document.querySelector(".ltv-clip-detail");
+    assert.match(detail.textContent, /General: plays with programs/);
+    const inputs = detail.querySelectorAll("input");
+    change(w, inputs[0], "Adult Swim");
+    change(w, inputs[1], "2004");
+    assert.match(pickRow(w, "Cola").textContent, /Adult Swim.*2004.*Unsaved/);
+    click(w, "Where it plays", detail);
+    await settle();
+    assert.match(w.document.querySelector("[data-ui=clip-matches]").textContent, /Doug \(1991\) · Rugrats \(1991–2004\) … and 1 more/);
+    click(w, "Preview", w.document.querySelector(".ltv-clip-detail"));
+    assert.match(w.document.querySelector("[data-ui=preview-video]").getAttribute("src"), /Videos\/c2000000000000000000000000000002\/stream\?static=true/);
+    click(w, "Close", w.document.querySelector("[data-ui=preview]"));
+    click(w, "Save channels");
+    await settle();
+    assert.deepEqual(
+      w.testApi.saved.ClipOverrides.map((x) => [x.ItemId, x.Network, x.Year]),
+      [["c2000000000000000000000000000002", "Adult Swim", 2004]],
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("clips can be searched, selected together and changed in bulk, then undone", async () => {
+  const dom = await ready({ clips: clipRows });
+  try {
+    const w = dom.window;
+    const search = w.document.querySelector("[data-ui=clip-browser] input[type=search]");
+    search.value = "e";
+    search.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 400));
+    await settle();
+    assert.equal(w.document.querySelectorAll(".ltv-clip").length, 2);
+    click(w, "Select all 2 matching", w.document.querySelector("[data-ui=clip-browser]"));
+    await settle();
+    const bulk = w.document.querySelector("[data-ui=clip-browser] .ltv-block");
+    assert.match(bulk.textContent, /2 selected/);
+    change(w, bulk.querySelector("input[list]"), "Toonami");
+    change(w, bulk.querySelector("select"), "bumper");
+    click(w, "Apply to 2 selected", bulk);
+    assert.match(pickRow(w, "Nickelodeon Gak 1994").textContent, /Toonami/);
+    assert.match(pickRow(w, "Nickelodeon Gak 1994").textContent, /Bumper/);
+    click(w, "Turn off", w.document.querySelector("[data-ui=clip-browser] .ltv-block"));
+    assert.match(pickRow(w, "Cereal bump").textContent, /Off/);
+    click(w, "Save channels");
+    await settle();
+    const saved = w.testApi.saved.ClipOverrides;
+    assert.equal(saved.length, 2);
+    assert.ok(saved.every((x) => x.Network === "Toonami" && x.Kind === "bumper" && x.Disabled === true));
+    click(w, "Undo my edits", w.document.querySelector("[data-ui=clip-browser] .ltv-block"));
+    click(w, "Save channels");
+    await settle();
+    assert.deepEqual(w.testApi.saved.ClipOverrides, []);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("rules re-file clips by name or folder and are checked before saving", async () => {
+  const dom = await ready({ clips: clipRows });
+  try {
+    const w = dom.window;
+    click(w, "+ Treat clips named “bump” as bumpers");
+    const rules = w.document.querySelector("[data-ui=clip-rules]");
+    assert.equal(rules.querySelectorAll(".ltv-block").length, 1);
+    pickRow(w, "Cola").querySelector(".ltv-clip-title").click();
+    click(w, "Make a rule for this folder", w.document.querySelector(".ltv-clip-detail"));
+    assert.equal(rules.querySelectorAll(".ltv-block").length, 2);
+    assert.equal(rules.querySelectorAll("input")[0].value, "bump");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.ClipRules[1].Contains, "/ads/");
+    assert.deepEqual([w.testApi.saved.ClipRules[0].Contains, w.testApi.saved.ClipRules[0].Kind], ["bump", "bumper"]);
+    change(w, rules.querySelectorAll("input")[0], "  ");
+    w.testApi.saved = null;
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved, null);
+    assert.match(w.document.querySelector("[data-ui=status]").textContent, /needs some text/);
   } finally {
     dom.window.close();
   }

@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null)
+public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null)
 {
     public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
@@ -154,6 +154,17 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             if (rule.Days is null || rule.Days.Length == 0 || rule.Days.Any(x => !Enum.IsDefined(x))) throw new ArgumentException("Choose at least one valid day for every content restriction.");
             if (rule.Genres is null || rule.Tags is null || rule.Genres.Concat(rule.Tags).All(string.IsNullOrWhiteSpace)) throw new ArgumentException("Each content restriction needs at least one genre or tag.");
         }
+        if (c.ClipRules is null || c.ClipOverrides is null || c.ClipRules.Length > 200 || c.ClipOverrides.Length > 20000 || c.ClipRules.Concat(c.ClipOverrides).Any(x => x is null))
+            throw new ArgumentException("Use at most 200 clip rules and 20,000 clip edits.");
+        foreach (var edit in c.ClipRules.Concat(c.ClipOverrides))
+        {
+            if (edit.Network is null || edit.Show is null || edit.Kind is null || edit.Contains is null || edit.ItemId is null || edit.Network.Length > 100 || edit.Show.Length > 100) throw new ArgumentException("Clip network and show names must be 100 characters or fewer.");
+            if (edit.Kind is not ("" or "commercial" or "bumper")) throw new ArgumentException("A clip's kind must be commercial or bumper.");
+            if (edit.Year != 0 && edit.Year is < 1900 or > 2100) throw new ArgumentException("A clip's year must be between 1900 and 2100.");
+        }
+        foreach (var rule in c.ClipRules)
+            if (string.IsNullOrWhiteSpace(rule.Contains) || rule.Contains.Length > 200) throw new ArgumentException("Each clip rule needs some text for the clip's path to contain, up to 200 characters.");
+        foreach (var edit in c.ClipOverrides) _ = Guid.Parse(edit.ItemId);
         ChannelNumbers.ValidateUnique(c.Channels.Where(x => x.Enabled));
         foreach (var id in c.AutoLibraryIds) _ = Guid.Parse(id);
     }
@@ -202,23 +213,39 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             var chapters = catalog.CreateChapterReader();
             var credits = catalog.CreateCreditsReader();
             static bool Picked(Pool pool) => pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length > 0;
+            // A channel without clips of its own uses the shared commercial and bumper libraries. The settings'
+            // clip rules and edits are applied once per distinct pair of clip lists.
+            ChannelDefinition Effective(ChannelDefinition d) => d.WithClips(Picked(d.Commercials) ? d.Commercials : config.SharedCommercials, Picked(d.Bumpers) ? d.Bumpers : config.SharedBumpers);
+            var resolvedClips = new Dictionary<string, List<ClipEntry>>(StringComparer.Ordinal);
+            List<ClipEntry> ClipsFor(Pool commercials, Pool bumpers)
+            {
+                var key = JsonSerializer.Serialize(new { commercials, bumpers });
+                if (!resolvedClips.TryGetValue(key, out var entries))
+                    resolvedClips[key] = entries = ClipEdits.Resolve(readCommercials(commercials).Select(x => (x, "commercials")).Concat(readCommercials(bumpers).Select(x => (x, "bumpers"))), config);
+                return entries;
+            }
+            var channelClips = definitions.ToDictionary(x => x.Id, x => { var e = Effective(x); return ClipsFor(e.Commercials, e.Bumpers); });
+            var sharedClips = ClipsFor(config.SharedCommercials, config.SharedBumpers);
+            var labels = new Dictionary<Guid, ClipLabel>();
+            foreach (var entry in resolvedClips.Values.SelectMany(x => x))
+                if (entry.Label is not null) labels[entry.Clip.Id] = entry.Label;
             // One network index for every channel: common networks, every program's tags and studios, and the overrides.
             var allPrograms = definitions.SelectMany(x => x.Blocks.Select(b => b.Source).Append(x.Source)).SelectMany(read).ToArray();
             var networks = new Planner.NetworkIndex(allPrograms.SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
-                .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))), allPrograms.Select(x => x.Show));
+                .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))), allPrograms.Select(x => x.Show), labels);
             DateTimeOffset? rebuiltFrom = null;
             var warnings = new Dictionary<string, string[]>();
             foreach (var defined in definitions)
             {
                 ct.ThrowIfCancellationRequested();
                 // A channel without clips of its own uses the shared commercial and bumper libraries.
-                var channel = defined.WithClips(Picked(defined.Commercials) ? defined.Commercials : config.SharedCommercials, Picked(defined.Bumpers) ? defined.Bumpers : config.SharedBumpers);
+                var channel = Effective(defined);
                 if (!working.TryGetValue(channel.Id, out var state)) working[channel.Id] = state = new();
                 var pools = channel.Blocks.ToDictionary(x => x.Id, x => read(x.Source));
                 pools["default"] = read(channel.Source);
-                pools["commercials"] = readCommercials(channel.Commercials);
-                pools["bumpers"] = readCommercials(channel.Bumpers);
-                var clipIds = pools["commercials"].Concat(pools["bumpers"]).Select(x => x.Id).ToHashSet();
+                pools["commercials"] = ClipEdits.Of(channelClips[channel.Id], "commercials");
+                pools["bumpers"] = ClipEdits.Of(channelClips[channel.Id], "bumpers");
+                var clipIds = channelClips[channel.Id].Select(x => x.Clip.Id).ToHashSet();
                 foreach (var key in pools.Keys.Where(x => x is not ("commercials" or "bumpers")).ToArray()) pools[key].RemoveAll(x => clipIds.Contains(x.Id));
                 // Changed schedule settings (content, blocks, breaks, clips, credits, restrictions) apply after the
                 // current program, without a manual rebuild; the guide planned days ahead would otherwise keep the old ones.
@@ -260,12 +287,14 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
                 var keepAutomatic = id.StartsWith("auto-", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(id[5..], out var libraryId) && selectedLibraries.Contains(libraryId);
                 if (!retained.Contains(id) && !keepAutomatic) working.Remove(id);
             }
-            var library = Summarize("Commercials", readCommercials(config.SharedCommercials)).Concat(Summarize("Bumpers", readCommercials(config.SharedBumpers))).ToArray();
+            var library = Summarize("Commercials", ClipEdits.Of(sharedClips, "commercials")).Concat(Summarize("Bumpers", ClipEdits.Of(sharedClips, "bumpers"))).ToArray();
+            var snapshot = BuildClipSnapshot(resolvedClips.Values.SelectMany(x => x), networks, allPrograms.DistinctBy(x => x.Id).ToArray());
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
             await File.WriteAllTextAsync(StatePath + ".tmp", JsonSerializer.Serialize(working), ct);
             File.Move(StatePath + ".tmp", StatePath, true);
             states = working;
             ClipLibrary = library;
+            clipSnapshot = snapshot;
             var byChannel = definitions.ToDictionary(x => x.Id, x => working[x.Id].Guide.OrderBy(p => p.Start).ToArray());
             var guide = byChannel.Values.SelectMany(x => x).OrderBy(x => x.Start).ToArray();
             Volatile.Write(ref published, new PublishedSchedule(definitions, guide, byChannel, warnings));
@@ -275,7 +304,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
             return rebuiltFrom;
             // How the shared clips were sorted, for the builder: counts per network and decade.
             IEnumerable<ClipGroup> Summarize(string kind, List<Media> clips) => clips
-                .GroupBy(x => (Network: networks.For(x).Select(networks.Name).DefaultIfEmpty("General").First(), Decade: x.Year / 10 * 10))
+                .GroupBy(x => (Network: networks.ShowsIn(x).Length > 0 ? "Made for a show" : networks.For(x).Select(networks.Name).DefaultIfEmpty("General").First(), Decade: x.Year / 10 * 10))
                 .OrderBy(x => x.Key.Network == "General").ThenBy(x => x.Key.Network, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Key.Decade)
                 .Select(x => new ClipGroup(kind, x.Key.Network, x.Key.Decade, x.Count()));
         }
@@ -300,7 +329,7 @@ public sealed class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<
     {
         PlanningRules, DetectedCredits = config.DetectCredits ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
-        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId
+        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
     })));
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);

@@ -153,9 +153,23 @@ Results are saved in `library-tv/credits.json` in Jellyfin's data folder. A file
 
 Open **Commercial library** to choose commercials and bumpers once for every channel; a channel uses them whenever its own **Commercials** or **Bumpers** selection is empty. Automatic library channels use them too, with **Commercials per break on automatic channels** (2 by default) under **Automatic channels**. New manual channels start with two commercials per break.
 
-When a channel has no breaks, Channel health says why: no commercials selected, **Clips to play in each break** set to 0, or no clip fitting its programs' networks or shows. Point it at a whole commercial library or folder. Files don't need to be sorted into folders: after Jellyfin finishes starting up (the same deferred startup as the rest of the plugin, never during it), and again at each library refresh, Library TV reads every file and folder name for a year (`1994`, `'94`), a decade (`1990s`, `90s`) and a network, and sorts each clip to the programs that match it. **How your clips were sorted** shows the result, for example `Nickelodeon: 1990s 42 · 2000s 17`.
+When a channel has no breaks, Channel health says why: no commercials selected, **Clips to play in each break** set to 0, or no clip fitting its programs' networks or shows. Point it at a whole commercial library or folder. Files don't need to be sorted into folders: after Jellyfin finishes starting up (the same deferred startup as the rest of the plugin, never during it), and again at each library refresh, Library TV reads every file and folder name for a year (`1994`, `'94`), a decade (`1990s`, `90s`) and a network, and sorts each clip to the programs that match it. **How your clips were sorted** is a grid of networks against decades with the number of clips in each; cells with fewer than eight clips are highlighted, because breaks there borrow clips from the network's other years and then general clips to avoid repeating.
 
 Networks are recognised from the studios and tags of every program on your channels, the networks you type on channels and blocks, and a built-in list of common networks (Nickelodeon, Nick Jr, Cartoon Network, Adult Swim, Toonami, Boomerang, Disney Channel, Fox Kids, Kids WB, ABC, NBC, CBS, FOX, PBS, MTV, Comedy Central, HBO and others). Names that are also everyday words, such as BET or Lifetime, are only recognised when one of your programs lists them. The most specific name wins, so `Fox Kids promo.mp4` is a Fox Kids clip, not a FOX one. A clip that names a known network is never used as a general commercial, even on channels that have no program from that network.
+
+### Browsing and fixing clips
+
+Under **Browse and fix clips**, every shared and channel clip is listed as it is filed (from the last saved refresh): its kind, network, year and show. Search by name or folder, or filter by network, year, kind, or problem (not filed under a network, no year, turned off, edited). Open a clip to:
+
+- **Change its network, year or show**, or turn it off. Leave a field blank to keep what its name says; type `General` to file it under no network; a show makes it play only with that show. Nothing is renamed on disk.
+- **Change its kind**, so a clip chosen as a commercial plays as a bumper, or the reverse.
+- **Preview** it in your browser (formats the browser can't play still play on your channels).
+- See **where it plays**: the programs on your channels it can air with.
+- **Make a rule for its folder**.
+
+Tick several clips (or **Select all** matching the current filter) to change their network, year, show or kind, or turn them off, in one step; **Undo my edits** removes the changes. Edits apply when you save, then the guide's future programs are rebuilt after the current program.
+
+**Rules** change every clip whose folder or file name contains some text, for example everything containing `bump` becomes a bumper (a one-click preset), or `/Adult Swim/2000s/` is filed under Adult Swim. Rules apply in order, later ones winning, and edits to single clips win over rules. Rules and edits only re-file clips from the libraries and folders you chose as commercials or bumpers; they are included in settings backups.
 
 ### Network-matched commercials
 
@@ -268,7 +282,7 @@ Requires .NET 10 SDK; the official Jellyfin 12.2 Controller package targets .NET
 dotnet build src/LibraryTV/LibraryTV.csproj -c Release
 dotnet run --project tests/Planner.Tests -c Release
 dotnet run --project tests/Integration.Tests -c Release
-./scripts/package.ps1 -Version 0.9.0.0 -Changelog "Describe this release."
+./scripts/package.ps1 -Version 0.10.0.0 -Changelog "Describe this release."
 ```
 
 The visual-builder interaction tests require Node.js 22+:
@@ -280,7 +294,7 @@ npm test
 
 Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executable, with `ffprobe` in the same directory. CI installs its own test tools on the GitHub runner and sets this variable. The test tools are never bundled into the plugin or installed onto the user's server.
 
-CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.9.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
+CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.10.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
 Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 

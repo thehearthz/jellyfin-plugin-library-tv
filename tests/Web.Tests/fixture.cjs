@@ -78,6 +78,8 @@ const content = {
 };
 function install(window, options = {}) {
   window.confirm = () => true;
+  window.HTMLMediaElement.prototype.play = () => Promise.resolve();
+  window.HTMLMediaElement.prototype.pause = () => {};
   if (!window.HTMLDialogElement.prototype.showModal)
     window.HTMLDialogElement.prototype.showModal = function () {
       this.open = true;
@@ -91,6 +93,7 @@ function install(window, options = {}) {
     saved: null,
     failSave: false,
     config: options.config || configuration(),
+    clips: options.clips,
   });
   window.ApiClient = {
     getUrl: (path) => "/api/" + path,
@@ -144,7 +147,31 @@ function install(window, options = {}) {
           Channels: data.healthChannels || [],
           ClipLibrary: data.clipLibrary || options.clipLibrary || [],
           CreditsScan: data.creditsScan || options.creditsScan,
+          ClipMinimum: 8,
         };
+      const searched = () => {
+        const query = new URLSearchParams(path.split("?")[1] || "");
+        const search = (query.get("search") || "").toLowerCase();
+        return (data.clips || []).filter((x) => x.Title.toLowerCase().includes(search));
+      };
+      if (path.startsWith("clips/ids")) return searched().map((x) => x.Id);
+      if (path.startsWith("clips/") && path.endsWith("/matches"))
+        return (
+          data.matches || {
+            Summary: "Plays with programs from Nickelodeon:",
+            Total: 3,
+            Programs: ["Doug (1991)", "Rugrats (1991–2004)"],
+          }
+        );
+      if (path.startsWith("clips?")) {
+        const items = searched();
+        return {
+          Total: items.length,
+          Items: items,
+          Networks: [...new Set(items.map((x) => x.Network).filter(Boolean))],
+          Decades: [...new Set(items.map((x) => Math.floor(x.Year / 10) * 10))],
+        };
+      }
       if (path === "media/resolve")
         return Object.values(content)
           .flat()

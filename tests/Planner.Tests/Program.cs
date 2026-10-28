@@ -389,4 +389,33 @@ Check(CreditsDetector.BlackRun(sampled, 220) == (160, 210), "Credits on black ru
 Check(CreditsDetector.BlackRun(sampled.Select(x => x with { Black = x.Time >= 200 ? 95 : 10 }).ToList(), 220) == (200, 220), "Black credits at the very end run to the end of the file");
 Check(CreditsDetector.BlackRun(sampled.Select(x => x with { Black = x.Time is >= 150 and < 160 ? 95 : 10 }).ToList(), 220) is null, "A short fade to black is not credits");
 Check(CreditsDetector.ParseBlackFrames("[Parsed_blackframe_1 @ 0x1] frame:3 pblack:97 pts:768 t:6.000000 type:I last_keyframe:3", 100).SequenceEqual([(106.0, 97)]), "Black frame times are read relative to where the scan started");
+// Rules and edits re-file clips without renaming files.
+Media At(string path, int year = 0) => new(Guid.NewGuid(), Path.GetFileNameWithoutExtension(path), path, 30, "", 0, 0, year);
+var bumpClip = At("/Ads/Adult Swim/bump 1.mp4", 2004);
+var colaClip = At("/Ads/Cola.mp4");
+var dupClip = At("/Ads/Dup.mp4", 1999);
+var offClip = At("/Ads/Nickelodeon/Broken 1995.mp4", 1995);
+var folderClip = At("C:\\Ads\\Toonami\\2000s\\one.mp4", 2001);
+var editConfig = new Configuration
+{
+    ClipRules = [new ClipEdit { Contains = "bump", Kind = "bumper" }, new ClipEdit { Contains = "/toonami/2000s/", Network = "Toonami" }, new ClipEdit { Contains = "/Ads/", Year = 1990 }],
+    ClipOverrides = [new ClipEdit { ItemId = colaClip.Id.ToString(), Network = "Nickelodeon", Year = 1996, Show = "Rugrats" }, new ClipEdit { ItemId = offClip.Id.ToString(), Disabled = true }, new ClipEdit { ItemId = bumpClip.Id.ToString(), Kind = "commercial", Network = "General" }],
+};
+var edited = ClipEdits.Resolve([(bumpClip, "commercials"), (colaClip, "commercials"), (offClip, "commercials"), (folderClip, "bumpers"), (dupClip, "commercials"), (dupClip, "commercials")], editConfig);
+ClipEntry Of(Media clip) => edited.Single(x => x.Clip.Id == clip.Id);
+Check(Of(bumpClip).Kind == "commercials" && Of(bumpClip).Label == new ClipLabel("", null) && Of(bumpClip).Clip.Year == 1990 && Of(bumpClip).Sources.SequenceEqual(["rule “bump”", "rule “/Ads/”", "edited"]),
+    "A clip edit beats the rules, which apply in order, and a rule can match part of a name");
+Check(Of(colaClip).Clip.Year == 1996 && Of(colaClip).Label == new ClipLabel("Nickelodeon", "Rugrats") && Of(offClip).Disabled && ClipEdits.Of(edited, "commercials").All(x => x.Id != offClip.Id),
+    "Edits set a clip's year, network and show, and turned-off clips are left out of the lists the planner uses");
+Check(Of(folderClip).Label?.Network == "Toonami" && edited.Count(x => x.Clip.Id == dupClip.Id) == 1 && Of(dupClip).Clip.Year == 1990, "Rules match any folder separator and case, and a clip listed twice is one entry");
+var movedBumpers = ClipEdits.Resolve([(At("/Ads/Cola bump.mp4"), "commercials"), (At("/Ads/Cola spot.mp4"), "commercials")], new Configuration { ClipRules = [new ClipEdit { Contains = "bump", Kind = "bumper" }] });
+Check(ClipEdits.Of(movedBumpers, "bumpers").Count == 1 && ClipEdits.Of(movedBumpers, "commercials").Count == 1, "A name rule can turn clips chosen as commercials into bumpers");
+var editLabels = new Dictionary<Guid, ClipLabel> { [colaClip.Id] = new("Adult Swim", null), [dupClip.Id] = new("", null), [bumpClip.Id] = new(null, "Rugrats") };
+var editIndex = new Planner.NetworkIndex([], ["Rugrats"], editLabels);
+Check(editIndex.For(colaClip).SequenceEqual(["adult swim"]) && editIndex.For(Named("Nickelodeon x.mp4")).SequenceEqual(["nickelodeon"]) && editIndex.For(dupClip).Length == 0 && editIndex.ShowsIn(bumpClip).SequenceEqual(["rugrats"]),
+    "A clip's set network or show replaces what its path says, and General removes the network");
+var labelledState = new ChannelState();
+Planner.Extend(matchChannel, labelledState, new Dictionary<string, List<Media>> { ["default"] = [aqua, rugrats], ["commercials"] = [colaClip with { Year = 2004 }, bumpClip with { Year = 1993 }] }, now, now.AddHours(2), TimeZoneInfo.Utc, null, null, null, editIndex);
+Airing Following(Media program) => labelledState.Guide[labelledState.Guide.FindIndex(x => x.ItemId == program.Id) + 1];
+Check(Following(aqua).ItemId == colaClip.Id && Following(rugrats).ItemId == bumpClip.Id, "A clip set to a network plays with that network's programs, and one set to a show only with that show");
 Console.WriteLine($"{passed} scheduling checks passed.");

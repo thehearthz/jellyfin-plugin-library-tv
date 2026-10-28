@@ -461,8 +461,13 @@ public static class Planner
         private readonly Dictionary<Guid, (string[] Networks, string[] Shows)> cache = [];
         private readonly Dictionary<string, string> display = new(StringComparer.Ordinal);
 
-        public NetworkIndex(IEnumerable<string?> names, IEnumerable<string?>? showTitles = null)
+        private readonly IReadOnlyDictionary<Guid, ClipLabel> labels;
+
+        // Labels are the networks and shows set by hand for single clips, which beat the clip's own path.
+        public NetworkIndex(IEnumerable<string?> names, IEnumerable<string?>? showTitles = null, IReadOnlyDictionary<Guid, ClipLabel>? labels = null)
         {
+            this.labels = labels ?? new Dictionary<Guid, ClipLabel>();
+            names = names.Concat(this.labels.Values.Select(x => x.Network));
             foreach (var name in Networks.Concat(names))
                 if (NetworkKey(name) is { Length: > 0 } key && !Aliases.ContainsKey(key)) display.TryAdd(key, name!.Trim());
             keys = display.Keys.Concat(Aliases.Keys).Distinct(StringComparer.Ordinal).ToArray();
@@ -486,7 +491,13 @@ public static class Planner
                 var found = keys.Where(x => Mentions(segments, x)).ToArray();
                 var networks = found.Where(x => !found.Any(y => y != x && (" " + y + " ").Contains(" " + x + " ", StringComparison.Ordinal)))
                     .Select(x => Aliases.GetValueOrDefault(x, x)).Distinct(StringComparer.Ordinal).ToArray();
-                return cache[clip.Id] = (networks, shows.Where(x => Mentions(segments, x)).ToArray());
+                var named = shows.Where(x => Mentions(segments, x)).ToArray();
+                if (labels.TryGetValue(clip.Id, out var label))
+                {
+                    if (label.Network is not null) networks = NetworkKey(label.Network) is { Length: > 0 } key ? [Aliases.GetValueOrDefault(key, key)] : [];
+                    if (label.Show is not null) named = ShowKey(label.Show) is { } show ? [show] : [];
+                }
+                return cache[clip.Id] = (networks, named);
             }
         }
 

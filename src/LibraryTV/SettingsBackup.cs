@@ -20,6 +20,8 @@ public sealed class SettingsBackup
     public Pool SharedBumpers { get; set; } = new();
     public int AutomaticCommercialCount { get; set; } = 2;
     public bool DetectCredits { get; set; } = true;
+    public ClipEdit[] ClipRules { get; set; } = [];
+    public ClipEdit[] ClipOverrides { get; set; } = [];
 
     public static SettingsBackup Export(Configuration config) => JsonSerializer.Deserialize<SettingsBackup>(JsonSerializer.Serialize(config))!;
 
@@ -41,6 +43,8 @@ public sealed class SettingsBackup
         config.SharedBumpers = SharedBumpers;
         config.AutomaticCommercialCount = AutomaticCommercialCount;
         config.DetectCredits = DetectCredits;
+        config.ClipRules = ClipRules;
+        config.ClipOverrides = ClipOverrides;
         Scheduler.Validate(config);
         return config;
     }

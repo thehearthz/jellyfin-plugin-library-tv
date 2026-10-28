@@ -56,7 +56,7 @@ public sealed class Controller : ControllerBase
     [HttpGet("status")]
     public object Status() => startup?.IsReady == false
         ? new { IsReady = false, LastRefresh = (DateTimeOffset?)null, LastRefreshMilliseconds = (double?)null, LastError = (string?)null, PluginPages = PluginPagesIntegration.Status, Channels = Array.Empty<object>() }
-        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, scheduler.ClipLibrary, CreditsScan = creditsService.Value?.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
+        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, scheduler.ClipLibrary, ClipMinimum = Planner.MinimumVariety, CreditsScan = creditsService.Value?.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
 
     [HttpPost("rebuild/{id}")]
     public async Task<IActionResult> Rebuild(string id, CancellationToken ct)
@@ -86,6 +86,22 @@ public sealed class Controller : ControllerBase
         try { await scheduler.Refresh(ct); return Ok(Status()); }
         catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }
+
+    // The shared and channel clips as filed, with the settings' rules and edits applied (as of the last refresh).
+    [HttpGet("clips")]
+    public ActionResult<ClipPage> Clips([FromQuery] string? search = null, [FromQuery] string? kind = null, [FromQuery] string? network = null,
+        [FromQuery] int? decade = null, [FromQuery] string? problem = null, [FromQuery] int start = 0, [FromQuery] int limit = 50)
+        => search?.Length > 200 || network?.Length > 100 ? BadRequest(new { Error = "Search must be 200 characters or fewer." })
+            : scheduler.BrowseClips(new ClipFilter(search, kind, network, decade, problem), start, limit);
+
+    [HttpGet("clips/ids")]
+    public ActionResult<string[]> ClipIds([FromQuery] string? search = null, [FromQuery] string? kind = null, [FromQuery] string? network = null,
+        [FromQuery] int? decade = null, [FromQuery] string? problem = null)
+        => search?.Length > 200 || network?.Length > 100 ? BadRequest(new { Error = "Search must be 200 characters or fewer." })
+            : scheduler.ClipIds(new ClipFilter(search, kind, network, decade, problem));
+
+    [HttpGet("clips/{id}/matches")]
+    public ActionResult<ClipMatches> ClipMatches(string id) => scheduler.MatchesFor(id.Replace("-", "").ToLowerInvariant()) is { } matches ? matches : NotFound(new { Error = "That clip isn't in the clip library yet. Save and refresh first." });
 
     [HttpGet("guide/{id}")]
     public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial, x.Match, x.Speed, Kind = !x.Commercial ? "Program" : x.Undo?.PoolKey.StartsWith("bumpers", StringComparison.Ordinal) == true ? "Bumper" : "Commercial" });

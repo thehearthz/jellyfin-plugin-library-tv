@@ -148,6 +148,28 @@ try
         "Each refresh sorts the shared commercial library by the network and year in its file names");
     Check(sharedScheduler.GuideFor("kids").Where(x => x.Commercial).All(x => x.ItemId == sharedClips[0].Id) && sharedScheduler.GuideFor("kids").Any(x => x.Commercial),
         "A channel without its own commercials plays the shared commercials sorted to its programs' network");
+    // The clip browser lists clips as filed, and rules and edits re-file them without renaming files.
+    var browsed = sharedScheduler.BrowseClips(new ClipFilter(null, null, null, null, null), 0, 50);
+    Check(browsed.Total == 3 && browsed.Items.Select(x => x.Network).SequenceEqual(["Adult Swim", "Nickelodeon", ""]) && browsed.Items[1].Year == 1994 && browsed.Networks.SequenceEqual(["Adult Swim", "Nickelodeon"])
+        && sharedScheduler.BrowseClips(new ClipFilter("cola", null, null, null, null), 0, 50).Items.Single().Why.StartsWith("General")
+        && sharedScheduler.ClipIds(new ClipFilter(null, null, "General", null, "network")).Length == 1 && sharedScheduler.BrowseClips(new ClipFilter(null, null, null, 2000, null), 0, 50).Total == 1,
+        "The clip browser lists every shared clip with its network and year, and filters by name, network, decade and problem");
+    var kidsMatches = sharedScheduler.MatchesFor(sharedClips[0].Id.ToString("N"));
+    Check(kidsMatches is { Total: 1 } && kidsMatches.Programs[0].StartsWith("Kids movie") && sharedScheduler.MatchesFor(sharedClips[1].Id.ToString("N"))!.Total == 0 && sharedScheduler.MatchesFor(sharedClips[2].Id.ToString("N"))!.Total == 0,
+        "A clip says which programs it can play with: its network's programs, and none for a network no program has");
+    plugin.UpdateConfiguration(new Configuration { GuideDays = 1, SharedCommercials = new Pool { ItemIds = sharedClips.Select(x => x.Id.ToString()).ToArray() },
+        ClipOverrides = [new ClipEdit { ItemId = sharedClips[2].Id.ToString(), Network = "Nickelodeon", Year = 1997 }],
+        ClipRules = [new ClipEdit { Contains = "adult swim", Disabled = true }],
+        Channels = [new ChannelDefinition { Id = "kids", Name = "Kids", CommercialCount = 1, MovieBreaks = 0, Source = new Pool { ItemIds = [kidsMovie.Id.ToString()] } }] });
+    Planner.MinimumVariety = 1;
+    await sharedScheduler.Refresh(default);
+    Planner.MinimumVariety = 8;
+    plugin.UpdateConfiguration(keptConfig);
+    var rebrowsed = sharedScheduler.BrowseClips(new ClipFilter(null, null, null, null, null), 0, 50).Items;
+    Check(rebrowsed.Single(x => x.Title.StartsWith("Cola")) is { Network: "Nickelodeon", Year: 1997 } cola && cola.Sources.SequenceEqual(["edited"]) && rebrowsed.Single(x => x.Title.StartsWith("Adult")) is { Disabled: true } off && off.Sources[0].StartsWith("rule"),
+        "Edits and rules show in the browser: a re-filed clip, and a clip turned off by a rule");
+    Check(sharedScheduler.ClipLibrary.Select(x => $"{x.Network}:{x.Decade}:{x.Count}").SequenceEqual(["Nickelodeon:1990:2"]) && sharedScheduler.GuideFor("kids").Where(x => x.Commercial).All(x => x.ItemId != sharedClips[1].Id),
+        "The coverage summary and the guide use the re-filed clips, and a turned-off clip never plays");
     var horrorSeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], Studios = ["Adult Swim"], ProviderIds = new() { ["Tvdb"] = "4242" } };
     var copySeries = new MediaBrowser.Controller.Entities.TV.Series { Id = Guid.NewGuid(), Name = "Night Terrors", ProductionYear = 1987, Genres = ["Horror"], Studios = ["Adult Swim"], ProviderIds = new() { ["Tvdb"] = "4242" } };
     MediaBrowser.Controller.Entities.TV.Episode Ep(MediaBrowser.Controller.Entities.TV.Series series, int number, string folder) => new() { Id = Guid.NewGuid(), Name = "Part " + number, SeriesId = series.Id, SeriesName = series.Name, ParentIndexNumber = 1, IndexNumber = number, Path = Path.Combine(directory, folder + number + ".mkv"), RunTimeTicks = TimeSpan.FromMinutes(22).Ticks, PremiereDate = new DateTime(1988, 1, number) };
@@ -280,12 +302,14 @@ try
     Check(turnsRoundtrip.Channels[0].Source.EpisodesInARow == 5 && legacyTurns.Channels[0].Source.EpisodesInARow == 2, "Episodes in a row survives XML storage and older settings default to two");
     using var rulesWriter = new StringWriter();
     serializer.Serialize(rulesWriter, new Configuration { SharedCommercials = new Pool { FolderIds = [Guid.Empty.ToString()] }, SharedBumpers = new Pool { LibraryIds = [Guid.Empty.ToString()] }, Restrictions = [new ContentRule { Start = "07:00", End = "20:30", Days = [DayOfWeek.Monday], Genres = ["Horror", "Thriller"] }], Channels = [new ChannelDefinition { AlwaysEncode = true, MatchCommercialEra = false, MatchCommercialNetwork = false, CommercialNetwork = "Toonami", Blocks = [new TimeBlock { CommercialNetwork = "Adult Swim" }],
-        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English", AudioLanguage = "Japanese", CreditsSpeed = 4 }], AutomaticCommercialCount = 5 });
+        EpisodeBreaks = 3, MovieBreaks = 0, PictureShape = "4:3", Bumpers = new Pool { FolderIds = [Guid.Empty.ToString()] }, Captions = "forced", CaptionLanguage = "English", AudioLanguage = "Japanese", CreditsSpeed = 4 }], AutomaticCommercialCount = 5,
+        ClipRules = [new ClipEdit { Contains = "bump", Kind = "bumper", Disabled = true }], ClipOverrides = [new ClipEdit { ItemId = Guid.Empty.ToString(), Network = "Toonami", Year = 2001, Show = "Gumball" }] });
     var rules = (Configuration)serializer.Deserialize(new StringReader(rulesWriter.ToString()))!;
     Check(rules.Restrictions.Single().Genres.SequenceEqual(["Horror", "Thriller"]) && rules.Restrictions[0].Days.SequenceEqual([DayOfWeek.Monday]) && rules.Channels[0].AlwaysEncode && !rules.Channels[0].MatchCommercialEra
         && !rules.Channels[0].MatchCommercialNetwork && rules.Channels[0].CommercialNetwork == "Toonami" && rules.Channels[0].Blocks[0].CommercialNetwork == "Adult Swim", "Content restrictions, commercial matching and playback settings survive XML storage");
     Check(rules.Channels[0].EpisodeBreaks == 3 && rules.Channels[0].MovieBreaks == 0 && rules.Channels[0].PictureShape == "4:3" && rules.Channels[0].Bumpers.FolderIds.Length == 1, "Breaks, picture shape and bumpers survive XML storage");
     Check(rules.SharedCommercials.FolderIds.Length == 1 && rules.SharedBumpers.LibraryIds.Length == 1, "The shared commercial and bumper libraries survive XML storage");
+    Check(rules.ClipRules.Single() is { Contains: "bump", Kind: "bumper", Disabled: true } && rules.ClipOverrides.Single() is { Network: "Toonami", Year: 2001, Show: "Gumball", Disabled: null }, "Clip rules and edits survive XML storage");
     var olderXml = System.Text.RegularExpressions.Regex.Replace(rulesWriter.ToString().Replace("<AlwaysEncode>true</AlwaysEncode>", "<Transcode>true</Transcode>"), @"\s*<MatchCommercialEra>false</MatchCommercialEra>", "");
     if (olderXml == rulesWriter.ToString()) throw new Exception("Test XML was not rewritten");
     var older = (Configuration)serializer.Deserialize(new StringReader(olderXml))!;
