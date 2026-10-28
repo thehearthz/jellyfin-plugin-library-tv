@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.9.0.0",
+        "changelog": "Credits detection: Library TV now scans every program in the background to find where its credits start. Episodes are matched against neighbouring episodes by their shared closing music; movies and shows with unique credits are checked for a long dark stretch with text near the end. Commercial breaks fall before the credits and Credits speed works without chapters or other plugins. Runs after startup, one file at a time at low priority; turn it off or see progress under Credits detection in the builder.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.9.0.0/library-tv-0.9.0.0.zip",
+        "checksum": "1d3b6a8205b3ce32da6a2054b061d75a",
+        "timestamp": "2026-10-28T22:01:30Z"
+      },
+      {
         "version": "0.8.1.0",
         "changelog": "Commercial breaks no longer repeat the same few clips.\n\n- Each break now draws from at least eight different commercials when the library has them (more with more commercials per break). Matching widens step by step: clips made for the show, the network in the program's decade, the network in any year, general clips from the decade, then any general clips. Accurate clips still come first, and other networks' or shows' clips are never used.\n- Every clip plays before any repeats.\n- Guide preview's Why says when a break was widened, and Channel health warns when a channel still has fewer than eight different commercials.\n- Updating replans already-scheduled breaks once, after the current program.",
         "targetAbi": "12.2.0.0",
