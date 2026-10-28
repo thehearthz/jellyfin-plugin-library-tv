@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.10.0.0",
+        "changelog": "Clip browser for the Commercial library: see every commercial and bumper as filed, search and filter them, and fix mistakes without renaming files. Edit a clip's network, year, show or kind, or turn it off; change many at once; preview a clip; see which programs it plays with. Rules re-file every clip whose folder or file name contains some text (for example names containing 'bump' become bumpers). How your clips were sorted is now a network by decade grid that highlights thin spots.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.10.0.0/library-tv-0.10.0.0.zip",
+        "checksum": "362c5bb0e74d614726bb02b6b12399d0",
+        "timestamp": "2026-10-28T23:50:25Z"
+      },
+      {
         "version": "0.9.0.0",
         "changelog": "Credits detection: Library TV now scans every program in the background to find where its credits start. Episodes are matched against neighbouring episodes by their shared closing music; movies and shows with unique credits are checked for a long dark stretch with text near the end. Commercial breaks fall before the credits and Credits speed works without chapters or other plugins. Runs after startup, one file at a time at low priority; turn it off or see progress under Credits detection in the builder.",
         "targetAbi": "12.2.0.0",
