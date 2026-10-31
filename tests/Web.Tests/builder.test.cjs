@@ -1118,6 +1118,11 @@ test("rules re-file clips by name or folder and are checked before saving", asyn
   }
 });
 
+function typeInto(window, input, value) {
+  input.value = value;
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+}
+
 function selectLabel(window, label, container = window.document) {
   const fields = [...container.querySelectorAll("label.ltv-field")];
   const field =
@@ -1170,6 +1175,8 @@ test("playback order, filters, per-show turns and channel images are saved", asy
     change(w, selectLabel(w, "Earliest year"), "1980");
     change(w, selectLabel(w, "Latest year"), "1999");
     change(w, selectLabel(w, "Never include genres"), "Horror, Reality");
+    change(w, selectLabel(w, "Title contains any of"), "night, watch");
+    change(w, selectLabel(w, "Title contains none of"), "Reunion");
     change(w, selectLabel(w, "Watermark drawn"), "/media/logo.png");
     change(w, selectLabel(w, "Preferred audio track title"), "Dolby");
     click(w, "Save channels");
@@ -1180,9 +1187,31 @@ test("playback order, filters, per-show turns and channel images are saved", asy
     assert.equal(c.Source.MaxRating, "PG");
     assert.deepEqual([c.Source.MinYear, c.Source.MaxYear], [1980, 1999]);
     assert.deepEqual(c.Source.ExcludeGenres, ["Horror", "Reality"]);
+    assert.deepEqual(c.Source.TitleContains, ["night", "watch"]);
+    assert.deepEqual(c.Source.TitleExcludes, ["Reunion"]);
     assert.equal(c.Watermark, "/media/logo.png");
     assert.equal(c.AudioTitle, "Dolby");
     assert.equal(c.WatermarkPosition, "bottom-right");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("the picker sends genre and year filters with its search", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Choose shows & movies");
+    await settle();
+    typeInto(w, w.document.querySelector("[data-ui=genre-filter]"), "Comedy");
+    typeInto(w, w.document.querySelector("[data-ui=year-from]"), "1990");
+    typeInto(w, w.document.querySelector("[data-ui=year-to]"), "1999");
+    await new Promise((r) => setTimeout(r, 600));
+    await settle();
+    const last = w.testApi.calls.filter((x) => x.includes("media?")).pop();
+    assert.match(last, /genre=Comedy/);
+    assert.match(last, /minYear=1990/);
+    assert.match(last, /maxYear=1999/);
   } finally {
     dom.window.close();
   }

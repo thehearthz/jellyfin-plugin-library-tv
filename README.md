@@ -174,8 +174,9 @@ Under each content selection:
 - **Order** is *Follow the shuffle setting*, *Chronological* (by air or release date, then season and episode) or *Alphabetical*. Changing it reorders what is left of the current cycle.
 - **Start the first cycle at a random place** begins at a random show or episode; the show then carries on from there and every episode still airs once per cycle.
 - **Keep two-part episodes together** stops a turn ending in the middle of "Part 1" / "Part 2" (and "(1)" / "(2)", "Part One"…). Parts are recognised from the episode name.
+- In the **Choose shows & movies** picker, the **Genre** and **From/To year** boxes narrow what you browse (alongside the search box and library), so you can pick from, say, Comedies of the 1990s.
 - **Episodes in a row for particular shows** (`Show name = 3` per line) overrides the pool-wide number for those shows.
-- **Genre, tag, rating, year & length filters** act like a saved search: never include genres, highest content rating (G, TV-Y7, PG, PG-13, R; unrated programs are kept), earliest and latest year, shortest and longest program. Year and rating use Jellyfin's metadata.
+- **Filters** act like a saved search: genres and tags to include, genres to never include, words the title must or must not contain (any-of, case-insensitive, matched on the show's or movie's title), never include genres, highest content rating (G, TV-Y7, PG, PG-13, R; unrated programs are kept), earliest and latest year, shortest and longest program. Year and rating use Jellyfin's metadata.
 
 ### Channel images and stream choices
 

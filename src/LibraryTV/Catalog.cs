@@ -62,7 +62,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         };
     }
 
-    public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit)
+    public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit, string? genre = null, int minYear = 0, int maxYear = 0)
     {
         startup?.RequireReady();
         BaseItemKind[] types = kind switch
@@ -75,6 +75,8 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         {
             ParentId = libraryId, Recursive = true, IsVirtualItem = false, IncludeItemTypes = types,
             SearchTerm = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            Genres = string.IsNullOrWhiteSpace(genre) ? [] : genre.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
+            Years = minYear > 0 || maxYear > 0 ? Enumerable.Range(minYear > 0 ? minYear : 1850, Math.Max(1, (maxYear > 0 ? maxYear : DateTime.UtcNow.Year + 1) - (minYear > 0 ? minYear : 1850) + 1)).Take(400).ToArray() : [],
             StartIndex = Math.Max(0, start), Limit = Math.Clamp(limit, 1, 60), EnableTotalRecordCount = true,
             OrderBy = [(ItemSortBy.SortName, SortOrder.Ascending)]
         });
@@ -161,7 +163,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         scan ??= new();
         return pool =>
         {
-            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, commercials });
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, pool.TitleContains, pool.TitleExcludes, commercials });
             if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, scan, commercials);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
@@ -218,6 +220,9 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             if (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any()) continue;
             if (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0)) continue;
             if (pool.ExcludeGenres.Length > 0 && genres.Intersect(pool.ExcludeGenres, StringComparer.OrdinalIgnoreCase).Any()) continue;
+            var title = episode is not null ? episode.SeriesName ?? x.Name : x.Name;
+            if (pool.TitleContains.Length > 0 && !pool.TitleContains.Any(w => title.Contains(w, StringComparison.OrdinalIgnoreCase))) continue;
+            if (pool.TitleExcludes.Any(w => title.Contains(w, StringComparison.OrdinalIgnoreCase))) continue;
             var minutes = TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalMinutes;
             if (pool.MinMinutes > 0 && minutes < pool.MinMinutes || pool.MaxMinutes > 0 && minutes > pool.MaxMinutes) continue;
             if (!RatingAllowed(x.OfficialRating ?? series?.OfficialRating, pool.MaxRating)) continue;

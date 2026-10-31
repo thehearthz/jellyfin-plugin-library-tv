@@ -186,6 +186,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     {
         if (pool.Order is not ("" or "chronological" or "alphabetical")) throw new ArgumentException("Order must be blank, chronological or alphabetical.");
         if (pool.Turns is null || pool.Turns.Length > 200 || pool.Turns.Any(x => x is null || x.Show is null || x.Show.Length > 200 || x.Episodes is < 0 or > 100)) throw new ArgumentException("Use at most 200 shows with 0–100 episodes in a row.");
+        if (pool.TitleContains is null || pool.TitleExcludes is null || pool.TitleContains.Concat(pool.TitleExcludes).Any(x => x is null || x.Length > 100) || pool.TitleContains.Length > 50 || pool.TitleExcludes.Length > 50) throw new ArgumentException("Use at most 50 title words of 100 characters or fewer for each filter.");
         if (pool.ExcludeGenres is null || pool.MaxRating is null || pool.MaxRating.Length > 20) throw new ArgumentException("Content selections cannot be null.");
         if (pool.MinYear is not 0 and (< 1850 or > 2200) || pool.MaxYear is not 0 and (< 1850 or > 2200) || pool.MaxYear != 0 && pool.MaxYear < pool.MinYear) throw new ArgumentException("Years must be between 1850 and 2200, and the last year cannot be before the first.");
         if (pool.MinMinutes < 0 || pool.MaxMinutes < 0 || pool.MaxMinutes != 0 && pool.MaxMinutes < pool.MinMinutes) throw new ArgumentException("Length limits cannot be negative, and the longest cannot be shorter than the shortest.");

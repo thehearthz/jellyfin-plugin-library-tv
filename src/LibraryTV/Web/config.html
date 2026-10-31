@@ -704,6 +704,17 @@
             ><select data-ui="library-filter"></select
           ></label>
         </div>
+        <div class="ltv-row" data-ui="picker-filters">
+          <label class="ltv-field" style="flex: 2; margin: 0"
+            ><span>Genre (comma separated)</span
+            ><input type="text" data-ui="genre-filter" maxlength="200" placeholder="e.g. Comedy, Animation" /></label
+          ><label class="ltv-field" style="flex: 1; margin: 0"
+            ><span>From year</span
+            ><input type="number" data-ui="year-from" min="1850" max="2200" /></label
+          ><label class="ltv-field" style="flex: 1; margin: 0"
+            ><span>To year</span
+            ><input type="number" data-ui="year-to" min="1850" max="2200" /></label>
+        </div>
         <div
           class="ltv-tabs"
           data-ui="picker-tabs"
@@ -782,6 +793,8 @@
         MaxMinutes: 0,
         MaxRating: "",
         ExcludeGenres: [],
+        TitleContains: [],
+        TitleExcludes: [],
       });
       function normalize(p) {
         p = p || pool();
@@ -793,6 +806,8 @@
           "Tags",
           "Turns",
           "ExcludeGenres",
+          "TitleContains",
+          "TitleExcludes",
         ])
           p[key] = p[key] || [];
         if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
@@ -1397,8 +1412,23 @@
         );
         const advanced = node(
           "details",
-          {},
-          node("summary", {}, "Genre, tag, rating, year & length filters"),
+          {
+            open:
+              p.Genres.length +
+                p.Tags.length +
+                p.ExcludeGenres.length +
+                p.TitleContains.length +
+                p.TitleExcludes.length +
+                (p.MaxRating ? 1 : 0) +
+                p.MinYear +
+                p.MaxYear +
+                p.MinMinutes +
+                p.MaxMinutes >
+              0
+                ? ""
+                : null,
+          },
+          node("summary", {}, "Filters: genre, tag, title, rating, year & length"),
         );
         advanced.append(
           node(
@@ -1443,6 +1473,28 @@
                 p.MaxRating,
                 [["", "Any"], ["G", "G / TV-Y / TV-G"], ["TV-Y7", "TV-Y7"], ["PG", "PG / TV-PG"], ["PG-13", "PG-13 / TV-14"], ["R", "R / TV-MA"]],
                 (v) => (p.MaxRating = v),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Title contains any of (comma separated)",
+                p.TitleContains.join(", "),
+                (v) =>
+                  (p.TitleContains = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
+              ),
+              field(
+                "Title contains none of (comma separated)",
+                p.TitleExcludes.join(", "),
+                (v) =>
+                  (p.TitleExcludes = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
               ),
             ),
             node(
@@ -3074,6 +3126,8 @@
           total: 0,
         };
         ui("search").value = "";
+        for (const name of ["genre-filter", "year-from", "year-to"]) ui(name).value = "";
+        ui("picker-filters").hidden = !!ads;
         ui("library-filter").replaceChildren(
           node("option", { value: "" }, "All libraries"),
           ...state.libraries.map((x) =>
@@ -3130,6 +3184,9 @@
             });
             if (ui("library-filter").value)
               query.set("libraryId", ui("library-filter").value);
+            if (ui("genre-filter").value.trim()) query.set("genre", ui("genre-filter").value.trim());
+            if (Number(ui("year-from").value) > 0) query.set("minYear", ui("year-from").value);
+            if (Number(ui("year-to").value) > 0) query.set("maxYear", ui("year-to").value);
             result = await api("media?" + query);
           }
           if (generation !== state.request || !state.picker) return;
@@ -3583,6 +3640,17 @@
         state.picker.start = 0;
         browse();
       });
+      for (const name of ["genre-filter", "year-from", "year-to"])
+        ui(name).addEventListener("input", () => {
+          clearTimeout(searchTimer);
+          state.request++;
+          searchTimer = setTimeout(() => {
+            if (state.picker) {
+              state.picker.start = 0;
+              browse();
+            }
+          }, 400);
+        });
       page.querySelector("[data-action=next]").addEventListener("click", () => {
         state.picker.start += 36;
         browse();

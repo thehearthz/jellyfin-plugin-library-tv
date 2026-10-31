@@ -36,10 +36,12 @@ public sealed class Controller : ControllerBase
     private Broadcasts? broadcasts { get { startup?.RequireReady(); return broadcastService.Value; } }
     [HttpGet("media")]
     public ActionResult<CatalogPage> Browse([FromQuery] string kind = "shows", [FromQuery] Guid libraryId = default,
-        [FromQuery] string? search = null, [FromQuery] int start = 0, [FromQuery] int limit = 36)
+        [FromQuery] string? search = null, [FromQuery] int start = 0, [FromQuery] int limit = 36,
+        [FromQuery] string? genre = null, [FromQuery] int minYear = 0, [FromQuery] int maxYear = 0)
     {
-        if (search?.Length > 200) return BadRequest(new { Error = "Search must be 200 characters or fewer." });
-        try { return catalog.Browse(kind, libraryId, search, start, limit); }
+        if (search?.Length > 200 || genre?.Length > 200) return BadRequest(new { Error = "Search and genre must be 200 characters or fewer." });
+        if (minYear is < 0 or > 2200 || maxYear is < 0 or > 2200) return BadRequest(new { Error = "Years must be between 1850 and 2200." });
+        try { return catalog.Browse(kind, libraryId, search, start, limit, genre, minYear, maxYear); }
         catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
     }
 

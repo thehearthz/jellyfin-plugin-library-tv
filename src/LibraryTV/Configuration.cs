@@ -171,6 +171,9 @@ public sealed class Pool
     // The highest content rating that may air (for example "TV-PG"); unrated programs are kept.
     public string MaxRating { get; set; } = "";
     public string[] ExcludeGenres { get; set; } = [];
+    // Words that a show or movie title must contain (any of them) and must not contain, ignoring case.
+    public string[] TitleContains { get; set; } = [];
+    public string[] TitleExcludes { get; set; } = [];
 }
 
 public sealed class ShowTurn
