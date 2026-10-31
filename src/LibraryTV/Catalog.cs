@@ -161,7 +161,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         scan ??= new();
         return pool =>
         {
-            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, commercials });
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, commercials });
             if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, scan, commercials);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
@@ -217,11 +217,16 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             if (pool.Genres.Length > 0 && !genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any()) continue;
             if (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any()) continue;
             if (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0)) continue;
+            if (pool.ExcludeGenres.Length > 0 && genres.Intersect(pool.ExcludeGenres, StringComparer.OrdinalIgnoreCase).Any()) continue;
+            var minutes = TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalMinutes;
+            if (pool.MinMinutes > 0 && minutes < pool.MinMinutes || pool.MaxMinutes > 0 && minutes > pool.MaxMinutes) continue;
+            if (!RatingAllowed(x.OfficialRating ?? series?.OfficialRating, pool.MaxRating)) continue;
             var pathYear = YearFromPath(x.Path);
             // Commercial folders are usually organised by year or decade, which beats file dates.
             var year = commercials ? pathYear ?? x.ProductionYear ?? x.PremiereDate?.Year
                 : episode is not null ? x.PremiereDate?.Year ?? x.ProductionYear ?? series?.ProductionYear ?? pathYear
                 : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
+            if (pool.MinYear > 0 && year is > 0 && year < pool.MinYear || pool.MaxYear > 0 && year is > 0 && year > pool.MaxYear) continue;
             media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
                 episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios, episode is not null ? episode.SeriesName : x.Name));
@@ -230,6 +235,28 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         return media.DistinctBy(x => x.Path, StringComparer.Ordinal)
             .DistinctBy(x => x.Series.Length > 0 && x.Episode > 0 ? $"{x.Series}|{x.Season}|{x.Episode}" : x.Id.ToString())
             .ToList();
+    }
+
+    // Content ratings from the most family-friendly to the strictest, across the US movie and TV systems.
+    private static readonly string[][] RatingLadder =
+    [
+        ["g", "tv-y", "tv-g", "u", "all"], ["tv-y7", "tv-y7-fv"], ["pg", "tv-pg"], ["pg-13", "tv-14", "12", "12a", "13"], ["r", "tv-ma", "15", "16", "18", "nc-17", "x"],
+    ];
+
+    private static int RatingLevel(string? rating)
+    {
+        var key = (rating ?? "").Trim().ToLowerInvariant();
+        if (key.Contains(':')) key = key[(key.IndexOf(':') + 1)..];
+        return Array.FindIndex(RatingLadder, level => level.Contains(key));
+    }
+
+    // Unrated programs and ratings the ladder does not know are kept: they cannot be compared.
+    internal static bool RatingAllowed(string? rating, string max)
+    {
+        if (string.IsNullOrWhiteSpace(max)) return true;
+        var level = RatingLevel(rating);
+        var limit = RatingLevel(max);
+        return level < 0 || limit < 0 || level <= limit;
     }
 
     // One key per show, even when two libraries hold separate copies of it.

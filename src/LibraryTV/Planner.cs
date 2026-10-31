@@ -25,10 +25,13 @@ public static class Planner
         var byId = media.ToDictionary(x => x.Id);
         rotation.Remaining.RemoveAll(id => !byId.ContainsKey(id));
         // Rotations saved before this setting existed, or under another value, are reordered once.
-        if (rotation.EpisodesInARow != pool.EpisodesInARow)
+        var layout = Layout(pool);
+        if (rotation.EpisodesInARow != layout)
         {
-            rotation.Remaining = Interleave(rotation.Remaining, byId, pool.EpisodesInARow);
-            rotation.EpisodesInARow = pool.EpisodesInARow;
+            // A new order re-sorts what is left of the cycle; other layout changes only re-spread the turns.
+            rotation.Remaining = pool.Order.Length > 0 ? Arrange(rotation.Remaining.Select(id => byId[id]), pool, seed, rotation.Last, byId)
+                : Interleave(rotation.Remaining, byId, pool);
+            rotation.EpisodesInARow = layout;
         }
         var known = rotation.Remaining.Concat(rotation.Seen).ToHashSet();
         var added = media.Where(x => !known.Contains(x.Id)).ToList();
@@ -39,11 +42,8 @@ public static class Planner
             added = media.ToList();
         }
         // Order each series by season/episode; shuffle series, never their episodes.
-        var groups = added.GroupBy(SeriesKey);
-        if (pool.Shuffle) groups = groups.OrderBy(g => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + rotation.Last + g.Key))));
-        var ordered = groups.SelectMany(group => group.OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).Select(x => x.Id)).ToList();
         var before = rotation.Remaining.Count;
-        rotation.Remaining.AddRange(Interleave(ordered, byId, pool.EpisodesInARow));
+        rotation.Remaining.AddRange(Arrange(added, pool, seed, rotation.Last, byId, randomStart: rotation.Last == Guid.Empty && previousSeen is null));
         if (rotation.Remaining.Count == 0) return null;
         if (rotation.Remaining[0] == rotation.Last && rotation.Remaining.Count > 1 && byId[rotation.Last].Series.Length == 0)
         {
@@ -93,18 +93,79 @@ public static class Planner
 
     private static string SeriesKey(Media x) => x.Series.Length == 0 ? x.Id.ToString() : x.Series;
 
+    // Order series (never their episodes) by the pool's order, then deal them out in turns.
+    private static List<Guid> Arrange(IEnumerable<Media> items, Pool pool, string seed, Guid last, Dictionary<Guid, Media> byId, bool randomStart = false)
+    {
+        var groups = items.GroupBy(SeriesKey);
+        if (pool.Order == "chronological") groups = groups.OrderBy(g => g.Min(x => x.Year > 0 ? x.Year : int.MaxValue)).ThenBy(g => g.Key, StringComparer.Ordinal);
+        else if (pool.Order == "alphabetical") groups = groups.OrderBy(g => g.Select(x => x.Show ?? x.Title).Min(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase).ThenBy(g => g.Key, StringComparer.Ordinal);
+        else if (pool.Shuffle) groups = groups.OrderBy(g => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + last + g.Key))));
+        var ordered = groups.SelectMany(group => group.OrderBy(x => x.Season).ThenBy(x => x.Episode).ThenBy(x => x.Id).Select(x => x.Id)).ToList();
+        if (randomStart && pool.RandomStart && ordered.Count > 1)
+        {
+            // The first cycle starts somewhere in the middle; a show then carries on from that episode.
+            var offset = (int)(BitConverter.ToUInt32(SHA256.HashData(Encoding.UTF8.GetBytes(seed + "start"))) % (uint)ordered.Count);
+            ordered = ordered.Skip(offset).Concat(ordered.Take(offset)).ToList();
+        }
+        return Interleave(ordered, byId, pool);
+    }
+
+    // What is saved with a rotation to tell when the pool's turn layout has changed. A plain pool keeps
+    // its episodes-in-a-row number, so saved rotations from earlier versions are not reordered.
+    private static int Layout(Pool pool)
+    {
+        if (!pool.KeepMultiPart && pool.Turns.Length == 0 && pool.Order.Length == 0 && !pool.RandomStart) return pool.EpisodesInARow;
+        var hash = 2166136261u;
+        foreach (var c in $"{pool.EpisodesInARow}|{pool.KeepMultiPart}|{pool.Order}|{pool.RandomStart}|{string.Join(",", pool.Turns.Select(t => t.Show.ToLowerInvariant() + ":" + t.Episodes))}")
+            hash = (hash ^ c) * 16777619u;
+        return (int)(hash | 0x40000000u) & 0x7fffffff;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex PartPattern = new(@"^(?<stem>.*?)[\s:,\-–—]*(?:\(\s*(?<number>\d{1,2})\s*\)|\(?\s*\b(?:part|pt\.?)\s*(?<word>\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|i{1,3}|iv|v)\s*\)?)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly string[] PartWords = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+    // "Show — S01E05 The Trip (Part 1)" becomes ("the trip", 1); null when the title is not one part of several.
+    internal static (string Stem, int Number)? PartOf(string title)
+    {
+        var name = System.Text.RegularExpressions.Regex.Replace(title, @"^.*?S\d+E\d+\s*", "");
+        var match = PartPattern.Match(name);
+        if (!match.Success) return null;
+        var text = (match.Groups["number"].Success ? match.Groups["number"].Value : match.Groups["word"].Value).ToLowerInvariant();
+        var number = int.TryParse(text, out var n) ? n : Array.IndexOf(PartWords, text) is > 0 and var w ? w : text switch { "i" => 1, "ii" => 2, "iii" => 3, "iv" => 4, "v" => 5, _ => 0 };
+        return number > 0 ? (NetworkKey(match.Groups["stem"].Value), number) : null;
+    }
+
     // A turn is up to `run` consecutive episodes of one series, or a single movie. Each
     // group's turns are spread evenly through the cycle, so short and long series stay mixed.
     // Group order and episode order are preserved; zero keeps every series in one turn.
-    private static List<Guid> Interleave(List<Guid> ids, Dictionary<Guid, Media> byId, int run)
+    private static List<Guid> Interleave(List<Guid> ids, Dictionary<Guid, Media> byId, Pool pool)
     {
         var groups = ids.GroupBy(id => SeriesKey(byId[id])).ToArray();
         return groups.SelectMany((group, index) =>
             {
-                var turns = group.Chunk(run > 0 ? run : int.MaxValue).ToArray();
+                var show = byId[group.First()].Show;
+                var run = pool.Turns.FirstOrDefault(t => string.Equals(t.Show, show, StringComparison.OrdinalIgnoreCase))?.Episodes ?? pool.EpisodesInARow;
+                var turns = Turns(group.ToArray(), byId, run, pool.KeepMultiPart);
                 return turns.Select((turn, k) => (Position: (k + (index + 0.5) / groups.Length) / turns.Length, Group: index, Turn: turn));
             })
             .OrderBy(x => x.Position).ThenBy(x => x.Group).SelectMany(x => x.Turn).ToList();
+    }
+
+    // A show's turns: up to `run` episodes each; with `keepParts`, a turn also takes the rest of a two-part
+    // episode it would otherwise end in the middle of.
+    private static Guid[][] Turns(Guid[] group, Dictionary<Guid, Media> byId, int run, bool keepParts)
+    {
+        var size = run > 0 ? run : int.MaxValue;
+        if (!keepParts) return group.Chunk(size).ToArray();
+        var turns = new List<Guid[]>();
+        for (var i = 0; i < group.Length;)
+        {
+            var end = (int)Math.Min((long)i + size, group.Length);
+            while (end < group.Length && PartOf(byId[group[end - 1]].Title) is { } before && PartOf(byId[group[end]].Title) is { } after && before.Stem == after.Stem && after.Number == before.Number + 1) end++;
+            turns.Add(group[i..end]);
+            i = end;
+        }
+        return turns.ToArray();
     }
 
     // Rewind only future selections. Legacy guide entries have no undo metadata,
@@ -182,6 +243,44 @@ public static class Planner
         return null;
     }
 
+    // A clock time on a date in the zone; a time skipped by a daylight-saving change starts after it.
+    private static DateTimeOffset Instant(DateOnly day, TimeOnly time, TimeZoneInfo zone)
+    {
+        var local = day.ToDateTime(time, DateTimeKind.Unspecified);
+        while (zone.IsInvalidTime(local)) local = local.AddMinutes(30);
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, zone), TimeSpan.Zero);
+    }
+
+    public static DateTimeOffset BlockStart((TimeBlock Block, DateOnly Date) active, TimeZoneInfo zone) => Instant(active.Date, TimeOnly.ParseExact(active.Block.Start, "HH:mm"), zone);
+
+    public static DateTimeOffset BlockEnd((TimeBlock Block, DateOnly Date) active, TimeZoneInfo zone)
+    {
+        var start = TimeOnly.ParseExact(active.Block.Start, "HH:mm");
+        var end = TimeOnly.ParseExact(active.Block.End, "HH:mm");
+        return Instant(end > start ? active.Date : active.Date.AddDays(1), end, zone);
+    }
+
+    // The next time after `at` that a block with an exact start begins, within the next week.
+    public static DateTimeOffset? NextExactStart(ChannelDefinition channel, DateTimeOffset at, TimeZoneInfo zone)
+    {
+        DateTimeOffset? best = null;
+        var first = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(at, zone).DateTime).AddDays(-1);
+        foreach (var block in channel.Blocks.Where(x => x.StartMode == "exact"))
+        {
+            var time = TimeOnly.ParseExact(block.Start, "HH:mm");
+            for (var d = 0; d <= 9; d++)
+            {
+                var day = first.AddDays(d);
+                if (!block.Days.Contains(day.DayOfWeek)) continue;
+                var start = Instant(day, time, zone);
+                if (start <= at) continue;
+                if (best is null || start < best) best = start;
+                break;
+            }
+        }
+        return best;
+    }
+
     public static void Extend(ChannelDefinition channel, ChannelState state, IReadOnlyDictionary<string, List<Media>> pools, DateTimeOffset now, DateTimeOffset until, TimeZoneInfo zone,
         DateTimeOffset? startAt = null, IReadOnlyList<ContentRule>? rules = null, Func<Media, double[]>? chapters = null, NetworkIndex? networks = null,
         Func<Media, (double Start, double End)?>? credits = null)
@@ -193,6 +292,7 @@ public static class Planner
         // Preserve continuity through server downtime, with bounded catch-up work.
         if (at < now.AddDays(-7)) at = now;
         var episodes = new Dictionary<string, ILookup<string, Media>>();
+        var placeholder = new Media(Guid.Empty, "", "", 0, "", 0, 0);
         var commercials = pools["commercials"];
         var bumpers = pools.GetValueOrDefault("bumpers") ?? [];
         // The scheduler shares one index across channels; on its own, a channel knows its overrides, its programs' tags and studios, and common networks.
@@ -202,10 +302,14 @@ public static class Planner
         var adPicker = new ClipPicker(channel, "commercials", commercials, networks);
         var bumperPicker = new ClipPicker(channel, "bumpers", bumpers, networks);
         // Restrictions must cover a program's own commercial breaks, so estimate their length.
-        var breakSeconds = channel.CommercialCount * (commercials.Count > 0 ? commercials.Average(x => x.Seconds) : 0) + 2 * (bumpers.Count > 0 ? bumpers.Average(x => x.Seconds) : 0);
+        var breakSeconds = (channel.CommercialCountMax > channel.CommercialCount ? (channel.CommercialCount + channel.CommercialCountMax) / 2.0 : channel.CommercialCount) * (commercials.Count > 0 ? commercials.Average(x => x.Seconds) : 0) + 2 * (bumpers.Count > 0 ? bumpers.Average(x => x.Seconds) : 0);
         // Catch-up entries that already ended are pruned below; they must not use the guide cap.
         var stale = 0;
         var iterations = 0;
+        // Nothing may run past this time: the start of an exact block, or the end of a block that fits whole programs.
+        DateTimeOffset? deadline = null;
+        Media? previous = null;
+        string? heading = null;
         while (at < until && state.Guide.Count - stale < MaxGuideEntries && iterations++ < 100000)
         {
             var active = ActiveBlock(channel, at, zone);
@@ -213,27 +317,45 @@ public static class Planner
             var pool = channel.Source;
             string? countKey = null;
             var network = channel.CommercialNetwork;
+            deadline = NextExactStart(channel, at, zone);
+            heading = null;
+            var fitting = false;
             if (active is { } match)
             {
                 countKey = match.Date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) + ":" + match.Block.Id;
                 state.DailyCounts.TryGetValue(countKey, out var count);
-                if (match.Block.MaxItemsPerDay == 0 || count < match.Block.MaxItemsPerDay)
+                if ((match.Block.MaxItemsPerDay == 0 || count < match.Block.MaxItemsPerDay) && !Late(match))
                 {
                     key = match.Block.Id;
                     pool = match.Block.Source;
                     if (!string.IsNullOrWhiteSpace(match.Block.CommercialNetwork)) network = match.Block.CommercialNetwork;
+                    if (!string.IsNullOrWhiteSpace(match.Block.GuideTitle)) heading = match.Block.GuideTitle.Trim();
+                    if (match.Block.Fill == "fit")
+                    {
+                        fitting = true;
+                        var end = BlockEnd(match, zone);
+                        if (deadline is null || end < deadline) deadline = end;
+                    }
                 }
             }
             if (!state.Rotations.TryGetValue(key, out var rotation)) state.Rotations[key] = rotation = new();
             var next = Next(pools[key], pool, rotation, channel.Id + key, out var undo, x => Continue(key, x), AllowedProgram);
-            if (next is null && key != "default")
+            if (next is null && key != "default" && !fitting)
             {
                 key = "default";
+                heading = null;
                 network = channel.CommercialNetwork;
                 if (!state.Rotations.TryGetValue(key, out rotation)) state.Rotations[key] = rotation = new();
                 next = Next(pools[key], channel.Source, rotation, channel.Id + key, out undo, x => Continue(key, x), AllowedProgram);
             }
-            if (next is null) { at = at.AddMinutes(1); continue; }
+            if (next is null)
+            {
+                // Nothing fits before the deadline: fill the time with clips and wait for it.
+                if (deadline is { } limit && limit > at) PadTo(limit, previous ?? placeholder, network);
+                else at = at.AddMinutes(1);
+                continue;
+            }
+            previous = next;
             SeriesCursor? previousCursor = null;
             if (next.Series.Length > 0)
             {
@@ -259,6 +381,7 @@ public static class Planner
                 if (creditsRun.End < next.Seconds - 1) Add(next, false, Part(), creditsRun.End, next.Seconds - creditsRun.End);
             }
             Break(next, network);
+            if (channel.PadMinutes > 0 && NextBoundary() is { } boundary) PadTo(deadline is { } d && d < boundary ? d : boundary, next, network);
         }
         if (stale > 0) state.Guide.RemoveAll(x => x.End < cutoff);
         // Daily quota entries only need to survive the current planning horizon.
@@ -268,25 +391,65 @@ public static class Planner
         void Add(Media item, bool commercial, PlanningUndo undo, double offset = 0, double? seconds = null, double speed = 1, string? match = null)
         {
             var end = at.AddSeconds(seconds ?? item.Seconds);
-            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset, match, speed));
+            state.Guide.Add(new(channel.Id, item.Id, item.Title, item.Path, at, end, commercial, undo, offset, match, speed, commercial ? null : heading));
             if (end < cutoff) stale++;
             at = end;
+        }
+        // A block that started late because the program before it ran over, by more than its allowed lateness,
+        // is skipped. A program that began after the block's start never makes it late.
+        bool Late((TimeBlock Block, DateOnly Date) match)
+        {
+            if (match.Block.MaxLateMinutes <= 0) return false;
+            var begins = BlockStart(match, zone);
+            if (at - begins <= TimeSpan.FromMinutes(match.Block.MaxLateMinutes)) return false;
+            for (var i = state.Guide.Count - 1; i >= 0 && state.Guide[i].End > begins; i--)
+                if (state.Guide[i].Start < begins) return true;
+            return false;
+        }
+        // The next multiple of the padding on the local clock, or null when the program ended on one.
+        DateTimeOffset? NextBoundary()
+        {
+            var period = TimeSpan.FromMinutes(channel.PadMinutes).Ticks;
+            var remainder = (at.UtcTicks + zone.GetUtcOffset(at).Ticks) % period;
+            if (remainder < 0) remainder += period;
+            if (remainder < TimeSpan.TicksPerSecond) return null;
+            return at.AddTicks(period - remainder);
+        }
+        // Fills the time up to `limit` with clips that fit, then waits it out as dead air. Clips only fill the
+        // first two hours, so a long wait does not become an endless run of commercials.
+        void PadTo(DateTimeOffset limit, Media program, string network)
+        {
+            var filled = 0.0;
+            for (var i = 0; i < 500 && at < limit && filled < 7200; i++)
+            {
+                var started = at;
+                var room = (limit - at).TotalSeconds;
+                if (!Clip(adPicker, program, network, room) && !Clip(bumperPicker, program, network, room)) break;
+                filled += (at - started).TotalSeconds;
+            }
+            if (at < limit) at = limit;
         }
         // A break is bumper, commercials, bumper; without commercials it is one bumper between programs.
         void Break(Media program, string network)
         {
             if (channel.CommercialCount == 0) { Clip(bumperPicker, program, network); return; }
             Clip(bumperPicker, program, network);
-            for (var i = 0; i < channel.CommercialCount; i++)
+            for (var i = 0; i < ClipsInBreak(); i++)
                 if (!Clip(adPicker, program, network)) break;
             Clip(bumperPicker, program, network);
         }
-        bool Clip(ClipPicker picker, Media program, string network)
+        // Breaks with a range of lengths vary from break to break, the same way every time the guide is built.
+        int ClipsInBreak() => channel.CommercialCountMax > channel.CommercialCount
+            ? channel.CommercialCount + (int)(BitConverter.ToUInt32(SHA256.HashData(Encoding.UTF8.GetBytes(channel.Id + at.UtcTicks))) % (uint)(channel.CommercialCountMax - channel.CommercialCount + 1))
+            : channel.CommercialCount;
+        bool Clip(ClipPicker picker, Media program, string network, double? room = null)
         {
             if (picker.Empty || state.Guide.Count - stale >= MaxGuideEntries || picker.For(program, network) is not var (clipKey, clips, why)) return false;
             if (!state.Rotations.TryGetValue(clipKey, out var clipRotation)) state.Rotations[clipKey] = clipRotation = new();
             var seed = channel.Id + (clipKey == "commercials" ? "ads" : clipKey);
-            var clip = Next(clips, picker.Pool, clipRotation, seed, out var clipUndo, null, Allowed);
+            // Clips never run past a deadline (an exact start or the end of a fitted block) or the room they were asked to fill.
+            var limit = room ?? (deadline is { } d ? Math.Max(0, (d - at).TotalSeconds) : double.PositiveInfinity);
+            var clip = Next(clips, picker.Pool, clipRotation, seed, out var clipUndo, null, x => x.Seconds <= limit && Allowed(x));
             if (clip is null) return false;
             Add(clip, true, clipUndo! with { PoolKey = clipKey }, match: why);
             return true;
@@ -295,25 +458,43 @@ public static class Planner
         // Length is the program before its credits.
         IEnumerable<double> Cuts(Media program, string network, double length)
         {
-            var count = BreakCount(program);
             // Only split a program for breaks that will have commercials suited to it.
-            if (count == 0 || adPicker.For(program, network) is null) return [];
+            var targets = Targets(program, length);
+            if (targets.Length == 0 || adPicker.For(program, network) is null) return [];
             var marks = chapters?.Invoke(program) ?? [];
+            var reach = channel.BreakMode == "interval" ? Math.Min(length * 0.1, channel.BreakIntervalMinutes * 15.0) : length * 0.1;
             var cuts = new List<double>();
-            for (var k = 1; k <= count; k++)
+            foreach (var target in targets)
             {
-                var target = length * k / (count + 1);
                 var previous = cuts.Count > 0 ? cuts[^1] : 0;
-                var mark = marks.Where(x => Math.Abs(x - target) <= length * 0.1 && x > previous + 120 && x < length - 120).OrderBy(x => Math.Abs(x - target)).Cast<double?>().FirstOrDefault();
+                var mark = marks.Where(x => Math.Abs(x - target) <= reach && x > previous + 120 && x < length - 120).OrderBy(x => Math.Abs(x - target)).Cast<double?>().FirstOrDefault();
                 cuts.Add(mark ?? target);
             }
             return cuts;
         }
-        // Breaks need commercials, and a program of at least ten minutes.
-        int BreakCount(Media program) => channel.CommercialCount == 0 || commercials.Count == 0 || program.Seconds < 600 ? 0
-            : program.Series.Length > 0 ? channel.EpisodeBreaks : channel.MovieBreaks;
+        // Where breaks would fall in the part of a program before its credits: evenly spaced, or every interval.
+        // The last BreakFreeEndMinutes stay free of breaks.
+        double[] Targets(Media program, double length)
+        {
+            if (channel.CommercialCount == 0 || commercials.Count == 0 || program.Seconds < Math.Max(1, channel.MinBreakProgramMinutes) * 60.0) return [];
+            var usable = length - channel.BreakFreeEndMinutes * 60.0;
+            if (channel.BreakMode == "interval")
+            {
+                var step = Math.Max(1, channel.BreakIntervalMinutes) * 60.0;
+                var points = new List<double>();
+                for (var at = step; at <= usable - 120 && points.Count < Math.Clamp(channel.MaxBreaksPerProgram, 0, 20); at += step) points.Add(at);
+                return points.ToArray();
+            }
+            var count = program.Series.Length > 0 ? channel.EpisodeBreaks : channel.MovieBreaks;
+            return Enumerable.Range(1, count).Select(k => usable * k / (count + 1)).ToArray();
+        }
+        int BreakCount(Media program) => Targets(program, program.Seconds).Length;
         bool Allowed(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds), rules, zone);
-        bool AllowedProgram(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds + BreakCount(item) * breakSeconds), rules, zone);
+        bool AllowedProgram(Media item)
+        {
+            var length = item.Seconds + BreakCount(item) * breakSeconds;
+            return (deadline is not { } limit || at.AddSeconds(length) <= limit) && (rules is null || !Restricted(item, at, at.AddSeconds(length), rules, zone));
+        }
         // A series continues from the last episode this channel aired, whichever lineup or block aired it.
         Media Continue(string poolKey, Media item)
         {

@@ -103,6 +103,21 @@ public sealed class ChannelDefinition
     // program. Needs a credits marker: an Outro media segment, a chapter named like "Credits", or credits
     // detection.
     public int CreditsSpeed { get; set; } = 1;
+    // Pads each program with commercials or bumpers until the next multiple of this many minutes on the
+    // clock (for example 30 starts programs at :00 and :30); 0 starts each program as soon as the last ends.
+    public int PadMinutes { get; set; }
+    // Where breaks fall inside a program: "even" splits it into equal parts (at chapter marks when there are
+    // any); "interval" breaks every BreakIntervalMinutes, up to MaxBreaksPerProgram.
+    public string BreakMode { get; set; } = "even";
+    public int BreakIntervalMinutes { get; set; } = 15;
+    public int MaxBreaksPerProgram { get; set; } = 5;
+    // Programs shorter than this are never split, and the last BreakFreeEndMinutes of a program have no breaks.
+    public int MinBreakProgramMinutes { get; set; } = 10;
+    public int BreakFreeEndMinutes { get; set; }
+    // A break plays CommercialCount commercials, or a varying number up to this one when it is higher.
+    public int CommercialCountMax { get; set; }
+    // The guide lists a program without its commercial breaks, so it appears to run through them.
+    public bool GuideHidesBreaks { get; set; }
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {
@@ -124,6 +139,29 @@ public sealed class Pool
     public bool RepeatWhenExhausted { get; set; } = true;
     // Episodes of one series aired before moving to the next; 0 airs each series straight through.
     public int EpisodesInARow { get; set; } = 2;
+    // How the pool is ordered between cycles: blank follows Shuffle; "chronological" by air or release date;
+    // "alphabetical" by title. Episodes within a show always keep their season and episode order.
+    public string Order { get; set; } = "";
+    // The first cycle starts at a random place instead of the beginning.
+    public bool RandomStart { get; set; }
+    // Two-part episodes ("Part 1", "(2)") are never split between turns.
+    public bool KeepMultiPart { get; set; }
+    // Episodes in a row for particular shows, instead of EpisodesInARow.
+    public ShowTurn[] Turns { get; set; } = [];
+    // Filters on what the pool offers; zero or blank means no limit.
+    public int MinYear { get; set; }
+    public int MaxYear { get; set; }
+    public int MinMinutes { get; set; }
+    public int MaxMinutes { get; set; }
+    // The highest content rating that may air (for example "TV-PG"); unrated programs are kept.
+    public string MaxRating { get; set; } = "";
+    public string[] ExcludeGenres { get; set; } = [];
+}
+
+public sealed class ShowTurn
+{
+    public string Show { get; set; } = "";
+    public int Episodes { get; set; } = 2;
 }
 
 public sealed class TimeBlock
@@ -135,6 +173,15 @@ public sealed class TimeBlock
     public int MaxItemsPerDay { get; set; }
     public Pool Source { get; set; } = new();
     public string CommercialNetwork { get; set; } = "";
+    // "soft": a program and its break finish before the block is considered, so a long program can delay it.
+    // "exact": nothing is allowed to run past the block's start; the time before it is filled with clips.
+    public string StartMode { get; set; } = "soft";
+    // A soft block that would start more than this many minutes late is skipped for the day (0 = never skipped).
+    public int MaxLateMinutes { get; set; }
+    // "count" airs the daily limit; "fit" airs only whole programs that end before the block does.
+    public string Fill { get; set; } = "count";
+    // The title shown in the Live TV guide for every program of this block, such as "Saturday Morning Cartoons".
+    public string GuideTitle { get; set; } = "";
 }
 
 public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null, string? Show = null);
@@ -142,7 +189,7 @@ public sealed record Media(Guid Id, string Title, string Path, double Seconds, s
 // Match says why a commercial or bumper was chosen, for the guide preview.
 // Speed above 1 plays the picture that many times faster (credits), keeping the sound at normal speed.
 public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null,
-    double Speed = 1);
+    double Speed = 1, string? Heading = null);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
 // program split by a commercial break: the first part holds the selection, so they have nothing to rewind.
