@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.12.0.0",
+        "changelog": "Per-channel encoding quality and tallest encoded picture (Fast to Best, 480p to 1080p). HDR sources are now tone-mapped to SDR and tagged BT.709.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.12.0.0/library-tv-0.12.0.0.zip",
+        "checksum": "a9a2ee673b6c4ff6ab3dbad88603e50c",
+        "timestamp": "2026-10-31T08:23:53Z"
+      },
+      {
         "version": "0.11.0.0",
         "changelog": "Block timing (exact starts, allowed lateness, fitted blocks), padding to round clock times, interval breaks, playback orders and filters, smart channels from genres/years/decades/shows, collections support, channel watermark, offline card and audio track title.",
         "targetAbi": "12.2.0.0",
