@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.13.0.0",
+        "changelog": "Choose whether encoding runs on the CPU or a graphics card (NVIDIA NVENC, VAAPI, Intel Quick Sync), with a hardware test button and automatic CPU fallback; per-channel Encode with option.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.13.0.0/library-tv-0.13.0.0.zip",
+        "checksum": "872db821fd5b96b2023f563a9b3202a6",
+        "timestamp": "2026-10-31T19:52:01Z"
+      },
+      {
         "version": "0.12.1.0",
         "changelog": "Credits speed can now be set for automatic and smart channels (Automatic channels section).",
         "targetAbi": "12.2.0.0",
