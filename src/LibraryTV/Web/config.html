@@ -772,6 +772,16 @@
         IncludeSpecials: false,
         RepeatWhenExhausted: true,
         EpisodesInARow: 2,
+        Order: "",
+        RandomStart: false,
+        KeepMultiPart: false,
+        Turns: [],
+        MinYear: 0,
+        MaxYear: 0,
+        MinMinutes: 0,
+        MaxMinutes: 0,
+        MaxRating: "",
+        ExcludeGenres: [],
       });
       function normalize(p) {
         p = p || pool();
@@ -781,9 +791,15 @@
           "FolderIds",
           "Genres",
           "Tags",
+          "Turns",
+          "ExcludeGenres",
         ])
           p[key] = p[key] || [];
         if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
+        p.Order = p.Order || "";
+        p.MaxRating = p.MaxRating || "";
+        for (const key of ["MinYear", "MaxYear", "MinMinutes", "MaxMinutes"])
+          if (!Number.isInteger(p[key])) p[key] = 0;
         return p;
       }
       function node(tag, attrs, ...children) {
@@ -1189,6 +1205,30 @@
           }),
         );
       }
+      // options are [value, text] pairs; the value is a string (or a number, compared as text).
+      function selectField(label, value, options, change) {
+        return node(
+          "label",
+          { class: "ltv-field" },
+          node("span", {}, label),
+          node(
+            "select",
+            {
+              onChange: (e) => {
+                change(e.target.value);
+                dirty();
+              },
+            },
+            ...options.map(([v, text]) =>
+              node(
+                "option",
+                { value: v, selected: String(value) === String(v) ? "" : null },
+                text,
+              ),
+            ),
+          ),
+        );
+      }
       function check(label, value, change) {
         return node(
           "label",
@@ -1306,6 +1346,43 @@
                   { class: "ltv-muted" },
                   "How many episodes of one show air before the next show takes a turn. Use 0 to play each show straight through.",
                 ),
+                node(
+                  "label",
+                  { class: "ltv-field" },
+                  node("span", {}, "Episodes in a row for particular shows (one per line, like “Show name = 3”)"),
+                  node("textarea", {
+                    rows: 2,
+                    value: p.Turns.map((t) => t.Show + " = " + t.Episodes).join("\n"),
+                    onChange: (e) => {
+                      p.Turns = e.target.value
+                        .split("\n")
+                        .map((line) => line.split("="))
+                        .filter((x) => x.length === 2 && x[0].trim() && Number.isInteger(Number(x[1])))
+                        .map((x) => ({ Show: x[0].trim(), Episodes: Number(x[1]) }));
+                      dirty();
+                    },
+                  }),
+                ),
+                selectField(
+                  "Order",
+                  p.Order,
+                  [
+                    ["", "Follow the shuffle setting"],
+                    ["chronological", "Chronological: by air or release date"],
+                    ["alphabetical", "Alphabetical: by title"],
+                  ],
+                  (v) => (p.Order = v),
+                ),
+                check(
+                  "Start the first cycle at a random place",
+                  p.RandomStart,
+                  (v) => (p.RandomStart = v),
+                ),
+                check(
+                  "Keep two-part episodes together (“Part 1”, “Part 2”)",
+                  p.KeepMultiPart,
+                  (v) => (p.KeepMultiPart = v),
+                ),
               ]),
           check(
             "Repeat after all selected content has aired",
@@ -1321,7 +1398,7 @@
         const advanced = node(
           "details",
           {},
-          node("summary", {}, "Genre & tag filters"),
+          node("summary", {}, "Genre, tag, rating, year & length filters"),
         );
         advanced.append(
           node(
@@ -1347,6 +1424,45 @@
             ),
           ),
         );
+        if (!ads)
+          advanced.append(
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Never include genres (comma separated)",
+                p.ExcludeGenres.join(", "),
+                (v) =>
+                  (p.ExcludeGenres = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
+              ),
+              selectField(
+                "Highest content rating",
+                p.MaxRating,
+                [["", "Any"], ["G", "G / TV-Y / TV-G"], ["TV-Y7", "TV-Y7"], ["PG", "PG / TV-PG"], ["PG-13", "PG-13 / TV-14"], ["R", "R / TV-MA"]],
+                (v) => (p.MaxRating = v),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Earliest year (0 = any)", p.MinYear, (v) => (p.MinYear = v), "number", { min: 0, max: 2200 }),
+              field("Latest year (0 = any)", p.MaxYear, (v) => (p.MaxYear = v), "number", { min: 0, max: 2200 }),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Shortest program in minutes (0 = any)", p.MinMinutes, (v) => (p.MinMinutes = v), "number", { min: 0 }),
+              field("Longest program in minutes (0 = any)", p.MaxMinutes, (v) => (p.MaxMinutes = v), "number", { min: 0 }),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Programs with no rating or year are kept. Together with genres and tags these work like a saved search for this selection.",
+            ),
+          );
         box.append(advanced);
         return box;
       }
@@ -2343,6 +2459,37 @@
                 maxlength: 40,
               },
             ),
+            field(
+              "Preferred audio track title (optional)",
+              c.AudioTitle || "",
+              (v) => (c.AudioTitle = v.trim()),
+              "text",
+              {
+                placeholder: "e.g. Dolby or Original (blank: most channels)",
+                maxlength: 60,
+              },
+            ),
+            node("h3", {}, "Channel images"),
+            field("Channel logo for the guide (full path to a PNG, JPG or WebP)", c.Logo || "", (v) => (c.Logo = v.trim()), "text", { maxlength: 500 }),
+            field("Offline card shown during gaps (full path)", c.OfflineCard || "", (v) => (c.OfflineCard = v.trim()), "text", { maxlength: 500 }),
+            field("Watermark drawn over the picture (full path)", c.Watermark || "", (v) => (c.Watermark = v.trim()), "text", { maxlength: 500 }),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Watermark corner",
+                c.WatermarkPosition,
+                [["bottom-right", "Bottom right"], ["bottom-left", "Bottom left"], ["top-right", "Top right"], ["top-left", "Top left"]],
+                (v) => (c.WatermarkPosition = v),
+              ),
+              field("Opacity (10–100)", c.WatermarkOpacity, (v) => (c.WatermarkOpacity = v), "number", { min: 10, max: 100 }),
+              field("Width (% of picture)", c.WatermarkSize, (v) => (c.WatermarkSize = v), "number", { min: 3, max: 50 }),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Images must be on the server and readable by Jellyfin. A watermark is drawn on every program, commercial and bumper of the channel, so everything on it is encoded (more CPU). The offline card appears when the schedule has a gap longer than a few seconds.",
+            ),
             node(
               "label",
               { class: "ltv-field" },
@@ -2403,6 +2550,10 @@
                 MaxItemsPerDay: 3,
                 Source: pool(),
                 CommercialNetwork: "",
+                StartMode: "soft",
+                MaxLateMinutes: 0,
+                Fill: "count",
+                GuideTitle: "",
               });
               dirty();
               renderEditor();
@@ -2437,10 +2588,56 @@
                 { min: 0, max: 5 },
               ),
             ),
+            field(
+              "Up to this many clips per break (0 = always the number above)",
+              c.CommercialCountMax,
+              (v) => (c.CommercialCountMax = v),
+              "number",
+              { min: 0, max: 20 },
+            ),
+            selectField(
+              "Breaks inside a program fall",
+              c.BreakMode,
+              [
+                ["even", "Evenly (the numbers above)"],
+                ["interval", "Every set number of minutes"],
+              ],
+              (v) => {
+                c.BreakMode = v;
+                renderEditor();
+              },
+            ),
+            ...(c.BreakMode === "interval"
+              ? [
+                  node(
+                    "div",
+                    { class: "ltv-cols" },
+                    field("Minutes between breaks", c.BreakIntervalMinutes, (v) => (c.BreakIntervalMinutes = v), "number", { min: 3, max: 120 }),
+                    field("Most breaks in a program", c.MaxBreaksPerProgram, (v) => (c.MaxBreaksPerProgram = v), "number", { min: 0, max: 20 }),
+                  ),
+                ]
+              : []),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Never split programs shorter than (minutes)", c.MinBreakProgramMinutes, (v) => (c.MinBreakProgramMinutes = v), "number", { min: 1, max: 600 }),
+              field("Keep the last minutes of a program free of breaks", c.BreakFreeEndMinutes, (v) => (c.BreakFreeEndMinutes = v), "number", { min: 0, max: 60 }),
+            ),
+            selectField(
+              "Start programs on the clock",
+              c.PadMinutes,
+              [[0, "Off: start as soon as the last one ends"], [60, "Every hour"], [30, "Every half hour"], [20, "Every 20 minutes"], [15, "Every quarter hour"], [10, "Every 10 minutes"], [5, "Every 5 minutes"]],
+              (v) => (c.PadMinutes = Number(v)),
+            ),
             node(
               "p",
               { class: "ltv-muted" },
-              "A break also plays after every program. Breaks during a program split it evenly, or at the nearest chapter mark when the file has chapters. Programs shorter than 10 minutes are never split.",
+              "A break also plays after every program. Even breaks split a program equally, or at the nearest chapter mark when the file has chapters; interval breaks fall every set number of minutes. Padding fills the time up to the next round time with commercials and bumpers that fit, so programs start at :00 and :30; what is left over is a short gap.",
+            ),
+            check(
+              "Show programs in the guide without their commercial breaks",
+              c.GuideHidesBreaks,
+              (v) => (c.GuideHidesBreaks = v),
             ),
             check(
               "Match commercials to when the program was released or aired",
@@ -2560,6 +2757,38 @@
             (v) => (b.CommercialNetwork = v.trim()),
             "text",
             { placeholder: "e.g. Adult Swim", maxlength: 100 },
+          ),
+          selectField(
+            "Start",
+            b.StartMode,
+            [
+              ["soft", "Soft: after the program before it finishes"],
+              ["exact", "Exact: nothing may run past the start; the time before it is filled with clips"],
+            ],
+            (v) => (b.StartMode = v),
+          ),
+          field(
+            "Skip the block for the day when it would start more than this many minutes late (0 = never)",
+            b.MaxLateMinutes,
+            (v) => (b.MaxLateMinutes = v),
+            "number",
+            { min: 0, max: 1440 },
+          ),
+          selectField(
+            "Fill",
+            b.Fill,
+            [
+              ["count", "Programs per day (above)"],
+              ["fit", "Whole programs that end before the block does, then clips"],
+            ],
+            (v) => (b.Fill = v),
+          ),
+          field(
+            "Guide title (optional, shown for every program in this block)",
+            b.GuideTitle,
+            (v) => (b.GuideTitle = v.trim()),
+            "text",
+            { placeholder: "e.g. Saturday Morning Cartoons", maxlength: 100 },
           ),
           poolEditor(b.Source, "Content for this block"),
         );
@@ -2695,6 +2924,26 @@
         while (used.has(next + ":-1") && next < 999999) next++;
         return String(next);
       }
+      // Settings added after the first release; channels saved earlier get these on load.
+      function channelDefaults() {
+        return {
+          PadMinutes: 0,
+          BreakMode: "even",
+          BreakIntervalMinutes: 15,
+          MaxBreaksPerProgram: 5,
+          MinBreakProgramMinutes: 10,
+          BreakFreeEndMinutes: 0,
+          CommercialCountMax: 0,
+          GuideHidesBreaks: false,
+          AudioTitle: "",
+          Watermark: "",
+          WatermarkPosition: "bottom-right",
+          WatermarkOpacity: 70,
+          WatermarkSize: 12,
+          Logo: "",
+          OfflineCard: "",
+        };
+      }
       function addChannel() {
         const c = {
           Id: id(),
@@ -2717,6 +2966,7 @@
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
           AlwaysEncode: false,
+          ...channelDefaults(),
         };
         state.config.Channels.push(c);
         state.channel = c.Id;
@@ -3196,7 +3446,15 @@
             c.AudioLanguage = c.AudioLanguage || "";
             if (![1, 2, 4, 8].includes(c.CreditsSpeed)) c.CreditsSpeed = 1;
             c.Blocks = c.Blocks || [];
-            for (const b of c.Blocks) b.Source = normalize(b.Source);
+            for (const [key, value] of Object.entries(channelDefaults()))
+              if (c[key] === undefined || c[key] === null) c[key] = value;
+            for (const b of c.Blocks) {
+              b.Source = normalize(b.Source);
+              b.StartMode = b.StartMode || "soft";
+              b.Fill = b.Fill || "count";
+              b.GuideTitle = b.GuideTitle || "";
+              if (!Number.isInteger(b.MaxLateMinutes)) b.MaxLateMinutes = 0;
+            }
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
             if (c.MatchCommercialNetwork === undefined)
               c.MatchCommercialNetwork = true;

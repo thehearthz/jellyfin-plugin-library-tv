@@ -1117,3 +1117,73 @@ test("rules re-file clips by name or folder and are checked before saving", asyn
     dom.window.close();
   }
 });
+
+function selectLabel(window, label, container = window.document) {
+  const fields = [...container.querySelectorAll("label.ltv-field")];
+  const field =
+    fields.find((x) => x.querySelector("span").textContent === label) ||
+    fields.find((x) => x.querySelector("span").textContent.startsWith(label));
+  assert.ok(field, "Field " + label);
+  return field.querySelector("select, input, textarea");
+}
+
+test("block timing, padding and break placement settings are saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Schedule");
+    click(w, "+ Add time block");
+    change(w, selectLabel(w, "Start", w.document.querySelector(".ltv-block")), "exact");
+    change(w, selectLabel(w, "Fill", w.document.querySelector(".ltv-block")), "fit");
+    change(w, selectLabel(w, "Skip the block", w.document.querySelector(".ltv-block")), "15");
+    change(w, selectLabel(w, "Guide title", w.document.querySelector(".ltv-block")), "Saturday Morning Cartoons");
+    click(w, "Commercials");
+    change(w, selectLabel(w, "Start programs on the clock"), "30");
+    change(w, selectLabel(w, "Up to this many clips"), "4");
+    change(w, selectLabel(w, "Breaks inside a program fall"), "interval");
+    change(w, selectLabel(w, "Minutes between breaks"), "20");
+    change(w, selectLabel(w, "Keep the last minutes"), "5");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.PadMinutes, 30);
+    assert.equal(c.CommercialCountMax, 4);
+    assert.equal(c.BreakMode, "interval");
+    assert.equal(c.BreakIntervalMinutes, 20);
+    assert.equal(c.BreakFreeEndMinutes, 5);
+    assert.deepEqual(
+      [c.Blocks[0].StartMode, c.Blocks[0].Fill, c.Blocks[0].MaxLateMinutes, c.Blocks[0].GuideTitle],
+      ["exact", "fit", 15, "Saturday Morning Cartoons"],
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("playback order, filters, per-show turns and channel images are saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    change(w, selectLabel(w, "Order"), "chronological");
+    change(w, selectLabel(w, "Episodes in a row for particular shows"), "Night Watch = 3\nnot a line");
+    change(w, selectLabel(w, "Highest content rating"), "PG");
+    change(w, selectLabel(w, "Earliest year"), "1980");
+    change(w, selectLabel(w, "Latest year"), "1999");
+    change(w, selectLabel(w, "Never include genres"), "Horror, Reality");
+    change(w, selectLabel(w, "Watermark drawn"), "/media/logo.png");
+    change(w, selectLabel(w, "Preferred audio track title"), "Dolby");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.Source.Order, "chronological");
+    assert.deepEqual(c.Source.Turns, [{ Show: "Night Watch", Episodes: 3 }]);
+    assert.equal(c.Source.MaxRating, "PG");
+    assert.deepEqual([c.Source.MinYear, c.Source.MaxYear], [1980, 1999]);
+    assert.deepEqual(c.Source.ExcludeGenres, ["Horror", "Reality"]);
+    assert.equal(c.Watermark, "/media/logo.png");
+    assert.equal(c.AudioTitle, "Dolby");
+    assert.equal(c.WatermarkPosition, "bottom-right");
+  } finally {
+    dom.window.close();
+  }
+});

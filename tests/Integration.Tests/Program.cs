@@ -210,6 +210,9 @@ try
     var sounds = new[] { Sound("spa", 0, isDefault: true, codec: "ac3", channels: 6), Sound("eng", 1, commentary: true), Sound("eng", 2), Sound("fre", 3) };
     Check(AudioTrack.Pick(sounds, "English") == sounds[2] && AudioTrack.Pick(sounds, "") == sounds[0] && AudioTrack.Pick(sounds, "German") == sounds[0] && AudioTrack.Pick(sounds, "fr") == sounds[3] && AudioTrack.Pick([], "eng") is null,
         "The preferred audio language picks that track, skipping commentary, and otherwise the file's default track plays");
+    var titled = new[] { Sound("eng", 0, isDefault: true) with { Title = "Stereo" }, Sound("eng", 1, codec: "ac3", channels: 6) with { Title = "Dolby Surround" }, Sound("eng", 2, codec: "ac3", channels: 2) };
+    Check(AudioTrack.Pick(titled, "", "dolby") == titled[1] && AudioTrack.Pick(titled, "", "nothing") == titled[0] && AudioTrack.Pick([Sound("eng", 0), Sound("eng", 1, channels: 6)], "") is { Index: 1 },
+        "A preferred audio title picks the matching track, and without a default the track with the most channels plays");
     var dubbed = new SourceFormat("h264", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9, null, sounds);
     var englishPlan = StreamPlan.For(dubbed, new ChannelDefinition { AudioLanguage = "eng" });
     var defaultPlan = StreamPlan.For(dubbed, new ChannelDefinition());
@@ -356,6 +359,21 @@ try
     invalid = new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock { Id = "default" }] }] };
     try { Scheduler.Validate(invalid); throw new Exception("Reserved ID accepted"); }
     catch (ArgumentException) { Check(true, "Reserved block IDs are rejected"); }
+    foreach (var (label, bad) in new (string, ChannelDefinition)[] {
+        ("a relative watermark path", new() { Watermark = "logo.png" }), ("a watermark that is not an image", new() { Watermark = "/etc/passwd" }), ("an unknown padding", new() { PadMinutes = 7 }),
+        ("an unknown break mode", new() { BreakMode = "random" }), ("a longest break shorter than the usual", new() { CommercialCount = 3, CommercialCountMax = 2 }),
+        ("an unknown block start mode", new() { Blocks = [new TimeBlock { StartMode = "later" }] }), ("an unknown pool order", new() { Source = new Pool { Order = "backwards" } }),
+        ("a last year before the first", new() { Source = new Pool { MinYear = 2000, MaxYear = 1990 } }) })
+    {
+        try { Scheduler.Validate(new Configuration { Channels = [bad] }); throw new Exception("Accepted " + label); }
+        catch (ArgumentException) { Check(true, "Rejected " + label); }
+    }
+    Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { PadMinutes = 30, BreakMode = "interval", CommercialCount = 1, CommercialCountMax = 3, Watermark = OperatingSystem.IsWindows() ? @"C:\logo.png" : "/media/logo.png",
+        Blocks = [new TimeBlock { StartMode = "exact", Fill = "fit", MaxLateMinutes = 10, GuideTitle = "Saturday Morning" }], Source = new Pool { Order = "chronological", MaxRating = "TV-PG", MinYear = 1980, MaxYear = 1999, Turns = [new ShowTurn { Show = "X", Episodes = 3 }] } }] });
+    Check(true, "The new schedule, break, pool and image settings pass validation");
+    var hidden = new List<Airing> { new("c", Guid.NewGuid(), "A", "a", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddMinutes(10), false), new("c", Guid.NewGuid(), "Ad", "ad", DateTimeOffset.UnixEpoch.AddMinutes(10), DateTimeOffset.UnixEpoch.AddMinutes(11), true), new("c", Guid.NewGuid(), "B", "b", DateTimeOffset.UnixEpoch.AddMinutes(11), DateTimeOffset.UnixEpoch.AddMinutes(20), false) };
+    var shown = LiveTvService.Listings(hidden, true);
+    Check(shown.Count == 2 && shown[0].End == DateTimeOffset.UnixEpoch.AddMinutes(11) && LiveTvService.Listings(hidden).Count == 3, "A guide that hides breaks runs the program through them");
     Console.WriteLine($"{checks} integration checks passed.");
 }
 finally { Directory.Delete(directory, true); }

@@ -149,6 +149,44 @@ This needs to know where the credits are: an Outro media segment (added by plugi
 
 Results are saved in `library-tv/credits.json` in Jellyfin's data folder. A file that changes is read again; a program where nothing was found is tried again after two weeks. When a scan finds new credits, the planned guide is rebuilt once, after the current program, so breaks and **Credits** speed use them. Chapters and Outro segments take priority when a program has them. Open **Credits detection** in the builder to turn it off or see its progress.
 
+### Block timing
+
+Each time block has three timing settings on the Schedule tab:
+
+- **Start: Soft** (the default) waits for the program and break before it. **Start: Exact** lets nothing run past the block's start: the planner only picks programs, with their breaks, that end in time, fills the rest with commercials and bumpers that fit, and leaves any final seconds as a short gap. The block then starts on the minute. Programs and clips never overrun it.
+- **Skip the block when it would start more than N minutes late** (soft blocks): if the program before it was already running when the block was due and the block would begin later than this, the block is skipped for that day and the default lineup airs until the block ends. 0 never skips. A block never counts as late because the guide was built partway through it.
+- **Fill: Programs per day** is the original behaviour. **Fill: Whole programs that fit** airs only programs (with their breaks) that end before the block does, then fills the leftover time with clips. The default lineup is not used for the leftover time.
+
+A block's **Guide title** replaces the program name in the Live TV guide for every program in it (for example "Saturday Morning Cartoons"); the real title is shown in the description. Clip padding fills at most two hours; beyond that the channel waits as a gap, and gaps longer than 15 minutes stop the stream as before.
+
+### Padding to round times
+
+**Start programs on the clock** (Commercials tab) pads each program, after its final break, with commercials and bumpers that fit until the next 5, 10, 15, 20, 30 or 60 minutes on the local clock. A 22-minute episode on a half-hour grid gets about eight minutes of clips and the next program starts on :00 or :30. Clips never run past the next round time or an exact block start. Whatever is shorter than the shortest clip remains a short gap. Padding needs commercials or bumpers (the channel's own or the shared library); Channel health says when there are none.
+
+### Break placement
+
+On the Commercials tab, **Breaks inside a program fall** either **evenly** (the **Breaks during each episode/movie** numbers, at the nearest chapter mark when there is one) or **every N minutes**, with a most-breaks limit per program, snapping to chapter marks within a quarter of the interval. **Never split programs shorter than** replaces the fixed ten-minute rule (10 by default), and **Keep the last minutes of a program free of breaks** keeps the ending unbroken; breaks also stay out of detected credits as before. **Up to this many clips per break** makes break length vary between the usual count and this number, the same way every time the guide is built. **Show programs in the guide without their commercial breaks** lists each program once and runs it through its breaks, which is useful for clients that show a separate row per break.
+
+### Order, turns and filters
+
+Under each content selection:
+
+- **Order** is *Follow the shuffle setting*, *Chronological* (by air or release date, then season and episode) or *Alphabetical*. Changing it reorders what is left of the current cycle.
+- **Start the first cycle at a random place** begins at a random show or episode; the show then carries on from there and every episode still airs once per cycle.
+- **Keep two-part episodes together** stops a turn ending in the middle of "Part 1" / "Part 2" (and "(1)" / "(2)", "Part One"…). Parts are recognised from the episode name.
+- **Episodes in a row for particular shows** (`Show name = 3` per line) overrides the pool-wide number for those shows.
+- **Genre, tag, rating, year & length filters** act like a saved search: never include genres, highest content rating (G, TV-Y7, PG, PG-13, R; unrated programs are kept), earliest and latest year, shortest and longest program. Year and rating use Jellyfin's metadata.
+
+### Channel images and stream choices
+
+On a channel's Content tab:
+
+- **Channel logo** is shown for the channel in Live TV. **Offline card** plays instead of black during schedule gaps longer than about eight seconds, as H.264 video with silent AAC.
+- **Watermark** draws a logo (position, opacity, width) over everything on the channel, including commercials and bumpers. Because it is drawn on the picture, every program on that channel is encoded, as with captions or credits speed; Channel health says so. A missing image is reported and ignored.
+- **Preferred audio track title** picks a track whose title contains the text (for example "Dolby"), among tracks in the preferred language. Without a default track, the track with the most channels is used.
+
+Image settings are full server paths to PNG, JPG or WebP files, entered by an administrator in the builder. They are used as FFmpeg inputs and shown in Live TV, and are never accepted from non-administrators.
+
 ### Shared commercial library
 
 Open **Commercial library** to choose commercials and bumpers once for every channel; a channel uses them whenever its own **Commercials** or **Bumpers** selection is empty. Automatic library channels use them too, with **Commercials per break on automatic channels** (2 by default) under **Automatic channels**. New manual channels start with two commercials per break.
@@ -221,7 +259,7 @@ Under **Automatic channels**, select a library and edit its **Custom channel nam
 
 New manual channels use the first free positive whole number instead of adding one to the highest subchannel. Duplicate-number errors identify both stations. Disabled manual channels may share a number with an enabled station, but must be given a free number before re-enabling. Their numbers remain reserved for automatic allocation.
 
-Time blocks have **soft boundaries**: a program and its commercial break finish before the next block is evaluated. A long preceding movie can delay or entirely cover a short block. A strict start-time/cutoff system is not implemented. When blocks overlap, the first matching block in the list wins. A block spanning midnight belongs to the day it started. Daily quotas apply to that local start date; daylight-saving changes follow the selected time zone.
+By default time blocks have **soft boundaries**: a program and its commercial break finish before the next block is evaluated, so a long preceding movie can delay or entirely cover a short block (see [Block timing](#block-timing) for exact starts, allowed lateness and fitted blocks). When blocks overlap, the first matching block in the list wins. A block spanning midnight belongs to the day it started. Daily quotas apply to that local start date; daylight-saving changes follow the selected time zone.
 
 Advanced source settings (also retained in the configuration API):
 
@@ -296,6 +334,6 @@ Real transport tests use `LIBRARY_TV_FFMPEG` pointing to a local FFmpeg executab
 
 CI builds and tests on Linux. Pushing an annotated four-part version tag such as `git tag -a v0.10.0.0 -m "What changed"` tests, packages and publishes release assets, then updates the catalog on `main`. The tag message becomes the catalog changelog and release notes; a tag without a message is rejected. Without a local clone, open **Actions → Release → Run workflow** on GitHub and enter the version and release notes: the run tests the `main` branch, creates the tag, and publishes the same way. The workflow requires permission to write repository contents and push to `main`. Catalog checksums use Jellyfin's required MD5; releases also contain SHA256SUMS.
 
-Tests cover episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
+Tests cover block timing (exact starts, lateness, fitted blocks), clock padding, interval breaks, orders, two-part episodes, per-show turns, watermarks and offline cards with real FFmpeg, episode continuation across lineups and blocks, content restrictions, network- and era-matched commercials, breaks inside programs, bumpers, picture shapes, burned-in captions and their timing, sped-up credits, automatic rebuilds after settings changes, copy/encode decisions, stall restarts, rotation exhaustion, additions/deletions, guide stability, commercials, local/overnight blocks, actual Jellyfin API compatibility, embedded dashboard resources, XML configuration round-tripping and atomic schedule storage. They do not establish real-client playback compatibility or measured CPU usage.
 
 License: GPL-3.0-only.
