@@ -1254,3 +1254,19 @@ test("smart channels save genres, decades, years and chosen titles", async () =>
     dom.window.close();
   }
 });
+
+test("encoding quality and height are saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    change(w, selectLabel(w, "Encoding quality"), "high");
+    change(w, selectLabel(w, "Tallest encoded picture"), "1080");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.EncodeQuality, "high");
+    assert.equal(c.EncodeHeight, 1080);
+  } finally {
+    dom.window.close();
+  }
+});

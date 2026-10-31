@@ -96,10 +96,23 @@ public sealed record CaptionTrack(string Codec, string? Language, bool Forced, b
 public sealed record Watermark(string Path, string Position, int Opacity, int Width, int Margin);
 
 public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
-    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null)
+    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null, string Quality = "balanced", int Height = 720)
 {
     public static readonly StreamPlan Copy = new(true, true);
     public static readonly StreamPlan Encode = new(false, false, Normalize: true, FrameWidth: 1280, FrameHeight: 720);
+
+    public static readonly string[] Qualities = ["fast", "balanced", "high", "best"];
+    public static readonly int[] Heights = [480, 576, 720, 1080];
+
+    // x264 preset, constant rate factor (lower is better) and audio bitrate for each quality. "balanced" is
+    // what Library TV has always used.
+    public (string Preset, string Crf, string AudioRate) Settings => Quality switch
+    {
+        "fast" => ("ultrafast", "27", "128k"),
+        "high" => ("veryfast", "20", "224k"),
+        "best" => ("faster", "17", "256k"),
+        _ => ("ultrafast", "23", "192k"),
+    };
 
     // 8-bit H.264 video and stereo AAC audio play on almost every client without Jellyfin re-encoding
     // them, so they are copied. Anything else is encoded to those formats, so every program on a channel
@@ -111,20 +124,21 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // The logo is drawn over the picture, so it also means encoding: set watermark to false when its file is missing.
     public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1, bool watermark = true)
     {
-        var plan = ForSpeed(format, channel, shapeOverride, speed > 1);
+        var height = Heights.Contains(channel.EncodeHeight) ? channel.EncodeHeight : 720;
+        var plan = ForSpeed(format, channel, shapeOverride, speed > 1, height) with { Quality = Qualities.Contains(channel.EncodeQuality) ? channel.EncodeQuality : "balanced", Height = height };
         if (speed > 1) plan = plan with { CopyVideo = false, CopyAudio = false, Captions = null, Speed = speed };
         if (!watermark || string.IsNullOrWhiteSpace(channel.Watermark)) return plan;
         // The logo is sized from the picture's width, so the picture needs a size: programs that keep their own shape keep their own size, up to 1280 wide.
         if (!plan.Normalize && plan.FrameWidth == 0)
         {
-            var wide = Math.Min((format?.Width ?? 1280) * (format?.PixelAspect ?? 1), 1280);
+            var wide = Math.Min((format?.Width ?? 1280) * (format?.PixelAspect ?? 1), plan.Height * 16.0 / 9);
             plan = plan with { FrameWidth = Even(wide), FrameHeight = Even(wide / (format?.Shape ?? 16.0 / 9)) };
         }
-        var width = plan.Normalize ? 1280 : plan.FrameWidth;
+        var width = plan.FrameWidth > 0 ? plan.FrameWidth : 1280;
         return plan with { CopyVideo = false, Mark = new Watermark(channel.Watermark, channel.WatermarkPosition, Math.Clamp(channel.WatermarkOpacity, 10, 100), Even(width * Math.Clamp(channel.WatermarkSize, 3, 50) / 100.0), Even(width * 0.03)) };
     }
 
-    private static StreamPlan ForSpeed(SourceFormat? format, ChannelDefinition channel, double? shapeOverride, bool fast)
+    private static StreamPlan ForSpeed(SourceFormat? format, ChannelDefinition channel, double? shapeOverride, bool fast, int cap)
     {
         // The chosen audio track decides whether audio can be copied, as the first track did before.
         var chosen = AudioTrack.Pick(format?.AudioTracks, channel.AudioLanguage, channel.AudioTitle);
@@ -133,9 +147,9 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         var audioLanguage = string.IsNullOrWhiteSpace(channel.AudioLanguage) && string.IsNullOrWhiteSpace(channel.AudioTitle) ? null : chosen?.Language ?? chosen?.Title;
         var hasAudio = format is null || format.Audio is not null;
         var captions = fast ? null : CaptionTrack.Pick(format?.Captions, channel.Captions, channel.CaptionLanguage);
-        if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions, AudioIndex = audioIndex, AudioLanguage = audioLanguage };
+        if (channel.AlwaysEncode) return Encode with { FrameWidth = Even(cap * 16.0 / 9), FrameHeight = cap, HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions, AudioIndex = audioIndex, AudioLanguage = audioLanguage };
         var shape = shapeOverride ?? channel.PictureShape switch { "off" or "restart" => null, "4:3" => 4.0 / 3, _ => (double?)(16.0 / 9) };
-        if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(720 * shape.Value), FrameHeight: shape is null ? 0 : 720);
+        if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(cap * shape.Value), FrameHeight: shape is null ? 0 : cap);
         var pixel = format.PixelAspect ?? 1;
         var display = format.Shape;
         // Only shapes that would visibly stretch are corrected: 1.85:1 films stay as they are on a 16:9 channel.
@@ -151,7 +165,7 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         var width = (format.Width ?? 1280) * pixel;
         var height = (double)(format.Height ?? 720);
         var wide = (display ?? target) >= target;
-        var frameHeight = wide ? Math.Min(width, 720 * target) / target : Math.Min(height, 720);
+        var frameHeight = wide ? Math.Min(width, cap * target) / target : Math.Min(height, cap);
         return plan with { FrameWidth = Even(frameHeight * target), FrameHeight = Even(frameHeight) };
     }
 
@@ -163,7 +177,7 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     public string Describe()
     {
         var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
-        if (Normalize && Speed <= 1) return "Encoding to 720p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture");
+        if (Normalize && Speed <= 1) return $"Encoding to {Height}p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture");
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding" + (AudioLanguage is null ? "" : $" ({AudioLanguage} audio)");
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = (!HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
@@ -222,7 +236,9 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         }
         var position = seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed;
         var deinterlace = (plan.Deinterlace ? "yadif," : "") + (plan.Speed > 1 ? $"setpts=PTS/{Num(plan.Speed)}," : "");
-        var size = plan.Normalize ? Fit(1280, 720) : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight) : "scale=w='min(iw,1280)':h='min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+        var size = plan.Normalize ? Fit(plan.FrameWidth > 0 ? plan.FrameWidth : 1280, plan.FrameHeight > 0 ? plan.FrameHeight : 720)
+            : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight)
+            : $"scale=w='min(iw,{(int)Math.Round(plan.Height * 16.0 / 9)})':h='min(ih,{plan.Height})':force_original_aspect_ratio=decrease:force_divisible_by=2";
         var finish = (plan.Normalize || plan.Speed > 1 ? ",fps=30" : "") + ",format=yuv420p";
         var video = "0:v:0";
         if (plan.CopyVideo) Args("-t", seconds);
@@ -248,13 +264,14 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             else Args("-t", seconds, "-vf", deinterlace + size + text + finish);
         }
         Args("-map", video, "-map", plan.HasAudio ? $"0:a:{plan.AudioIndex}?" : "1:a:0", "-sn", "-dn");
-        if (plan.Normalize) Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60");
+        var (preset, crf, audioRate) = plan.Settings;
+        if (plan.Normalize) Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-g", "60");
         else if (plan.CopyVideo) Args("-c:v", "copy");
-        else Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
+        else Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-force_key_frames", "expr:gte(t,n_forced*2)");
         // Sped-up credits keep their music at normal speed, fading out just before the next program.
         if (plan.Speed > 1 && plan.HasAudio) Args("-af", $"afade=t=out:st={Num(Math.Max(0, double.Parse(seconds, CultureInfo.InvariantCulture) - 1.5))}:d=1.5");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
-        else Args("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
+        else Args("-c:a", "aac", "-b:a", audioRate, "-ar", "48000", "-ac", "2");
         Args("-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
         return start;
     }
