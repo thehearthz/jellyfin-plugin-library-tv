@@ -1270,3 +1270,17 @@ test("encoding quality and height are saved", async () => {
     dom.window.close();
   }
 });
+
+test("credits speed for automatic channels is saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const select = w.document.querySelector("[data-setting=AutomaticCreditsSpeed]");
+    change(w, select, "4");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.AutomaticCreditsSpeed, 4);
+  } finally {
+    dom.window.close();
+  }
+});

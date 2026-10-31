@@ -502,6 +502,21 @@
               max="20"
               data-setting="AutomaticCommercialCount"
           /></label>
+          <label class="ltv-field"
+            ><span>Credits speed on automatic and smart channels</span
+            ><select data-setting="AutomaticCreditsSpeed">
+              <option value="1">Normal speed</option>
+              <option value="2">2× faster</option>
+              <option value="4">4× faster</option>
+              <option value="8">8× faster</option>
+            </select></label
+          >
+          <p class="ltv-muted">
+            Credits only speed up for programs whose credits Library TV has
+            found: an Outro media segment, a credits chapter, or Credits
+            detection (see Credits detection below). Hand-built channels set
+            this on their own Content tab.
+          </p>
           <div data-ui="auto-libraries"></div>
           <p class="ltv-muted">
             Automatic channels use the whole library, with commercials and
@@ -3692,6 +3707,7 @@
           state.config.AutomaticCommercialCount =
             state.config.AutomaticCommercialCount ?? 2;
           state.config.DetectCredits = state.config.DetectCredits ?? true;
+          state.config.AutomaticCreditsSpeed = state.config.AutomaticCreditsSpeed ?? 1;
           state.config.ClipRules = state.config.ClipRules || [];
           state.config.ClipOverrides = state.config.ClipOverrides || [];
           state.libraries = libraries;
@@ -3768,7 +3784,7 @@
               config[key] =
                 input.type === "checkbox"
                   ? input.checked
-                  : input.type === "number"
+                  : input.type === "number" || input.dataset.setting === "AutomaticCreditsSpeed"
                     ? Number(input.value)
                     : input.value;
               dirty();

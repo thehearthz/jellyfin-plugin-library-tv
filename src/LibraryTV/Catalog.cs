@@ -174,7 +174,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         foreach (var smart in config.SmartChannels.Where(x => x.Enabled))
             manual.Add(new ChannelDefinition
             {
-                Id = "smart-" + smart.Id, Name = smart.Name.Trim(), Number = smart.Number.Trim(), CommercialCount = config.AutomaticCommercialCount,
+                Id = "smart-" + smart.Id, Name = smart.Name.Trim(), Number = smart.Number.Trim(), CommercialCount = config.AutomaticCommercialCount, CreditsSpeed = config.AutomaticCreditsSpeed,
                 Source = new Pool { LibraryIds = smart.LibraryIds, Genres = smart.Genres, Years = smart.Years, Decades = smart.Decades, AlwaysItemIds = smart.ItemIds, Shuffle = smart.Shuffle },
             });
         if (config.AutoChannels)
@@ -183,7 +183,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                 var entry = config.AutomaticChannels.FirstOrDefault(x => Guid.Parse(x.LibraryId) == Guid.Parse(folder.ItemId))
                     ?? throw new ArgumentException("Automatic channel numbers must be assigned before building channels.");
                 manual.Add(new ChannelDefinition { Id = "auto-" + folder.ItemId, Name = string.IsNullOrWhiteSpace(entry.Name) ? folder.Name : entry.Name.Trim(), Number = entry.Number.Trim(), Source = new Pool { LibraryIds = [folder.ItemId] },
-                    CommercialCount = config.AutomaticCommercialCount });
+                    CommercialCount = config.AutomaticCommercialCount, CreditsSpeed = config.AutomaticCreditsSpeed });
             }
         if (manual.Select(x => x.Id).Distinct().Count() != manual.Count) throw new ArgumentException("Channel IDs must be unique.");
         ChannelNumbers.ValidateUnique(manual);
