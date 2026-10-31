@@ -125,6 +125,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.Captions is not ("off" or "forced" or "on") || channel.CaptionLanguage is null || channel.CaptionLanguage.Length > 40) throw new ArgumentException("Captions must be off, forced or on, with a caption language of 40 characters or fewer.");
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
+            if (channel.EncodeWith is not ("" or "cpu")) throw new ArgumentException("Encode with must be blank (the server setting) or cpu.");
             if (!StreamPlan.Qualities.Contains(channel.EncodeQuality ?? "") || !StreamPlan.Heights.Contains(channel.EncodeHeight)) throw new ArgumentException("Encoding quality must be fast, balanced, high or best, and the encoded height 480, 576, 720 or 1080.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
             foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
@@ -173,6 +174,9 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
             foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
         }
+        if (c.HardwareEncoder is not ("cpu" or "nvenc" or "vaapi" or "qsv")) throw new ArgumentException("The hardware encoder must be cpu, nvenc, vaapi or qsv.");
+        if (c.HardwareDevice is null || c.HardwareDevice.Length > 100 || c.HardwareDevice.Length > 0 && (!c.HardwareDevice.StartsWith("/dev/", StringComparison.Ordinal) || c.HardwareDevice.Contains("..") || c.HardwareDevice.Any(char.IsControl)))
+            throw new ArgumentException("The VAAPI device must be a path under /dev/, such as /dev/dri/renderD128.");
         if (c.AutomaticCreditsSpeed is not (1 or 2 or 4 or 8)) throw new ArgumentException("Credits speed on automatic channels must be 1 (normal), 2, 4 or 8.");
         if (c.AutomaticCommercialCount is < 0 or > 20) throw new ArgumentException("Commercials per break on automatic channels must be 0–20.");
         if (c.Restrictions is null || c.Restrictions.Length > 50 || c.Restrictions.Any(x => x is null)) throw new ArgumentException("Use at most 50 content restrictions.");

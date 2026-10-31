@@ -17,6 +17,7 @@ public sealed class Controller : ControllerBase
     private readonly Lazy<Scheduler> schedulerService;
     private readonly Lazy<Broadcasts?> broadcastService;
     private readonly Lazy<CreditsScanner?> creditsService = new(() => null);
+    private readonly Lazy<IProgramStreamer?> streamerService = new(() => null);
     public Controller(IServiceProvider services, StartupGate startup)
     {
         this.startup = startup;
@@ -24,6 +25,7 @@ public sealed class Controller : ControllerBase
         schedulerService = new(() => services.GetRequiredService<Scheduler>());
         broadcastService = new(() => services.GetRequiredService<Broadcasts>());
         creditsService = new(() => services.GetService<CreditsScanner>());
+        streamerService = new(() => services.GetService<IProgramStreamer>());
     }
     internal Controller(Catalog catalog, Scheduler scheduler, Broadcasts? broadcasts)
     {
@@ -50,6 +52,22 @@ public sealed class Controller : ControllerBase
     {
         try { return catalog.Resolve(ids); }
         catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
+    }
+
+    // Tries each graphics encoder with FFmpeg and says which ones work on this server.
+    [HttpGet("hardware")]
+    public async Task<ActionResult<object>> Hardware([FromQuery] string? device, CancellationToken ct)
+    {
+        if (streamerService.Value is not ProgramStreamer streamer) return new { Encoders = Array.Empty<object>() };
+        var path = string.IsNullOrWhiteSpace(device) ? Plugin.Instance.Configuration.HardwareDevice : device;
+        if (path.Length > 100 || !path.StartsWith("/dev/", StringComparison.Ordinal) || path.Contains("..") || path.Any(char.IsControl)) return BadRequest(new { Error = "The VAAPI device must be a path under /dev/, such as /dev/dri/renderD128." });
+        var results = new List<object>();
+        foreach (var (id, label) in new[] { ("nvenc", "NVIDIA NVENC"), ("vaapi", "VAAPI (Intel/AMD)"), ("qsv", "Intel Quick Sync") })
+        {
+            var result = await streamer.TestHardware(id, id == "vaapi" ? path : "", ct);
+            results.Add(new { Id = id, Name = label, result.Works, result.Detail });
+        }
+        return new { Encoders = results };
     }
 
     [HttpGet("genres")]

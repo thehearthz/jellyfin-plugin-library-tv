@@ -106,7 +106,7 @@ public static class HighDynamicRange
 public sealed record Watermark(string Path, string Position, int Opacity, int Width, int Margin);
 
 public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
-    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null, string Quality = "balanced", int Height = 720, bool ToneMap = false)
+    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null, string Quality = "balanced", int Height = 720, bool ToneMap = false, string Encoder = "cpu", string Device = "")
 {
     public static readonly StreamPlan Copy = new(true, true);
     public static readonly StreamPlan Encode = new(false, false, Normalize: true, FrameWidth: 1280, FrameHeight: 720);
@@ -116,6 +116,30 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
 
     // x264 preset, constant rate factor (lower is better) and audio bitrate for each quality. "balanced" is
     // what Library TV has always used.
+    // Hardware H.264 encoders, by the name chosen in the settings. Only encoding is done on the graphics card;
+    // decoding and the picture filters stay on the CPU, which works with every driver and keeps pictures identical.
+    public static readonly Dictionary<string, string> HardwareNames = new(StringComparer.Ordinal) { ["nvenc"] = "h264_nvenc", ["vaapi"] = "h264_vaapi", ["qsv"] = "h264_qsv" };
+    public static readonly string DefaultVaapiDevice = "/dev/dri/renderD128";
+
+    // The video encoder's arguments for the chosen quality. "balanced" on the CPU is what Library TV has always used.
+    public string[] VideoEncoder(bool forceKeyFrames)
+    {
+        var level = Array.IndexOf(Qualities, Quality) is var q and >= 0 ? q : 1;
+        string[] keys = forceKeyFrames ? ["-force_key_frames", "expr:gte(t,n_forced*2)"] : [];
+        switch (Encoder)
+        {
+            case "nvenc":
+                return ["-c:v", "h264_nvenc", "-preset", new[] { "p1", "p2", "p4", "p5" }[level], "-rc", "vbr", "-cq", new[] { "30", "26", "23", "20" }[level], "-b:v", "0", "-profile:v", "high", "-g", "60", .. (forceKeyFrames ? (string[])["-forced-idr", "1"] : []), .. keys];
+            case "qsv":
+                return ["-c:v", "h264_qsv", "-preset", new[] { "veryfast", "veryfast", "faster", "medium" }[level], "-global_quality", new[] { "30", "26", "22", "19" }[level], "-look_ahead", "0", "-g", "60", .. keys];
+            case "vaapi":
+                return ["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", new[] { "30", "26", "23", "20" }[level], "-profile:v", "high", "-g", "60", .. keys];
+            default:
+                var (preset, crf, _) = Settings;
+                return ["-c:v", "libx264", "-preset", preset, "-crf", crf, .. (forceKeyFrames ? keys : (string[])["-g", "60"])];
+        }
+    }
+
     public (string Preset, string Crf, string AudioRate) Settings => Quality switch
     {
         "fast" => ("ultrafast", "27", "128k"),
@@ -188,20 +212,23 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
 
     public string Describe()
     {
+        var on = Encoder switch { "nvenc" => " on the GPU (NVENC)", "vaapi" => " on the GPU (VAAPI)", "qsv" => " on the GPU (Quick Sync)", _ => "" };
         var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
-        if (Normalize && Speed <= 1) return $"Encoding to {Height}p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
+        if (Normalize && Speed <= 1) return $"Encoding to {Height}p H.264/AAC (always encode)" + on + captions + (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding" + (AudioLanguage is null ? "" : $" ({AudioLanguage} audio)");
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = (!HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
         var mark = (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
         var credits = Speed > 1 ? $"; credits at {Speed:0.#}× speed, music at normal speed" : "";
-        return video + "; " + audio + captions + credits + mark;
+        return video + (CopyVideo ? "" : on) + "; " + audio + captions + credits + mark;
     }
 }
 
 public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? sources = null) : IProgramStreamer
 {
     internal Action<int>? ProcessStarted { get; set; }
+    // The server's hardware encoder setting ("cpu", "nvenc", "vaapi" or "qsv") and VAAPI device.
+    internal Func<(string Encoder, string Device)> Hardware { get; set; } = () => ((object?)Plugin.Instance is null ? ("cpu", "") : (Plugin.Instance.Configuration.HardwareEncoder, Plugin.Instance.Configuration.HardwareDevice));
     // A live FFmpeg process that sends nothing for this long is stalled, for example on a hung network mount.
     internal TimeSpan FirstOutputTimeout { get; set; } = TimeSpan.FromSeconds(20);
     internal TimeSpan StallTimeout { get; set; } = TimeSpan.FromSeconds(12);
@@ -233,6 +260,9 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         var from = item.Start > now ? item.Start : now;
         var seconds = Num(Math.Max(0.001, (item.End - from).TotalSeconds));
         Args("-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:2", "-stats_period", "2");
+        // VAAPI needs its device named, and the finished picture handed to the card.
+        var upload = plan.CopyVideo ? "" : plan.Encoder == "vaapi" ? ",format=nv12,hwupload" : "";
+        if (!plan.CopyVideo && plan.Encoder == "vaapi") Args("-vaapi_device", string.IsNullOrWhiteSpace(plan.Device) ? StreamPlan.DefaultVaapiDevice : plan.Device);
         // A sped-up part covers its file that many times faster than the clock. A still image (the offline card) is looped.
         if (IsImage(item.Path)) Args("-loop", "1", "-framerate", "30", "-i", item.Path);
         else Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed), "-i", item.Path);
@@ -244,7 +274,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         {
             var x = logo.Position.EndsWith("left", StringComparison.Ordinal) ? logo.Margin.ToString(CultureInfo.InvariantCulture) : $"main_w-overlay_w-{logo.Margin}";
             var y = logo.Position.StartsWith("top", StringComparison.Ordinal) ? logo.Margin.ToString(CultureInfo.InvariantCulture) : $"main_h-overlay_h-{logo.Margin}";
-            return $"[{(plan.HasAudio ? 1 : 2)}:v]format=rgba,colorchannelmixer=aa={(logo.Opacity / 100.0).ToString("0.##", CultureInfo.InvariantCulture)},scale={logo.Width}:-1[mark];{input}[mark]overlay={x}:{y}:format=auto,format=yuv420p[video]";
+            return $"[{(plan.HasAudio ? 1 : 2)}:v]format=rgba,colorchannelmixer=aa={(logo.Opacity / 100.0).ToString("0.##", CultureInfo.InvariantCulture)},scale={logo.Width}:-1[mark];{input}[mark]overlay={x}:{y}:format=auto,format=yuv420p{upload}[video]";
         }
         var position = seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed;
         var deinterlace = (plan.Deinterlace ? "yadif," : "") + (plan.Speed > 1 ? $"setpts=PTS/{Num(plan.Speed)}," : "");
@@ -260,7 +290,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         {
             // Picture subtitles come from the same file, so they are seeked with the video.
             var drawn = $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{tone}{finish}";
-            Args("-t", seconds, "-filter_complex", plan.Mark is { } logo2 ? drawn + "[video0];" + Logo("[video0]", logo2) : drawn + "[video]");
+            Args("-t", seconds, "-filter_complex", plan.Mark is { } logo2 ? drawn + "[video0];" + Logo("[video0]", logo2) : drawn + upload + "[video]");
             video = "[video]";
         }
         else
@@ -275,21 +305,54 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 Args("-t", seconds, "-filter_complex", $"[0:v:0]{deinterlace}{size}{tone}{text}{finish}[video0];{Logo("[video0]", logo3)}");
                 video = "[video]";
             }
-            else Args("-t", seconds, "-vf", deinterlace + size + tone + text + finish);
+            else Args("-t", seconds, "-vf", deinterlace + size + tone + text + finish + upload);
         }
         Args("-map", video, "-map", plan.HasAudio ? $"0:a:{plan.AudioIndex}?" : "1:a:0", "-sn", "-dn");
         // Tone-mapped video says so: BT.709, limited range, so players do not treat it as HDR.
         if (plan.ToneMap) Args("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv");
         var (preset, crf, audioRate) = plan.Settings;
-        if (plan.Normalize) Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-g", "60");
-        else if (plan.CopyVideo) Args("-c:v", "copy");
-        else Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-force_key_frames", "expr:gte(t,n_forced*2)");
+        if (plan.CopyVideo) Args("-c:v", "copy");
+        else Args(plan.VideoEncoder(forceKeyFrames: !plan.Normalize));
         // Sped-up credits keep their music at normal speed, fading out just before the next program.
         if (plan.Speed > 1 && plan.HasAudio) Args("-af", $"afade=t=out:st={Num(Math.Max(0, double.Parse(seconds, CultureInfo.InvariantCulture) - 1.5))}:d=1.5");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
         else Args("-c:a", "aac", "-b:a", audioRate, "-ar", "48000", "-ac", "2");
         Args("-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
         return start;
+    }
+
+    public sealed record HardwareResult(string Id, bool Works, string Detail);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<HardwareResult>> hardwareTests = new();
+
+    // Encodes a few blank frames on the graphics card to learn whether it works. Remembered until the server restarts.
+    public Task<HardwareResult> TestHardware(string id, string device, CancellationToken ct)
+        => hardwareTests.GetOrAdd(id + "|" + device, _ => RunHardwareTest(id, device));
+
+    private async Task<HardwareResult> RunHardwareTest(string id, string device)
+    {
+        if (!StreamPlan.HardwareNames.TryGetValue(id, out var name)) return new(id, false, "Unknown encoder.");
+        var start = new ProcessStartInfo(encoder.EncoderPath) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        void Args(params string[] values) { foreach (var value in values) start.ArgumentList.Add(value); }
+        Args("-hide_banner", "-loglevel", "error", "-nostdin");
+        if (id == "vaapi") Args("-vaapi_device", string.IsNullOrWhiteSpace(device) ? StreamPlan.DefaultVaapiDevice : device);
+        Args("-f", "lavfi", "-i", "color=c=black:s=320x240:r=25", "-frames:v", "10", "-vf", id == "vaapi" ? "format=nv12,hwupload" : "format=yuv420p", "-c:v", name, "-f", "null", "-");
+        try
+        {
+            using var process = Process.Start(start);
+            if (process is null) return new(id, false, "FFmpeg could not start.");
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+                _ = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                await process.WaitForExitAsync(timeout.Token);
+                var text = (await errors).Trim();
+                return process.ExitCode == 0 ? new(id, true, "Working.") : new(id, false, text.Length == 0 ? "FFmpeg could not use it." : text.Split('\n')[^1].Trim());
+            }
+            finally { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } }
+        }
+        catch (OperationCanceledException) { return new(id, false, "The test took too long."); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { return new(id, false, "FFmpeg could not start."); }
     }
 
     // Tone mapping needs FFmpeg's zscale filter (libzimg). Asked once per FFmpeg and remembered.
@@ -329,9 +392,21 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         // The offline card is a still picture with no sound; it is always encoded, in the channel's picture shape.
         var plan = IsImage(program.Path) ? StreamPlan.Encode with { HasAudio = false } : StreamPlan.For(await Format(program, ct), channel, shape, program.Speed, string.IsNullOrWhiteSpace(channel.Watermark) || File.Exists(channel.Watermark));
         // Without FFmpeg's zscale filter an HDR picture cannot be tone-mapped; it is encoded as it is.
+        // Encoding runs on the CPU unless the server (or the channel) asks for the graphics card and it works.
+        var gpuNote = "";
+        if (!plan.CopyVideo)
+        {
+            var (wanted, device) = channel.EncodeWith == "cpu" ? ("cpu", "") : Hardware();
+            if (wanted != "cpu" && StreamPlan.HardwareNames.ContainsKey(wanted))
+            {
+                if (wanted != "vaapi") device = "";
+                if ((await TestHardware(wanted, device, ct)).Works) plan = plan with { Encoder = wanted, Device = device };
+                else gpuNote = $"; the {wanted.ToUpperInvariant()} graphics encoder is not available, so this program is encoded on the CPU";
+            }
+        }
         var hdr = plan.ToneMap;
         if (hdr && !await CanToneMap(ct)) plan = plan with { ToneMap = false };
-        var how = plan.Describe() + (hdr && !plan.ToneMap ? "; HDR could not be tone-mapped because this FFmpeg has no zscale filter" : "");
+        var how = plan.Describe() + gpuNote + (hdr && !plan.ToneMap ? "; HDR could not be tone-mapped because this FFmpeg has no zscale filter" : "");
         var now = DateTimeOffset.UtcNow;
         report?.Invoke(how, false);
         Process started;

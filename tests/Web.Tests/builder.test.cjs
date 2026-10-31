@@ -1284,3 +1284,23 @@ test("credits speed for automatic channels is saved", async () => {
     dom.window.close();
   }
 });
+
+test("the encoding hardware can be chosen and tested", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    change(w, w.document.querySelector("[data-setting=HardwareEncoder]"), "nvenc");
+    change(w, selectLabel(w, "Encode with"), "cpu");
+    click(w, "Test hardware encoding");
+    await settle();
+    const text = w.document.querySelector("[data-ui=hardware-results]").textContent;
+    assert.match(text, /✓ NVIDIA NVENC: Working\./);
+    assert.match(text, /✗ VAAPI \(Intel\/AMD\): No such device/);
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.HardwareEncoder, "nvenc");
+    assert.equal(w.testApi.saved.Channels[0].EncodeWith, "cpu");
+  } finally {
+    dom.window.close();
+  }
+});

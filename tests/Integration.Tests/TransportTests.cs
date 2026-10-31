@@ -102,6 +102,18 @@ public static class TransportTests
             "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709 (" + hdrMethod + " | " + hdrVideo.GetRawText() + ")");
         var sdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","json",Path.Combine(root, "transition.ts")])).RootElement.GetProperty("streams")[0];
         check(!hdrMethod.StartsWith("Direct") && !(sdrVideo.TryGetProperty("color_transfer", out var sdrTransfer) && sdrTransfer.GetString() == "smpte2084"), "SDR programs are untouched by tone mapping");
+        // Asking for a graphics encoder that this machine does not have falls back to the CPU instead of failing.
+        var gpuStreamer = new ProgramStreamer(encoder) { Hardware = () => ("nvenc", "") };
+        using var gpuOut = new MemoryStream();
+        var gpuMethod = await gpuStreamer.Stream(Item(hdrClip), Auto, null, bytes => { gpuOut.Write(bytes); return Task.CompletedTask; }, default);
+        var gpuPath = Path.Combine(root, "gpu fallback.ts"); await File.WriteAllBytesAsync(gpuPath, gpuOut.ToArray());
+        var gpuVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=codec_name","-of","json",gpuPath])).RootElement.GetProperty("streams")[0];
+        var nvTest = await gpuStreamer.TestHardware("nvenc", "", default);
+        check(!nvTest.Works && gpuMethod.Contains("NVENC") && gpuMethod.Contains("encoded on the CPU") && gpuVideo.GetProperty("codec_name").GetString() == "h264", "An unavailable graphics encoder falls back to the CPU and Channel health says why (" + nvTest.Detail + ")");
+        var pinned = await gpuStreamer.Stream(Item(hdrClip, 1), new ChannelDefinition { EncodeWith = "cpu" }, null, _ => Task.CompletedTask, default);
+        check(!pinned.Contains("NVENC"), "A channel pinned to the CPU never tries the graphics encoder");
+        var vaapiTest = await gpuStreamer.TestHardware("vaapi", "/dev/dri/does-not-exist", default);
+        check(!vaapiTest.Works && vaapiTest.Detail.Length > 0, "A missing VAAPI device is reported as not working");
         // A channel logo is drawn on everything, and an image plays as an offline card.
         var logo = Path.Combine(root, "logo.png");
         await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=red:s=64x64","-frames:v","1",logo]);

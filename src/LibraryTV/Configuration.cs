@@ -4,6 +4,11 @@ namespace Jellyfin.Plugin.LibraryTV;
 
 public sealed class Configuration : BasePluginConfiguration
 {
+    // Where programs that must be encoded are encoded: "cpu" (software, the default) or a graphics encoder:
+    // "nvenc" (NVIDIA), "vaapi" (Intel/AMD on Linux) or "qsv" (Intel Quick Sync). If it does not work, the CPU is used.
+    public string HardwareEncoder { get; set; } = "cpu";
+    // The render device VAAPI uses.
+    public string HardwareDevice { get; set; } = "/dev/dri/renderD128";
     public bool AutoChannels { get; set; }
     public string[] AutoLibraryIds { get; set; } = [];
     public int AutoChannelStartNumber { get; set; } = 100;
@@ -128,6 +133,8 @@ public sealed class ChannelDefinition
     // How well programs that have to be encoded look: "fast" (smallest CPU load), "balanced", "high" or "best".
     // Programs that are copied are never touched.
     public string EncodeQuality { get; set; } = "balanced";
+    // "" follows the server's hardware encoder setting; "cpu" always encodes this channel on the CPU.
+    public string EncodeWith { get; set; } = "";
     // The tallest picture an encoded program is made in: 480, 576, 720 or 1080.
     public int EncodeHeight { get; set; } = 720;
     // Pads each program with commercials or bumpers until the next multiple of this many minutes on the

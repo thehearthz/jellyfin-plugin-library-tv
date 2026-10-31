@@ -685,6 +685,35 @@
                 data-setting="MaxActiveChannels"
             /></label>
           </div>
+          <h3>Encoding hardware</h3>
+          <div class="ltv-cols">
+            <label class="ltv-field"
+              ><span>Encode on</span
+              ><select data-setting="HardwareEncoder">
+                <option value="cpu">CPU (software, works everywhere)</option>
+                <option value="nvenc">GPU: NVIDIA NVENC</option>
+                <option value="vaapi">GPU: VAAPI (Intel / AMD on Linux)</option>
+                <option value="qsv">GPU: Intel Quick Sync</option>
+              </select></label
+            ><label class="ltv-field"
+              ><span>VAAPI device</span
+              ><input
+                data-setting="HardwareDevice"
+                maxlength="100"
+                placeholder="/dev/dri/renderD128"
+            /></label>
+          </div>
+          <button type="button" data-action="test-hardware">Test hardware encoding</button>
+          <div data-ui="hardware-results" class="ltv-muted" role="status"></div>
+          <p class="ltv-muted">
+            Only programs that have to be encoded use this; programs that are
+            copied use no encoder at all. Library TV uses Jellyfin's FFmpeg, so
+            the graphics card must be available to Jellyfin (in Docker, pass
+            the device through) and Jellyfin's FFmpeg must support the
+            encoder. If the chosen encoder does not work, programs are encoded
+            on the CPU instead and Channel health says so. Each channel can
+            override this on its Content tab.
+          </p>
           <details>
             <summary>Advanced connection settings</summary>
             <div>
@@ -2619,6 +2648,12 @@
                 (v) => (c.EncodeQuality = v),
               ),
               selectField(
+                "Encode with",
+                c.EncodeWith,
+                [["", "The server's setting (see Encoding hardware)"], ["cpu", "Always the CPU"]],
+                (v) => (c.EncodeWith = v),
+              ),
+              selectField(
                 "Tallest encoded picture",
                 c.EncodeHeight,
                 [[480, "480p"], [576, "576p"], [720, "720p (default)"], [1080, "1080p"]],
@@ -3181,6 +3216,7 @@
         return {
           EncodeQuality: "balanced",
           EncodeHeight: 720,
+          EncodeWith: "",
           PadMinutes: 0,
           BreakMode: "even",
           BreakIntervalMinutes: 15,
@@ -3708,6 +3744,8 @@
             state.config.AutomaticCommercialCount ?? 2;
           state.config.DetectCredits = state.config.DetectCredits ?? true;
           state.config.AutomaticCreditsSpeed = state.config.AutomaticCreditsSpeed ?? 1;
+          state.config.HardwareEncoder = state.config.HardwareEncoder || "cpu";
+          state.config.HardwareDevice = state.config.HardwareDevice || "/dev/dri/renderD128";
           state.config.ClipRules = state.config.ClipRules || [];
           state.config.ClipOverrides = state.config.ClipOverrides || [];
           state.libraries = libraries;
@@ -3852,6 +3890,21 @@
       ui("preview").addEventListener("cancel", (e) => {
         e.preventDefault();
         closePreview();
+      });
+      page.querySelector("[data-action=test-hardware]").addEventListener("click", async () => {
+        const target = ui("hardware-results");
+        target.textContent = "Testing the graphics encoders with Jellyfin's FFmpeg…";
+        try {
+          const result = await api("hardware?device=" + encodeURIComponent(state.config.HardwareDevice || ""));
+          target.replaceChildren(
+            ...result.Encoders.map((x) =>
+              node("div", {}, (x.Works ? "✓ " : "✗ ") + x.Name + ": " + x.Detail),
+            ),
+          );
+          if (!result.Encoders.length) target.textContent = "No encoders to test.";
+        } catch (e) {
+          target.textContent = errorMessage(e);
+        }
       });
       page.querySelector("[data-action=add-smart]").addEventListener("click", () => {
         state.config.SmartChannels.push({

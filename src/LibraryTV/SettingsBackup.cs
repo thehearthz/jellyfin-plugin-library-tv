@@ -7,6 +7,8 @@ public sealed class SettingsBackup
 {
     public int FormatVersion { get; set; } = 1;
     public ChannelDefinition[] Channels { get; set; } = [];
+    public string HardwareEncoder { get; set; } = "cpu";
+    public string HardwareDevice { get; set; } = "/dev/dri/renderD128";
     public bool AutoChannels { get; set; }
     public string[] AutoLibraryIds { get; set; } = [];
     public AutomaticChannel[] AutomaticChannels { get; set; } = [];
@@ -32,6 +34,8 @@ public sealed class SettingsBackup
         if (FormatVersion != 1) throw new ArgumentException("This backup format is not supported. Use a Library TV settings backup with FormatVersion 1.");
         var config = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(current))!;
         config.Channels = Channels;
+        config.HardwareEncoder = HardwareEncoder;
+        config.HardwareDevice = HardwareDevice;
         config.AutoChannels = AutoChannels;
         config.AutoLibraryIds = AutoLibraryIds;
         config.AutomaticChannels = AutomaticChannels;
