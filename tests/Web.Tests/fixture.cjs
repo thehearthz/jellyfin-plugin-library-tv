@@ -135,6 +135,7 @@ function install(window, options = {}) {
             Error: "Library TV is waiting for Jellyfin startup to finish.",
           },
         };
+      if (path === "genres") return ["Animation", "Comedy", "Drama"];
       if (path === "libraries")
         return [
           { ItemId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "TV Shows" },

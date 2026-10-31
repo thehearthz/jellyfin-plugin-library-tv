@@ -149,6 +149,18 @@ This needs to know where the credits are: an Outro media segment (added by plugi
 
 Results are saved in `library-tv/credits.json` in Jellyfin's data folder. A file that changes is read again; a program where nothing was found is tried again after two weeks. When a scan finds new credits, the planned guide is rebuilt once, after the current program, so breaks and **Credits** speed use them. Chapters and Outro segments take priority when a program has them. Open **Credits detection** in the builder to turn it off or see its progress.
 
+### Smart channels
+
+Under **Automatic channels → Smart channels**, **+ Add smart channel** builds a channel from what is in your library instead of from a hand-picked list:
+
+- **Libraries to search** (tick one or more), then any combination of:
+- **Genres (any of)**: tick several, taken from the genres in your library, plus a box for others.
+- **Decades (any of)**: 1920s to 2020s.
+- **Specific years**: a list with ranges, such as `1985, 1994-1999`.
+- **Shows and movies that always air**: chosen with the usual picker. These air whether or not they match the rest.
+
+A program is included when it has any of the chosen genres **and** comes from any of the chosen years or decades (a criterion you leave empty matches everything). The always-air titles are added on top. A channel with no libraries chosen airs only its chosen titles. Years and decades use each program's air or release year (episodes use their air date), and programs with no known year are left out when years or decades are chosen. Smart channels get a free number if you leave it blank, use the automatic channels' commercials per break and the shared commercial library, keep their episode progress when disabled, and are included in settings backups. For finer control, use the filters on a normal channel's content selection.
+
 ### Block timing
 
 Each time block has three timing settings on the Schedule tab:

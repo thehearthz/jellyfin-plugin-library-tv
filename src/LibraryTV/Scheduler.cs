@@ -154,6 +154,19 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
             }
         }
+        if (c.SmartChannels is null || c.SmartChannels.Length > 50 || c.SmartChannels.Any(x => x is null)) throw new ArgumentException("Use at most 50 smart channels.");
+        if (c.SmartChannels.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != c.SmartChannels.Length) throw new ArgumentException("Smart channel IDs must be unique.");
+        foreach (var smart in c.SmartChannels)
+        {
+            if (string.IsNullOrWhiteSpace(smart.Name) || smart.Name.Length > 100 || !System.Text.RegularExpressions.Regex.IsMatch(smart.Id, "^[a-zA-Z0-9_-]{1,80}$")) throw new ArgumentException("Give every smart channel a name of 100 characters or fewer.");
+            if (smart.Number is null) throw new ArgumentException("Smart channel numbers cannot be null.");
+            if (!string.IsNullOrWhiteSpace(smart.Number)) _ = ChannelNumbers.Key(smart.Number);
+            if (smart.LibraryIds is null || smart.Genres is null || smart.Years is null || smart.Decades is null || smart.ItemIds is null) throw new ArgumentException("Smart channel selections cannot be null.");
+            if (smart.Genres.Length > 100 || smart.Genres.Any(g => g is null || g.Length > 100) || smart.Years.Length > 300 || smart.ItemIds.Length > 500 || smart.LibraryIds.Length > 50)
+                throw new ArgumentException("A smart channel has at most 100 genres, 300 years, 500 chosen shows and movies, and 50 libraries.");
+            if (smart.Years.Any(y => y is < 1850 or > 2200) || smart.Decades.Any(d => d is < 1850 or > 2200 || d % 10 != 0)) throw new ArgumentException("Smart channel years must be 1850–2200, and decades must start on a multiple of ten.");
+            foreach (var id in smart.LibraryIds.Concat(smart.ItemIds)) _ = Guid.Parse(id);
+        }
         foreach (var pool in new[] { c.SharedCommercials, c.SharedBumpers })
         {
             if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
@@ -187,6 +200,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         if (pool.Order is not ("" or "chronological" or "alphabetical")) throw new ArgumentException("Order must be blank, chronological or alphabetical.");
         if (pool.Turns is null || pool.Turns.Length > 200 || pool.Turns.Any(x => x is null || x.Show is null || x.Show.Length > 200 || x.Episodes is < 0 or > 100)) throw new ArgumentException("Use at most 200 shows with 0–100 episodes in a row.");
         if (pool.TitleContains is null || pool.TitleExcludes is null || pool.TitleContains.Concat(pool.TitleExcludes).Any(x => x is null || x.Length > 100) || pool.TitleContains.Length > 50 || pool.TitleExcludes.Length > 50) throw new ArgumentException("Use at most 50 title words of 100 characters or fewer for each filter.");
+        if (pool.Years is null || pool.Decades is null || pool.AlwaysItemIds is null || pool.Years.Length > 300 || pool.Years.Any(y => y is < 1850 or > 2200) || pool.Decades.Any(d => d is < 1850 or > 2200 || d % 10 != 0)) throw new ArgumentException("Years must be 1850–2200 and decades must start on a multiple of ten.");
+        foreach (var id in pool.AlwaysItemIds) _ = Guid.Parse(id);
         if (pool.ExcludeGenres is null || pool.MaxRating is null || pool.MaxRating.Length > 20) throw new ArgumentException("Content selections cannot be null.");
         if (pool.MinYear is not 0 and (< 1850 or > 2200) || pool.MaxYear is not 0 and (< 1850 or > 2200) || pool.MaxYear != 0 && pool.MaxYear < pool.MinYear) throw new ArgumentException("Years must be between 1850 and 2200, and the last year cannot be before the first.");
         if (pool.MinMinutes < 0 || pool.MaxMinutes < 0 || pool.MaxMinutes != 0 && pool.MaxMinutes < pool.MinMinutes) throw new ArgumentException("Length limits cannot be negative, and the longest cannot be shorter than the shortest.");
@@ -314,7 +329,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             foreach (var id in working.Keys.ToArray())
             {
                 var keepAutomatic = id.StartsWith("auto-", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(id[5..], out var libraryId) && selectedLibraries.Contains(libraryId);
-                if (!retained.Contains(id) && !keepAutomatic) working.Remove(id);
+                var keepSmart = id.StartsWith("smart-", StringComparison.Ordinal) && config.SmartChannels.Any(x => "smart-" + x.Id == id);
+                if (!retained.Contains(id) && !keepAutomatic && !keepSmart) working.Remove(id);
             }
             var library = Summarize("Commercials", ClipEdits.Of(sharedClips, "commercials")).Concat(Summarize("Bumpers", ClipEdits.Of(sharedClips, "bumpers"))).ToArray();
             var snapshot = BuildClipSnapshot(resolvedClips.Values.SelectMany(x => x), networks, allPrograms.DistinctBy(x => x.Id).ToArray());

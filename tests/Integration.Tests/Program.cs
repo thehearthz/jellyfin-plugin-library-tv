@@ -59,6 +59,43 @@ try
     autoConfig.AutomaticChannels[0].Name = "Custom station";
     autoConfig.AutomaticChannels[0].Number = "7-10";
     Check(autoCatalog.Channels(autoConfig).Any(x => x.Name == "Custom station" && x.Number == "7-10"), "Automatic channels use custom names and subchannel numbers");
+    // Smart channels: genres, years, decades and chosen titles in any combination.
+    {
+        var smartRoot = Path.Combine(directory, "smart"); Directory.CreateDirectory(smartRoot);
+        var smartLibrary = Guid.NewGuid();
+        MediaBrowser.Controller.Entities.Movies.Movie Film(string name, int year, params string[] genres) => new() { Id = Guid.NewGuid(), Name = name, Path = Path.Combine(smartRoot, name + ".mkv"), ProductionYear = year, Genres = genres, RunTimeTicks = TimeSpan.FromHours(1).Ticks };
+        var films = new[] { Film("Laugh 1994", 1994, "Comedy"), Film("Laugh 2003", 2003, "Comedy"), Film("Scare 1996", 1996, "Horror"), Film("Drama 1999", 1999, "Drama", "Comedy"), Film("Odd 1971", 1971, "Drama") };
+        var smartCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemList" => films.Cast<MediaBrowser.Controller.Entities.BaseItem>().ToList(),
+            "GetItemById" => films.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetVirtualFolders" => new List<VirtualFolderInfo>(),
+            _ => throw new NotSupportedException(name)
+        }));
+        string[] Names(Pool pool) => smartCatalog.Read(pool).Select(x => x.Title).Order().ToArray();
+        var libs = new[] { smartLibrary.ToString() };
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy", "Horror"] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Laugh 2003", "Scare 1996"]), "Several genres match any one of them");
+        Check(Names(new Pool { LibraryIds = libs, Decades = [1990] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Scare 1996"]), "A decade matches every year in it");
+        Check(Names(new Pool { LibraryIds = libs, Years = [1971, 2003] }).SequenceEqual(["Laugh 2003", "Odd 1971"]), "Several years match any one of them");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] }).SequenceEqual(["Drama 1999", "Laugh 1994"]), "Genres and decades together must both match");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Horror"], Years = [2003], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Odd 1971"]), "Chosen shows and movies air whether or not they match, and nothing else does when nothing else matches");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy"], Decades = [1990], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Odd 1971"]), "A smart channel combines matches with chosen titles");
+        Check(Names(new Pool { AlwaysItemIds = [films[2].Id.ToString()] }).SequenceEqual(["Scare 1996"]), "A channel with no libraries airs only its chosen titles");
+        var smartConfig = new Configuration { AutoChannelStartNumber = 200, Channels = [new ChannelDefinition { Id = "m", Number = "200" }], SmartChannels = [
+            new SmartChannel { Id = "one", Name = "Nineties comedy", LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] },
+            new SmartChannel { Id = "two", Name = "Fixed", Number = "201" }, new SmartChannel { Id = "three", Name = "Off", Number = "5", Enabled = false }] };
+        Check(smartCatalog.PrepareAutomaticChannels(smartConfig) && smartConfig.SmartChannels[0].Number == "202", "Smart channels receive free numbers that skip manual and fixed ones");
+        var made = smartCatalog.Channels(smartConfig);
+        Check(made.Count(x => x.Id.StartsWith("smart-")) == 2 && made.Single(x => x.Id == "smart-one").Source is { Genres: ["Comedy"], Decades: [1990] }, "Enabled smart channels become channels with their criteria as the content");
+        smartConfig.SmartChannels[1].Number = "202";
+        try { smartCatalog.Channels(smartConfig); throw new Exception("Duplicate smart number accepted"); }
+        catch (ArgumentException) { Check(true, "A smart channel cannot share a number with another channel"); }
+        foreach (var (label, bad) in new (string, SmartChannel)[] { ("a year before 1850", new() { Years = [1200] }), ("a decade not on a multiple of ten", new() { Decades = [1995] }), ("an unnamed smart channel", new() { Name = " " }) })
+        {
+            try { Scheduler.Validate(new Configuration { SmartChannels = [bad] }); throw new Exception("Accepted " + label); }
+            catch (ArgumentException) { Check(true, "Rejected " + label); }
+        }
+    }
     autoConfig.AutomaticCommercialCount = 3;
     Check(autoCatalog.Channels(autoConfig).Where(x => x.Id.StartsWith("auto-")).All(x => x.CommercialCount == 3), "Automatic channels get commercial breaks from the shared library");
     autoConfig.Channels[0].Number = "7.10";

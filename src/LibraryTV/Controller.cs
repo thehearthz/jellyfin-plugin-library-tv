@@ -52,6 +52,9 @@ public sealed class Controller : ControllerBase
         catch (ArgumentException ex) { return BadRequest(new { Error = ex.Message }); }
     }
 
+    [HttpGet("genres")]
+    public ActionResult<string[]> Genres() => catalog.Genres();
+
     [HttpGet("libraries")]
     public object Libraries() => catalog.Libraries();
 
@@ -117,7 +120,7 @@ public sealed class Controller : ControllerBase
         try
         {
             await scheduler.SaveConfiguration(config, ct);
-            return Ok(new { Saved = true, config.AutomaticChannels });
+            return Ok(new { Saved = true, config.AutomaticChannels, config.SmartChannels });
         }
         catch (Exception ex) when (IsInvalidSettings(ex)) { return BadRequest(new { Error = ex.Message }); }
     }

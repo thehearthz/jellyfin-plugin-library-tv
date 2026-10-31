@@ -508,6 +508,17 @@
             bumpers from the shared Commercial library below. Use the channel
             builder above for a hand-picked lineup.
           </p>
+          <h3>Smart channels</h3>
+          <p class="ltv-muted">
+            Build a channel from what is in your library: any of several
+            genres, years or decades, combined with shows and movies you pick
+            by hand. A program is included when it matches every criterion you
+            fill in (any one of the genres, and any one of the years or
+            decades); the shows and movies you pick always air. Smart channels
+            use the commercials per break and shared commercial library above.
+          </p>
+          <div data-ui="smart-channels"></div>
+          <button type="button" data-action="add-smart">+ Add smart channel</button>
         </div>
       </details>
       <details class="ltv-panel">
@@ -751,6 +762,7 @@
       const state = {
         config: null,
         libraries: [],
+        genres: [],
         items: new Map(),
         channel: null,
         tab: "content",
@@ -1092,6 +1104,152 @@
           target.append(box);
         }
       }
+      // Smart channels: genres, years, decades and chosen shows or movies, in any combination.
+      function parseYears(text) {
+        const years = new Set();
+        for (const part of text.split(",")) {
+          const m = part.trim().match(/^(\d{4})(?:\s*-\s*(\d{4}))?$/);
+          if (!m) continue;
+          const from = Number(m[1]),
+            to = m[2] ? Number(m[2]) : from;
+          if (from < 1850 || to > 2200 || to < from || to - from > 300) continue;
+          for (let y = from; y <= to; y++) years.add(y);
+        }
+        return [...years].sort((a, b) => a - b);
+      }
+      function describeYears(years) {
+        const parts = [];
+        for (let i = 0; i < years.length; ) {
+          let j = i;
+          while (j + 1 < years.length && years[j + 1] === years[j] + 1) j++;
+          parts.push(j > i + 1 ? years[i] + "-" + years[j] : years.slice(i, j + 1).join(", "));
+          i = j + 1;
+        }
+        return parts.join(", ");
+      }
+      function smartPool(smart) {
+        // The picker writes into a pool; a smart channel's shows and movies are its ItemIds.
+        return {
+          get ItemIds() {
+            return smart.ItemIds;
+          },
+          set ItemIds(v) {
+            smart.ItemIds = v;
+          },
+          LibraryIds: [],
+          FolderIds: [],
+        };
+      }
+      function renderSmartChannels() {
+        const target = ui("smart-channels");
+        if (!target) return;
+        target.replaceChildren();
+        const decades = [];
+        for (let d = 1920; d <= 2020; d += 10) decades.push(d);
+        state.config.SmartChannels.forEach((smart, index) => {
+          const box = node("section", { class: "ltv-block" });
+          box.append(
+            node(
+              "div",
+              { class: "ltv-top" },
+              node("h3", {}, smart.Name || "Smart channel"),
+              button("Remove", () => {
+                state.config.SmartChannels.splice(index, 1);
+                dirty();
+                renderSmartChannels();
+              }),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Channel name", smart.Name, (v) => (smart.Name = v)),
+              field("Channel number", smart.Number, (v) => (smart.Number = v.trim()), "text", {
+                placeholder: "Assigned automatically",
+                inputmode: "decimal",
+              }),
+            ),
+            check("Enabled", smart.Enabled !== false, (v) => (smart.Enabled = v)),
+            check("Shuffle between cycles", smart.Shuffle !== false, (v) => (smart.Shuffle = v)),
+            node("h4", {}, "Libraries to search"),
+          );
+          const libraries = node("div", { class: "ltv-days" });
+          for (const library of state.libraries)
+            libraries.append(
+              check(
+                library.Name,
+                smart.LibraryIds.some((x) => canonical(x) === canonical(library.ItemId)),
+                (v) =>
+                  (smart.LibraryIds = v
+                    ? [...smart.LibraryIds, library.ItemId]
+                    : smart.LibraryIds.filter((x) => canonical(x) !== canonical(library.ItemId))),
+              ),
+            );
+          box.append(libraries);
+          box.append(node("h4", {}, "Genres (any of)"));
+          const genres = node("div", { class: "ltv-days" });
+          const known = [...state.genres];
+          for (const g of smart.Genres)
+            if (!known.some((x) => x.toLowerCase() === g.toLowerCase())) known.push(g);
+          for (const genre of known)
+            genres.append(
+              check(
+                genre,
+                smart.Genres.some((x) => x.toLowerCase() === genre.toLowerCase()),
+                (v) =>
+                  (smart.Genres = v
+                    ? [...smart.Genres, genre]
+                    : smart.Genres.filter((x) => x.toLowerCase() !== genre.toLowerCase())),
+              ),
+            );
+          box.append(genres);
+          if (!known.length)
+            box.append(node("p", { class: "ltv-muted" }, "No genres were found in your library yet."));
+          box.append(
+            field(
+              "Other genres (comma separated)",
+              smart.Genres.filter((g) => !state.genres.some((x) => x.toLowerCase() === g.toLowerCase())).join(", "),
+              (v) => {
+                const typed = v.split(",").map((x) => x.trim()).filter(Boolean);
+                smart.Genres = [
+                  ...smart.Genres.filter((g) => state.genres.some((x) => x.toLowerCase() === g.toLowerCase())),
+                  ...typed,
+                ];
+              },
+            ),
+            node("h4", {}, "Decades (any of)"),
+          );
+          const decadeBox = node("div", { class: "ltv-days" });
+          for (const d of decades)
+            decadeBox.append(
+              check(
+                d + "s",
+                smart.Decades.includes(d),
+                (v) => (smart.Decades = v ? [...smart.Decades, d].sort() : smart.Decades.filter((x) => x !== d)),
+              ),
+            );
+          box.append(
+            decadeBox,
+            field(
+              "Specific years (comma separated; ranges like 1994-1999 are fine)",
+              describeYears(smart.Years),
+              (v) => (smart.Years = parseYears(v)),
+              "text",
+              { placeholder: "e.g. 1985, 1994-1999" },
+            ),
+            node("h4", {}, "Shows and movies that always air"),
+          );
+          box.append(chips(smartPool(smart)));
+          box.append(
+            button("Choose shows & movies", () => openPicker(smartPool(smart), false, true)),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Years and decades match each program's air or release year; programs with no known year are left out when you choose years or decades. A criterion you leave empty matches everything in the chosen libraries. A channel with no libraries chosen airs only the shows and movies you pick.",
+            ),
+          );
+          target.append(box);
+        });
+      }
       function renderCreditsScan(scan) {
         const target = ui("credits-scan");
         if (!target) return;
@@ -1281,6 +1439,7 @@
               p[key] = p[key].filter((x) => canonical(x) !== canonical(value));
               dirty();
               renderEditor();
+              renderSmartChannels();
             });
             remove.setAttribute("aria-label", "Remove " + titleFor(key, value));
             list.append(
@@ -2968,7 +3127,7 @@
       }
       function nextNumber() {
         const used = new Set(
-          [...state.config.Channels, ...state.config.AutomaticChannels].map(
+          [...state.config.Channels, ...state.config.AutomaticChannels, ...(state.config.SmartChannels || []).filter((x) => x.Number)].map(
             (x) => numberKey(x.Number),
           ),
         );
@@ -3093,7 +3252,12 @@
       function pickerTabs() {
         const tabs = ui("picker-tabs");
         tabs.replaceChildren();
-        const options = state.picker.ads
+        const options = state.picker.smart
+          ? [
+              ["shows", "Shows"],
+              ["movies", "Movies"],
+            ]
+          : state.picker.ads
           ? [
               ["folders", "Folders"],
               ["videos", "Clips"],
@@ -3117,10 +3281,11 @@
           tabs.append(b);
         }
       }
-      function openPicker(p, ads) {
+      function openPicker(p, ads, smart = false) {
         state.picker = {
           pool: p,
           ads,
+          smart,
           kind: ads ? "folders" : "shows",
           start: 0,
           total: 0,
@@ -3146,6 +3311,7 @@
         ui("picker").close();
         renderChannels();
         renderEditor();
+        renderSmartChannels();
       }
       async function browse() {
         if (!state.picker) return;
@@ -3382,6 +3548,10 @@
               "Each content restriction needs at least one genre or tag.",
             );
         }
+        for (const smart of state.config.SmartChannels) {
+          if (!smart.Name.trim()) throw new Error("Every smart channel needs a name.");
+          if (smart.Number.trim()) reserve(smart.Number, smart.Name, smart.Enabled !== false);
+        }
         if (state.config.AutoChannels)
           for (const entry of state.config.AutomaticChannels) {
             if (
@@ -3415,8 +3585,11 @@
           if (state.revision === revision) {
             if (savedResult.AutomaticChannels)
               state.config.AutomaticChannels = savedResult.AutomaticChannels;
+            if (savedResult.SmartChannels)
+              state.config.SmartChannels = savedResult.SmartChannels;
             saved();
             renderAutomaticChannels();
+            renderSmartChannels();
             renderChannels();
           }
           try {
@@ -3491,6 +3664,19 @@
           state.config.ClipRules = state.config.ClipRules || [];
           state.config.ClipOverrides = state.config.ClipOverrides || [];
           state.libraries = libraries;
+          state.config.SmartChannels = state.config.SmartChannels || [];
+          for (const smart of state.config.SmartChannels) {
+            smart.LibraryIds = smart.LibraryIds || [];
+            smart.Genres = smart.Genres || [];
+            smart.Years = smart.Years || [];
+            smart.Decades = smart.Decades || [];
+            smart.ItemIds = smart.ItemIds || [];
+          }
+          try {
+            state.genres = await api("genres");
+          } catch (e) {
+            state.genres = [];
+          }
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
             c.Commercials = normalize(c.Commercials);
@@ -3532,6 +3718,7 @@
             ])
               for (const key of ["ItemIds", "FolderIds"])
                 for (const value of p[key]) selected.add(value);
+          for (const smart of config.SmartChannels) for (const value of smart.ItemIds) selected.add(value);
           const ids = Array.from(selected);
           for (let offset = 0; offset < ids.length; offset += 500) {
             const items = await api(
@@ -3557,6 +3744,7 @@
             };
           }
           renderAutomaticChannels();
+          renderSmartChannels();
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
@@ -3617,6 +3805,22 @@
       ui("preview").addEventListener("cancel", (e) => {
         e.preventDefault();
         closePreview();
+      });
+      page.querySelector("[data-action=add-smart]").addEventListener("click", () => {
+        state.config.SmartChannels.push({
+          Id: id(),
+          Name: "New smart channel",
+          Number: "",
+          Enabled: true,
+          LibraryIds: [],
+          Genres: [],
+          Years: [],
+          Decades: [],
+          ItemIds: [],
+          Shuffle: true,
+        });
+        dirty();
+        renderSmartChannels();
       });
       page
         .querySelector("[data-action=close-picker]")

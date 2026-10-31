@@ -1216,3 +1216,41 @@ test("the picker sends genre and year filters with its search", async () => {
     dom.window.close();
   }
 });
+
+test("smart channels save genres, decades, years and chosen titles", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "+ Add smart channel");
+    const box = () => w.document.querySelector("[data-ui=smart-channels] .ltv-block");
+    change(w, selectLabel(w, "Channel name", box()), "Nineties comedy");
+    const tick = (label) => {
+      const box_ = [...box().querySelectorAll("label.ltv-check")].find((x) => x.textContent.trim() === label);
+      assert.ok(box_, "Option " + label);
+      const input = box_.querySelector("input");
+      input.checked = true;
+      input.dispatchEvent(new w.Event("change", { bubbles: true }));
+    };
+    tick("Movies");
+    tick("Comedy");
+    tick("Animation");
+    tick("1990s");
+    tick("2000s");
+    change(w, selectLabel(w, "Specific years", box()), "1985, 1994-1996");
+    click(w, "Choose shows & movies", box());
+    await settle();
+    click(w, "+ Select", w.document.querySelector(".ltv-media"));
+    click(w, "Done");
+    click(w, "Save channels");
+    await settle();
+    const smart = w.testApi.saved.SmartChannels[0];
+    assert.equal(smart.Name, "Nineties comedy");
+    assert.deepEqual(smart.LibraryIds, ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+    assert.deepEqual(smart.Genres, ["Comedy", "Animation"]);
+    assert.deepEqual(smart.Decades, [1990, 2000]);
+    assert.deepEqual(smart.Years, [1985, 1994, 1995, 1996]);
+    assert.equal(smart.ItemIds.length, 1);
+  } finally {
+    dom.window.close();
+  }
+});

@@ -8,6 +8,8 @@ public sealed class Configuration : BasePluginConfiguration
     public string[] AutoLibraryIds { get; set; } = [];
     public int AutoChannelStartNumber { get; set; } = 100;
     public AutomaticChannel[] AutomaticChannels { get; set; } = [];
+    // Channels built from what is in the library: any of some genres, years or decades, plus chosen shows and movies.
+    public SmartChannel[] SmartChannels { get; set; } = [];
     public int GuideDays { get; set; } = 3;
     public int RefreshMinutes { get; set; } = 60;
     public int MaxActiveChannels { get; set; } = 2;
@@ -63,6 +65,24 @@ public sealed class AutomaticChannel
     public string LibraryId { get; set; } = "";
     public string Number { get; set; } = "";
     public string Name { get; set; } = "";
+}
+
+public sealed class SmartChannel
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "New smart channel";
+    // Blank receives the next free number when saved.
+    public string Number { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    // The libraries searched for matches (a channel with none airs only its chosen shows and movies).
+    public string[] LibraryIds { get; set; } = [];
+    // A program matches when it has any of the genres and is from any of the years or decades. A criterion left empty matches everything.
+    public string[] Genres { get; set; } = [];
+    public int[] Years { get; set; } = [];
+    public int[] Decades { get; set; } = [];
+    // Shows and movies that always air, whether or not they match.
+    public string[] ItemIds { get; set; } = [];
+    public bool Shuffle { get; set; } = true;
 }
 
 public sealed class ChannelDefinition
@@ -174,6 +194,11 @@ public sealed class Pool
     // Words that a show or movie title must contain (any of them) and must not contain, ignoring case.
     public string[] TitleContains { get; set; } = [];
     public string[] TitleExcludes { get; set; } = [];
+    // Programs from any of these years or decades (a decade is its first year, such as 1990). Programs with no known year are left out.
+    public int[] Years { get; set; } = [];
+    public int[] Decades { get; set; } = [];
+    // Shows and movies that always air, whatever the filters say.
+    public string[] AlwaysItemIds { get; set; } = [];
 }
 
 public sealed class ShowTurn
