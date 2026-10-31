@@ -418,4 +418,95 @@ var labelledState = new ChannelState();
 Planner.Extend(matchChannel, labelledState, new Dictionary<string, List<Media>> { ["default"] = [aqua, rugrats], ["commercials"] = [colaClip with { Year = 2004 }, bumpClip with { Year = 1993 }] }, now, now.AddHours(2), TimeZoneInfo.Utc, null, null, null, editIndex);
 Airing Following(Media program) => labelledState.Guide[labelledState.Guide.FindIndex(x => x.ItemId == program.Id) + 1];
 Check(Following(aqua).ItemId == colaClip.Id && Following(rugrats).ItemId == bumpClip.Id, "A clip set to a network plays with that network's programs, and one set to a show only with that show");
+
+// Block timing: exact starts, allowed lateness, fitting whole programs, and padding to round times.
+{
+    var day = new DateTimeOffset(2026, 10, 19, 0, 0, 0, TimeSpan.Zero);
+    Media Hour(int n) => new(new Guid(5000 + n, 0, 0, new byte[8]), "Long " + n, "long.mkv", 3000, "", 0, 0);
+    Media Half(int n, string show = "cartoon") => Episode(900 + n, show) with { Seconds = 1500, Show = show, Episode = n };
+    Media Spot(int n) => new(new Guid(6000 + n, 0, 0, new byte[8]), "Spot " + n, "spot.mp4", 20, "", 0, 0);
+    var spots = Enumerable.Range(1, 6).Select(Spot).ToList();
+    var longs = Enumerable.Range(1, 40).Select(Hour).ToList();
+    var cartoons = Enumerable.Range(1, 30).Select(n => Half(n)).ToList();
+    List<Airing> Plan(ChannelDefinition c, List<Media> main, List<Media> block, List<Media> ads, double hours = 30)
+    {
+        var st = new ChannelState();
+        var blocks = c.Blocks.ToDictionary(b => b.Id, _ => block);
+        var p = new Dictionary<string, List<Media>>(blocks) { ["default"] = main, ["commercials"] = ads };
+        Planner.Extend(c, st, p, day, day.AddHours(hours), TimeZoneInfo.Utc);
+        return st.Guide;
+    }
+    ChannelDefinition WithBlock(TimeBlock b, int pad = 0) => new() { Id = "timing", Source = new Pool { Shuffle = false }, Blocks = [b], PadMinutes = pad };
+    TimeBlock Evening(string mode = "soft", int late = 0, string fill = "count") => new() { Id = "evening", Start = "18:00", End = "19:00", StartMode = mode, MaxLateMinutes = late, Fill = fill, Source = new Pool { Shuffle = false } };
+
+    var soft = Plan(WithBlock(Evening()), longs, cartoons, spots);
+    Check(soft.Any(x => x.Start < day.AddHours(18) && x.End > day.AddHours(18)), "A soft block lets the program before it run past its start");
+    var exact = Plan(WithBlock(Evening("exact")), longs, cartoons, spots);
+    Check(exact.All(x => !(x.Start < day.AddHours(18) && x.End > day.AddHours(18))) && exact.First(x => x.Title.StartsWith("cartoon") || x.Title.Contains("Episode 9")).Start == day.AddHours(18), "An exact block starts on the minute, because nothing before it runs past its start");
+    Check(exact.Where(x => x.End <= day.AddHours(18) && x.Start >= day.AddHours(17)).Any(x => x.Commercial), "The time before an exact block is filled with clips");
+    var late = Plan(WithBlock(Evening("soft", 10)), longs, cartoons, spots);
+    Check(late.Where(x => x.Start >= day.AddHours(18) && x.End <= day.AddHours(19)).All(x => !x.Title.Contains("Episode 9")) , "A soft block that would start more than its allowed lateness after the program before it is skipped");
+    var tolerant = Plan(WithBlock(Evening("soft", 60)), longs, cartoons, spots);
+    Check(tolerant.Any(x => x.Title.Contains("Episode 9") && x.Start >= day.AddHours(18)), "A block within its allowed lateness still airs");
+    var fitted = Plan(WithBlock(Evening("exact", 0, "fit")), longs, cartoons, spots);
+    var inBlock = fitted.Where(x => x.Title.Contains("Episode 9") && x.Start >= day.AddHours(18) && x.Start < day.AddHours(19)).ToArray();
+    Check(inBlock.Length == 2 && inBlock.All(x => x.End <= day.AddHours(19)), "A fitted block airs only whole programs that end before it does");
+    Check(fitted.Where(x => x.Start >= inBlock[^1].End && x.Start < day.AddHours(19)).All(x => x.Commercial) && fitted.Where(x => x.Start >= day.AddHours(19)).First().End > day.AddHours(19), "What is left of a fitted block is filled with clips, and the next program starts at its end");
+    var nothing = Plan(WithBlock(Evening("exact", 0, "fit")), longs, cartoons, []);
+    Check(nothing.All(x => !(x.Start < day.AddHours(19) && x.End > day.AddHours(19) && x.Title.Contains("Episode 9"))), "A fitted block with no clips waits out the leftover time");
+
+    var padded = Plan(new ChannelDefinition { Id = "padded", Source = new Pool { Shuffle = false }, PadMinutes = 30 }, cartoons.Select(x => x with { Seconds = 1320 }).ToList(), [], spots, 6);
+    var programs = padded.Where(x => !x.Commercial).ToArray();
+    Check(programs.Length > 8 && programs.All(x => x.Start.Minute % 30 == 0 && x.Start.Second == 0), "Padding starts every program on the half hour");
+    Check(padded.Where(x => x.Commercial && programs.Any(p => p.Start >= x.End)).All(x => x.End <= programs.First(p => p.Start >= x.End).Start) && padded.Count(x => x.Commercial) > 8, "Padding is made of clips that finish before the next program");
+    var tight = Plan(new ChannelDefinition { Id = "tight", Source = new Pool { Shuffle = false }, PadMinutes = 30 }, cartoons.Select(x => x with { Seconds = 1800 }).ToList(), [], spots, 3);
+    Check(tight.All(x => !x.Commercial), "A program that already ends on the half hour needs no padding");
+    var unpadded = Plan(new ChannelDefinition { Id = "unpadded", Source = new Pool { Shuffle = false } }, cartoons.Select(x => x with { Seconds = 1320 }).ToList(), [], spots, 3);
+    Check(unpadded.Count == 9 && unpadded.All(x => !x.Commercial), "Without padding, programs follow one another directly");
+
+    // Breaks inside programs.
+    var movie = new Media(new Guid(7000, 0, 0, new byte[8]), "Feature", "feature.mkv", 3600, "", 0, 0);
+    int Parts(ChannelDefinition c) { var g = Plan(c, [movie], [], spots, 1); return g.TakeWhile(x => x.Start < day.AddHours(1)).Count(x => !x.Commercial && x.ItemId == movie.Id); }
+    Check(Parts(new ChannelDefinition { Id = "iv", CommercialCount = 1, BreakMode = "interval", BreakIntervalMinutes = 20, Source = new Pool() }) == 3, "Interval breaks fall every set number of minutes");
+    Check(Parts(new ChannelDefinition { Id = "iv", CommercialCount = 1, BreakMode = "interval", BreakIntervalMinutes = 15, MaxBreaksPerProgram = 1, Source = new Pool() }) == 2, "A program has at most the set number of breaks");
+    Check(Parts(new ChannelDefinition { Id = "iv", CommercialCount = 1, BreakMode = "interval", BreakIntervalMinutes = 20, BreakFreeEndMinutes = 25, Source = new Pool() }) == 2, "A break-free ending keeps the last minutes of a program unbroken");
+    Check(Parts(new ChannelDefinition { Id = "iv", CommercialCount = 1, MovieBreaks = 2, MinBreakProgramMinutes = 90, Source = new Pool() }) == 1, "Programs shorter than the minimum are not split");
+    var varied = Plan(new ChannelDefinition { Id = "varied", CommercialCount = 1, CommercialCountMax = 4, EpisodeBreaks = 0, Source = new Pool { Shuffle = false } }, cartoons, [], Enumerable.Range(1, 12).Select(Spot).ToList(), 24);
+    var lengths = new List<int>();
+    var run = 0;
+    foreach (var entry in varied) { if (entry.Commercial) run++; else if (run > 0) { lengths.Add(run); run = 0; } else run = 0; }
+    Check(lengths.Count > 10 && lengths.All(x => x is >= 1 and <= 4) && lengths.Distinct().Count() > 1, "Breaks vary in length when a range is set");
+}
+
+// Playback orders and turns.
+{
+    Media Movie(int n, int year, string title) => new(new Guid(8000 + n, 0, 0, new byte[8]), title, "m.mkv", 5400, "", 0, 0, year, Show: title);
+    var films = new List<Media> { Movie(1, 1995, "Zeta"), Movie(2, 1985, "Mu"), Movie(3, 2005, "Alpha"), Movie(4, 1990, "Kappa") };
+    string Run(Pool pool, List<Media> media, int count, string seed = "order") { var r = new Rotation(); return string.Join(" ", Enumerable.Range(0, count).Select(_ => Planner.Next(media, pool, r, seed)!.Title)); }
+    Check(Run(new Pool { Order = "chronological" }, films, 4) == "Mu Kappa Zeta Alpha", "Chronological order airs by release date");
+    Check(Run(new Pool { Order = "alphabetical" }, films, 4) == "Alpha Kappa Mu Zeta", "Alphabetical order airs by title");
+    var twelve = Enumerable.Range(1, 12).Select(n => Episode(n)).ToList();
+    var starts = new[] { "a", "b", "c", "d", "e", "f" }.Select(seed => Run(new Pool { Shuffle = false, RandomStart = true }, twelve, 1, seed)).Distinct().Count();
+    Check(starts > 1, "A random start begins the first cycle at different places");
+    var cycleRotation = new Rotation();
+    var cycle2 = Enumerable.Range(0, 12).Select(_ => Planner.Next(twelve, new Pool { Shuffle = false, RandomStart = true }, cycleRotation, "c")!.Episode).ToList();
+    Check(cycle2.Distinct().Count() == 12, "A random start still airs every episode once per cycle");
+
+    Media Part(string show, int n, string name) => Episode(300 + n + (show == "B" ? 50 : 0), show) with { Show = show, Episode = n, Title = $"{show} — S01E{n:00} {name}" };
+    var parted = new[] { Part("A", 1, "Intro"), Part("A", 2, "Two Parter (Part 1)"), Part("A", 3, "Two Parter (Part 2)"), Part("A", 4, "Finale"), Part("B", 1, "One"), Part("B", 2, "Two"), Part("B", 3, "Three"), Part("B", 4, "Four") }.ToList();
+    string Order(Pool pool) { var r = new Rotation(); return string.Join(" ", Enumerable.Range(0, 8).Select(_ => { var m = Planner.Next(parted, pool, r, "p")!; return m.Series + m.Episode; })); }
+    Check(Order(new Pool { Shuffle = false, EpisodesInARow = 2 }).Replace(" ", "").Contains("A2B"), "Without the option, two episodes in a row can end in the middle of a two-parter");
+    var together = Order(new Pool { Shuffle = false, EpisodesInARow = 2, KeepMultiPart = true });
+    Check(together.StartsWith("A1 A2 A3") && !together.Contains("A2 B"), "Two-part episodes stay together in one turn");
+    Check(Planner.PartOf("Show — S01E02 The Trip (Part 1)") == ("the trip", 1) && Planner.PartOf("Show — S01E03 The Trip, Part Two") == ("the trip", 2) && Planner.PartOf("Show — S01E03 Plain") is null, "Part numbers are read from episode names");
+    var turnPool = new Pool { Shuffle = false, EpisodesInARow = 1, Turns = [new ShowTurn { Show = "A", Episodes = 3 }] };
+    Check(Order(turnPool).StartsWith("A1 A2 A3 B1"), "A show can have its own number of episodes in a row");
+}
+Check(Catalog_RatingAllowed("TV-14", "TV-PG") == false && Catalog_RatingAllowed("TV-G", "TV-PG") && Catalog_RatingAllowed(null, "G") && Catalog_RatingAllowed("PG", ""), "A pool's highest rating keeps unrated programs and drops stricter ones");
+static bool Catalog_RatingAllowed(string? rating, string max)
+{
+    var ladder = new[] { new[] { "g", "tv-y", "tv-g" }, new[] { "tv-y7" }, new[] { "pg", "tv-pg" }, new[] { "pg-13", "tv-14" }, new[] { "r", "tv-ma" } };
+    int Level(string? r) => Array.FindIndex(ladder, l => l.Contains((r ?? "").ToLowerInvariant()));
+    return max.Length == 0 || Level(rating) < 0 || Level(max) < 0 || Level(rating) <= Level(max);
+}
 Console.WriteLine($"{passed} scheduling checks passed.");

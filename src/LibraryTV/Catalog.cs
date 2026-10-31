@@ -62,19 +62,21 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         };
     }
 
-    public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit)
+    public CatalogPage Browse(string kind, Guid libraryId, string? search, int start, int limit, string? genre = null, int minYear = 0, int maxYear = 0)
     {
         startup?.RequireReady();
         BaseItemKind[] types = kind switch
         {
             "shows" => [BaseItemKind.Series], "movies" => [BaseItemKind.Movie],
-            "folders" => [BaseItemKind.Folder], "videos" => [BaseItemKind.Video],
-            _ => throw new ArgumentException("Choose shows, movies, folders, or videos.")
+            "folders" => [BaseItemKind.Folder], "videos" => [BaseItemKind.Video], "collections" => [BaseItemKind.BoxSet],
+            _ => throw new ArgumentException("Choose shows, movies, collections, folders, or videos.")
         };
         var result = library.GetItemsResult(new InternalItemsQuery
         {
             ParentId = libraryId, Recursive = true, IsVirtualItem = false, IncludeItemTypes = types,
             SearchTerm = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            Genres = string.IsNullOrWhiteSpace(genre) ? [] : genre.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
+            Years = minYear > 0 || maxYear > 0 ? Enumerable.Range(minYear > 0 ? minYear : 1850, Math.Max(1, (maxYear > 0 ? maxYear : DateTime.UtcNow.Year + 1) - (minYear > 0 ? minYear : 1850) + 1)).Take(400).ToArray() : [],
             StartIndex = Math.Max(0, start), Limit = Math.Clamp(limit, 1, 60), EnableTotalRecordCount = true,
             OrderBy = [(ItemSortBy.SortName, SortOrder.Ascending)]
         });
@@ -100,11 +102,12 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
     public bool PrepareAutomaticChannels(Configuration config, bool preserveLegacyNumbers = false)
     {
         startup?.RequireReady();
-        if (!config.AutoChannels) return false;
-        var changed = false;
+        var changed = NumberSmartChannels(config);
+        if (!config.AutoChannels) return changed;
         var overrides = config.AutomaticChannels.ToList();
         var used = config.Channels.Select(x => ChannelNumbers.Key(x.Number)).ToHashSet();
         foreach (var entry in overrides.Where(x => !string.IsNullOrWhiteSpace(x.Number))) used.Add(ChannelNumbers.Key(entry.Number));
+        foreach (var smart in config.SmartChannels.Where(x => !string.IsNullOrWhiteSpace(x.Number))) used.Add(ChannelNumbers.Key(smart.Number));
         var next = config.AutoChannelStartNumber;
         var selected = config.AutoLibraryIds.Select(Guid.Parse).ToHashSet();
         var folders = library.GetVirtualFolders().Where(x => selected.Contains(Guid.Parse(x.ItemId))).ToArray();
@@ -138,9 +141,42 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         return changed;
     }
 
+    // Smart channels without a number get the next free whole number at or above the automatic starting number.
+    private static bool NumberSmartChannels(Configuration config)
+    {
+        var changed = false;
+        var used = config.Channels.Select(x => ChannelNumbers.Key(x.Number))
+            .Concat(config.AutomaticChannels.Where(x => !string.IsNullOrWhiteSpace(x.Number)).Select(x => ChannelNumbers.Key(x.Number)))
+            .Concat(config.SmartChannels.Where(x => !string.IsNullOrWhiteSpace(x.Number)).Select(x => ChannelNumbers.Key(x.Number))).ToHashSet();
+        var next = config.AutoChannelStartNumber;
+        foreach (var smart in config.SmartChannels.Where(x => string.IsNullOrWhiteSpace(x.Number)))
+        {
+            while (next <= 999999 && used.Contains((next, -1))) next++;
+            if (next > 999999) throw new ArgumentException("No channel numbers remain. Choose a lower starting number.");
+            smart.Number = next.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            used.Add((next++, -1));
+            changed = true;
+        }
+        return changed;
+    }
+
+    // The genres in the library's shows and movies, for choosing what a smart channel airs.
+    public string[] Genres()
+    {
+        startup?.RequireReady();
+        return library.GetItemList(new InternalItemsQuery { Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Series, BaseItemKind.Movie] })
+            .SelectMany(x => x.Genres).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
     public ChannelDefinition[] Channels(Configuration config)
     {
         var manual = config.Channels.Where(x => x.Enabled).ToList();
+        foreach (var smart in config.SmartChannels.Where(x => x.Enabled))
+            manual.Add(new ChannelDefinition
+            {
+                Id = "smart-" + smart.Id, Name = smart.Name.Trim(), Number = smart.Number.Trim(), CommercialCount = config.AutomaticCommercialCount,
+                Source = new Pool { LibraryIds = smart.LibraryIds, Genres = smart.Genres, Years = smart.Years, Decades = smart.Decades, AlwaysItemIds = smart.ItemIds, Shuffle = smart.Shuffle },
+            });
         if (config.AutoChannels)
             foreach (var folder in library.GetVirtualFolders().Where(x => config.AutoLibraryIds.Any(id => Guid.Parse(id) == Guid.Parse(x.ItemId))))
             {
@@ -161,7 +197,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         scan ??= new();
         return pool =>
         {
-            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, commercials });
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, pool.TitleContains, pool.TitleExcludes, pool.Years, pool.Decades, pool.AlwaysItemIds, commercials });
             if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, scan, commercials);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
@@ -178,16 +214,37 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
     {
         startup?.RequireReady();
         // An empty selector deliberately means no content, never every library.
-        if (pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length == 0) return [];
+        if (pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length + pool.AlwaysItemIds.Length == 0) return [];
         var items = new Dictionary<Guid, BaseItem>();
-        foreach (var id in pool.LibraryIds.Concat(pool.FolderIds))
-            foreach (var item in library.GetItemList(new InternalItemsQuery { ParentId = Guid.Parse(id), Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) items[item.Id] = item;
-        foreach (var id in pool.ItemIds)
+        BaseItemKind[] playable = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video];
+        // A collection (box set) only links to its shows and movies, which live in other libraries, so a query
+        // under the Collections library finds the box sets but none of their content: open each one.
+        void Add(BaseItem item, Dictionary<Guid, BaseItem> into, HashSet<Guid>? opened = null)
         {
-            var item = library.GetItemById(Guid.Parse(id));
-            if (item is MediaBrowser.Controller.Entities.Folder)
-                foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = item.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) items[child.Id] = child;
-            else if (item is not null) items[item.Id] = item;
+            opened ??= [];
+            if (item is MediaBrowser.Controller.Entities.Movies.BoxSet box)
+            {
+                if (!opened.Add(box.Id)) return;
+                foreach (var child in box.GetLinkedChildren()) Add(child, into, opened);
+            }
+            else if (item is MediaBrowser.Controller.Entities.Folder folder)
+            {
+                foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = folder.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [.. playable, BaseItemKind.BoxSet] })) Add(child, into, opened);
+            }
+            else into[item.Id] = item;
+        }
+        foreach (var id in pool.LibraryIds.Concat(pool.FolderIds))
+            foreach (var item in library.GetItemList(new InternalItemsQuery { ParentId = Guid.Parse(id), Recursive = true, IsVirtualItem = false, IncludeItemTypes = [.. playable, BaseItemKind.BoxSet] }))
+                Add(item, items);
+        foreach (var id in pool.ItemIds)
+            if (library.GetItemById(Guid.Parse(id)) is { } item) Add(item, items);
+        // Shows and movies that always air skip the filters below.
+        var pinned = new HashSet<Guid>();
+        foreach (var id in pool.AlwaysItemIds)
+        {
+            var chosen = new Dictionary<Guid, BaseItem>();
+            if (library.GetItemById(Guid.Parse(id)) is { } item) Add(item, chosen);
+            foreach (var (key, value) in chosen) { items[key] = value; pinned.Add(key); }
         }
         // Check each media folder once, not every file: this catches an offline mount cheaply.
         // Jellyfin's library scan removes deleted files, and playback recovery skips stragglers.
@@ -214,14 +271,24 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             var tags = x.Tags.Concat(series?.Tags ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             // For shows, studios are the networks they aired on, such as Nickelodeon or Adult Swim.
             var studios = x.Studios.Concat(series?.Studios ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (pool.Genres.Length > 0 && !genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any()) continue;
-            if (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any()) continue;
-            if (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0)) continue;
+            var always = pinned.Contains(x.Id);
+            if (!always && (pool.Genres.Length > 0 && !genres.Intersect(pool.Genres, StringComparer.OrdinalIgnoreCase).Any())) continue;
+            if (!always && (pool.Tags.Length > 0 && !tags.Intersect(pool.Tags, StringComparer.OrdinalIgnoreCase).Any())) continue;
+            if (!always && (!pool.IncludeSpecials && episode is not null && !(episode.ParentIndexNumber > 0))) continue;
+            if (!always && (pool.ExcludeGenres.Length > 0 && genres.Intersect(pool.ExcludeGenres, StringComparer.OrdinalIgnoreCase).Any())) continue;
+            var title = episode is not null ? episode.SeriesName ?? x.Name : x.Name;
+            if (!always && (pool.TitleContains.Length > 0 && !pool.TitleContains.Any(w => title.Contains(w, StringComparison.OrdinalIgnoreCase)))) continue;
+            if (!always && (pool.TitleExcludes.Any(w => title.Contains(w, StringComparison.OrdinalIgnoreCase)))) continue;
+            var minutes = TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalMinutes;
+            if (!always && (pool.MinMinutes > 0 && minutes < pool.MinMinutes || pool.MaxMinutes > 0 && minutes > pool.MaxMinutes)) continue;
+            if (!always && (!RatingAllowed(x.OfficialRating ?? series?.OfficialRating, pool.MaxRating))) continue;
             var pathYear = YearFromPath(x.Path);
             // Commercial folders are usually organised by year or decade, which beats file dates.
             var year = commercials ? pathYear ?? x.ProductionYear ?? x.PremiereDate?.Year
                 : episode is not null ? x.PremiereDate?.Year ?? x.ProductionYear ?? series?.ProductionYear ?? pathYear
                 : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
+            if (!always && (pool.MinYear > 0 && year is > 0 && year < pool.MinYear || pool.MaxYear > 0 && year is > 0 && year > pool.MaxYear)) continue;
+            if (!always && (pool.Years.Length > 0 || pool.Decades.Length > 0) && (year is not > 0 || !pool.Years.Contains(year.Value) && !pool.Decades.Contains(year.Value / 10 * 10))) continue;
             media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
                 episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios, episode is not null ? episode.SeriesName : x.Name));
@@ -230,6 +297,28 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         return media.DistinctBy(x => x.Path, StringComparer.Ordinal)
             .DistinctBy(x => x.Series.Length > 0 && x.Episode > 0 ? $"{x.Series}|{x.Season}|{x.Episode}" : x.Id.ToString())
             .ToList();
+    }
+
+    // Content ratings from the most family-friendly to the strictest, across the US movie and TV systems.
+    private static readonly string[][] RatingLadder =
+    [
+        ["g", "tv-y", "tv-g", "u", "all"], ["tv-y7", "tv-y7-fv"], ["pg", "tv-pg"], ["pg-13", "tv-14", "12", "12a", "13"], ["r", "tv-ma", "15", "16", "18", "nc-17", "x"],
+    ];
+
+    private static int RatingLevel(string? rating)
+    {
+        var key = (rating ?? "").Trim().ToLowerInvariant();
+        if (key.Contains(':')) key = key[(key.IndexOf(':') + 1)..];
+        return Array.FindIndex(RatingLadder, level => level.Contains(key));
+    }
+
+    // Unrated programs and ratings the ladder does not know are kept: they cannot be compared.
+    internal static bool RatingAllowed(string? rating, string max)
+    {
+        if (string.IsNullOrWhiteSpace(max)) return true;
+        var level = RatingLevel(rating);
+        var limit = RatingLevel(max);
+        return level < 0 || limit < 0 || level <= limit;
     }
 
     // One key per show, even when two libraries hold separate copies of it.

@@ -508,6 +508,17 @@
             bumpers from the shared Commercial library below. Use the channel
             builder above for a hand-picked lineup.
           </p>
+          <h3>Smart channels</h3>
+          <p class="ltv-muted">
+            Build a channel from what is in your library: any of several
+            genres, years or decades, combined with shows and movies you pick
+            by hand. A program is included when it matches every criterion you
+            fill in (any one of the genres, and any one of the years or
+            decades); the shows and movies you pick always air. Smart channels
+            use the commercials per break and shared commercial library above.
+          </p>
+          <div data-ui="smart-channels"></div>
+          <button type="button" data-action="add-smart">+ Add smart channel</button>
         </div>
       </details>
       <details class="ltv-panel">
@@ -704,6 +715,17 @@
             ><select data-ui="library-filter"></select
           ></label>
         </div>
+        <div class="ltv-row" data-ui="picker-filters">
+          <label class="ltv-field" style="flex: 2; margin: 0"
+            ><span>Genre (comma separated)</span
+            ><input type="text" data-ui="genre-filter" maxlength="200" placeholder="e.g. Comedy, Animation" /></label
+          ><label class="ltv-field" style="flex: 1; margin: 0"
+            ><span>From year</span
+            ><input type="number" data-ui="year-from" min="1850" max="2200" /></label
+          ><label class="ltv-field" style="flex: 1; margin: 0"
+            ><span>To year</span
+            ><input type="number" data-ui="year-to" min="1850" max="2200" /></label>
+        </div>
         <div
           class="ltv-tabs"
           data-ui="picker-tabs"
@@ -740,6 +762,7 @@
       const state = {
         config: null,
         libraries: [],
+        genres: [],
         items: new Map(),
         channel: null,
         tab: "content",
@@ -772,6 +795,18 @@
         IncludeSpecials: false,
         RepeatWhenExhausted: true,
         EpisodesInARow: 2,
+        Order: "",
+        RandomStart: false,
+        KeepMultiPart: false,
+        Turns: [],
+        MinYear: 0,
+        MaxYear: 0,
+        MinMinutes: 0,
+        MaxMinutes: 0,
+        MaxRating: "",
+        ExcludeGenres: [],
+        TitleContains: [],
+        TitleExcludes: [],
       });
       function normalize(p) {
         p = p || pool();
@@ -781,9 +816,17 @@
           "FolderIds",
           "Genres",
           "Tags",
+          "Turns",
+          "ExcludeGenres",
+          "TitleContains",
+          "TitleExcludes",
         ])
           p[key] = p[key] || [];
         if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
+        p.Order = p.Order || "";
+        p.MaxRating = p.MaxRating || "";
+        for (const key of ["MinYear", "MaxYear", "MinMinutes", "MaxMinutes"])
+          if (!Number.isInteger(p[key])) p[key] = 0;
         return p;
       }
       function node(tag, attrs, ...children) {
@@ -1061,6 +1104,152 @@
           target.append(box);
         }
       }
+      // Smart channels: genres, years, decades and chosen shows or movies, in any combination.
+      function parseYears(text) {
+        const years = new Set();
+        for (const part of text.split(",")) {
+          const m = part.trim().match(/^(\d{4})(?:\s*-\s*(\d{4}))?$/);
+          if (!m) continue;
+          const from = Number(m[1]),
+            to = m[2] ? Number(m[2]) : from;
+          if (from < 1850 || to > 2200 || to < from || to - from > 300) continue;
+          for (let y = from; y <= to; y++) years.add(y);
+        }
+        return [...years].sort((a, b) => a - b);
+      }
+      function describeYears(years) {
+        const parts = [];
+        for (let i = 0; i < years.length; ) {
+          let j = i;
+          while (j + 1 < years.length && years[j + 1] === years[j] + 1) j++;
+          parts.push(j > i + 1 ? years[i] + "-" + years[j] : years.slice(i, j + 1).join(", "));
+          i = j + 1;
+        }
+        return parts.join(", ");
+      }
+      function smartPool(smart) {
+        // The picker writes into a pool; a smart channel's shows and movies are its ItemIds.
+        return {
+          get ItemIds() {
+            return smart.ItemIds;
+          },
+          set ItemIds(v) {
+            smart.ItemIds = v;
+          },
+          LibraryIds: [],
+          FolderIds: [],
+        };
+      }
+      function renderSmartChannels() {
+        const target = ui("smart-channels");
+        if (!target) return;
+        target.replaceChildren();
+        const decades = [];
+        for (let d = 1920; d <= 2020; d += 10) decades.push(d);
+        state.config.SmartChannels.forEach((smart, index) => {
+          const box = node("section", { class: "ltv-block" });
+          box.append(
+            node(
+              "div",
+              { class: "ltv-top" },
+              node("h3", {}, smart.Name || "Smart channel"),
+              button("Remove", () => {
+                state.config.SmartChannels.splice(index, 1);
+                dirty();
+                renderSmartChannels();
+              }),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Channel name", smart.Name, (v) => (smart.Name = v)),
+              field("Channel number", smart.Number, (v) => (smart.Number = v.trim()), "text", {
+                placeholder: "Assigned automatically",
+                inputmode: "decimal",
+              }),
+            ),
+            check("Enabled", smart.Enabled !== false, (v) => (smart.Enabled = v)),
+            check("Shuffle between cycles", smart.Shuffle !== false, (v) => (smart.Shuffle = v)),
+            node("h4", {}, "Libraries to search"),
+          );
+          const libraries = node("div", { class: "ltv-days" });
+          for (const library of state.libraries)
+            libraries.append(
+              check(
+                library.Name,
+                smart.LibraryIds.some((x) => canonical(x) === canonical(library.ItemId)),
+                (v) =>
+                  (smart.LibraryIds = v
+                    ? [...smart.LibraryIds, library.ItemId]
+                    : smart.LibraryIds.filter((x) => canonical(x) !== canonical(library.ItemId))),
+              ),
+            );
+          box.append(libraries);
+          box.append(node("h4", {}, "Genres (any of)"));
+          const genres = node("div", { class: "ltv-days" });
+          const known = [...state.genres];
+          for (const g of smart.Genres)
+            if (!known.some((x) => x.toLowerCase() === g.toLowerCase())) known.push(g);
+          for (const genre of known)
+            genres.append(
+              check(
+                genre,
+                smart.Genres.some((x) => x.toLowerCase() === genre.toLowerCase()),
+                (v) =>
+                  (smart.Genres = v
+                    ? [...smart.Genres, genre]
+                    : smart.Genres.filter((x) => x.toLowerCase() !== genre.toLowerCase())),
+              ),
+            );
+          box.append(genres);
+          if (!known.length)
+            box.append(node("p", { class: "ltv-muted" }, "No genres were found in your library yet."));
+          box.append(
+            field(
+              "Other genres (comma separated)",
+              smart.Genres.filter((g) => !state.genres.some((x) => x.toLowerCase() === g.toLowerCase())).join(", "),
+              (v) => {
+                const typed = v.split(",").map((x) => x.trim()).filter(Boolean);
+                smart.Genres = [
+                  ...smart.Genres.filter((g) => state.genres.some((x) => x.toLowerCase() === g.toLowerCase())),
+                  ...typed,
+                ];
+              },
+            ),
+            node("h4", {}, "Decades (any of)"),
+          );
+          const decadeBox = node("div", { class: "ltv-days" });
+          for (const d of decades)
+            decadeBox.append(
+              check(
+                d + "s",
+                smart.Decades.includes(d),
+                (v) => (smart.Decades = v ? [...smart.Decades, d].sort() : smart.Decades.filter((x) => x !== d)),
+              ),
+            );
+          box.append(
+            decadeBox,
+            field(
+              "Specific years (comma separated; ranges like 1994-1999 are fine)",
+              describeYears(smart.Years),
+              (v) => (smart.Years = parseYears(v)),
+              "text",
+              { placeholder: "e.g. 1985, 1994-1999" },
+            ),
+            node("h4", {}, "Shows and movies that always air"),
+          );
+          box.append(chips(smartPool(smart)));
+          box.append(
+            button("Choose shows & movies", () => openPicker(smartPool(smart), false, true)),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Years and decades match each program's air or release year; programs with no known year are left out when you choose years or decades. A criterion you leave empty matches everything in the chosen libraries. A channel with no libraries chosen airs only the shows and movies you pick.",
+            ),
+          );
+          target.append(box);
+        });
+      }
       function renderCreditsScan(scan) {
         const target = ui("credits-scan");
         if (!target) return;
@@ -1189,6 +1378,30 @@
           }),
         );
       }
+      // options are [value, text] pairs; the value is a string (or a number, compared as text).
+      function selectField(label, value, options, change) {
+        return node(
+          "label",
+          { class: "ltv-field" },
+          node("span", {}, label),
+          node(
+            "select",
+            {
+              onChange: (e) => {
+                change(e.target.value);
+                dirty();
+              },
+            },
+            ...options.map(([v, text]) =>
+              node(
+                "option",
+                { value: v, selected: String(value) === String(v) ? "" : null },
+                text,
+              ),
+            ),
+          ),
+        );
+      }
       function check(label, value, change) {
         return node(
           "label",
@@ -1226,6 +1439,7 @@
               p[key] = p[key].filter((x) => canonical(x) !== canonical(value));
               dirty();
               renderEditor();
+              renderSmartChannels();
             });
             remove.setAttribute("aria-label", "Remove " + titleFor(key, value));
             list.append(
@@ -1306,6 +1520,43 @@
                   { class: "ltv-muted" },
                   "How many episodes of one show air before the next show takes a turn. Use 0 to play each show straight through.",
                 ),
+                node(
+                  "label",
+                  { class: "ltv-field" },
+                  node("span", {}, "Episodes in a row for particular shows (one per line, like “Show name = 3”)"),
+                  node("textarea", {
+                    rows: 2,
+                    value: p.Turns.map((t) => t.Show + " = " + t.Episodes).join("\n"),
+                    onChange: (e) => {
+                      p.Turns = e.target.value
+                        .split("\n")
+                        .map((line) => line.split("="))
+                        .filter((x) => x.length === 2 && x[0].trim() && Number.isInteger(Number(x[1])))
+                        .map((x) => ({ Show: x[0].trim(), Episodes: Number(x[1]) }));
+                      dirty();
+                    },
+                  }),
+                ),
+                selectField(
+                  "Order",
+                  p.Order,
+                  [
+                    ["", "Follow the shuffle setting"],
+                    ["chronological", "Chronological: by air or release date"],
+                    ["alphabetical", "Alphabetical: by title"],
+                  ],
+                  (v) => (p.Order = v),
+                ),
+                check(
+                  "Start the first cycle at a random place",
+                  p.RandomStart,
+                  (v) => (p.RandomStart = v),
+                ),
+                check(
+                  "Keep two-part episodes together (“Part 1”, “Part 2”)",
+                  p.KeepMultiPart,
+                  (v) => (p.KeepMultiPart = v),
+                ),
               ]),
           check(
             "Repeat after all selected content has aired",
@@ -1320,8 +1571,23 @@
         );
         const advanced = node(
           "details",
-          {},
-          node("summary", {}, "Genre & tag filters"),
+          {
+            open:
+              p.Genres.length +
+                p.Tags.length +
+                p.ExcludeGenres.length +
+                p.TitleContains.length +
+                p.TitleExcludes.length +
+                (p.MaxRating ? 1 : 0) +
+                p.MinYear +
+                p.MaxYear +
+                p.MinMinutes +
+                p.MaxMinutes >
+              0
+                ? ""
+                : null,
+          },
+          node("summary", {}, "Filters: genre, tag, title, rating, year & length"),
         );
         advanced.append(
           node(
@@ -1347,6 +1613,67 @@
             ),
           ),
         );
+        if (!ads)
+          advanced.append(
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Never include genres (comma separated)",
+                p.ExcludeGenres.join(", "),
+                (v) =>
+                  (p.ExcludeGenres = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
+              ),
+              selectField(
+                "Highest content rating",
+                p.MaxRating,
+                [["", "Any"], ["G", "G / TV-Y / TV-G"], ["TV-Y7", "TV-Y7"], ["PG", "PG / TV-PG"], ["PG-13", "PG-13 / TV-14"], ["R", "R / TV-MA"]],
+                (v) => (p.MaxRating = v),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field(
+                "Title contains any of (comma separated)",
+                p.TitleContains.join(", "),
+                (v) =>
+                  (p.TitleContains = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
+              ),
+              field(
+                "Title contains none of (comma separated)",
+                p.TitleExcludes.join(", "),
+                (v) =>
+                  (p.TitleExcludes = v
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter(Boolean)),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Earliest year (0 = any)", p.MinYear, (v) => (p.MinYear = v), "number", { min: 0, max: 2200 }),
+              field("Latest year (0 = any)", p.MaxYear, (v) => (p.MaxYear = v), "number", { min: 0, max: 2200 }),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Shortest program in minutes (0 = any)", p.MinMinutes, (v) => (p.MinMinutes = v), "number", { min: 0 }),
+              field("Longest program in minutes (0 = any)", p.MaxMinutes, (v) => (p.MaxMinutes = v), "number", { min: 0 }),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Programs with no rating or year are kept. Together with genres and tags these work like a saved search for this selection.",
+            ),
+          );
         box.append(advanced);
         return box;
       }
@@ -2343,6 +2670,37 @@
                 maxlength: 40,
               },
             ),
+            field(
+              "Preferred audio track title (optional)",
+              c.AudioTitle || "",
+              (v) => (c.AudioTitle = v.trim()),
+              "text",
+              {
+                placeholder: "e.g. Dolby or Original (blank: most channels)",
+                maxlength: 60,
+              },
+            ),
+            node("h3", {}, "Channel images"),
+            field("Channel logo for the guide (full path to a PNG, JPG or WebP)", c.Logo || "", (v) => (c.Logo = v.trim()), "text", { maxlength: 500 }),
+            field("Offline card shown during gaps (full path)", c.OfflineCard || "", (v) => (c.OfflineCard = v.trim()), "text", { maxlength: 500 }),
+            field("Watermark drawn over the picture (full path)", c.Watermark || "", (v) => (c.Watermark = v.trim()), "text", { maxlength: 500 }),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Watermark corner",
+                c.WatermarkPosition,
+                [["bottom-right", "Bottom right"], ["bottom-left", "Bottom left"], ["top-right", "Top right"], ["top-left", "Top left"]],
+                (v) => (c.WatermarkPosition = v),
+              ),
+              field("Opacity (10–100)", c.WatermarkOpacity, (v) => (c.WatermarkOpacity = v), "number", { min: 10, max: 100 }),
+              field("Width (% of picture)", c.WatermarkSize, (v) => (c.WatermarkSize = v), "number", { min: 3, max: 50 }),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Images must be on the server and readable by Jellyfin. A watermark is drawn on every program, commercial and bumper of the channel, so everything on it is encoded (more CPU). The offline card appears when the schedule has a gap longer than a few seconds.",
+            ),
             node(
               "label",
               { class: "ltv-field" },
@@ -2403,6 +2761,10 @@
                 MaxItemsPerDay: 3,
                 Source: pool(),
                 CommercialNetwork: "",
+                StartMode: "soft",
+                MaxLateMinutes: 0,
+                Fill: "count",
+                GuideTitle: "",
               });
               dirty();
               renderEditor();
@@ -2437,10 +2799,56 @@
                 { min: 0, max: 5 },
               ),
             ),
+            field(
+              "Up to this many clips per break (0 = always the number above)",
+              c.CommercialCountMax,
+              (v) => (c.CommercialCountMax = v),
+              "number",
+              { min: 0, max: 20 },
+            ),
+            selectField(
+              "Breaks inside a program fall",
+              c.BreakMode,
+              [
+                ["even", "Evenly (the numbers above)"],
+                ["interval", "Every set number of minutes"],
+              ],
+              (v) => {
+                c.BreakMode = v;
+                renderEditor();
+              },
+            ),
+            ...(c.BreakMode === "interval"
+              ? [
+                  node(
+                    "div",
+                    { class: "ltv-cols" },
+                    field("Minutes between breaks", c.BreakIntervalMinutes, (v) => (c.BreakIntervalMinutes = v), "number", { min: 3, max: 120 }),
+                    field("Most breaks in a program", c.MaxBreaksPerProgram, (v) => (c.MaxBreaksPerProgram = v), "number", { min: 0, max: 20 }),
+                  ),
+                ]
+              : []),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              field("Never split programs shorter than (minutes)", c.MinBreakProgramMinutes, (v) => (c.MinBreakProgramMinutes = v), "number", { min: 1, max: 600 }),
+              field("Keep the last minutes of a program free of breaks", c.BreakFreeEndMinutes, (v) => (c.BreakFreeEndMinutes = v), "number", { min: 0, max: 60 }),
+            ),
+            selectField(
+              "Start programs on the clock",
+              c.PadMinutes,
+              [[0, "Off: start as soon as the last one ends"], [60, "Every hour"], [30, "Every half hour"], [20, "Every 20 minutes"], [15, "Every quarter hour"], [10, "Every 10 minutes"], [5, "Every 5 minutes"]],
+              (v) => (c.PadMinutes = Number(v)),
+            ),
             node(
               "p",
               { class: "ltv-muted" },
-              "A break also plays after every program. Breaks during a program split it evenly, or at the nearest chapter mark when the file has chapters. Programs shorter than 10 minutes are never split.",
+              "A break also plays after every program. Even breaks split a program equally, or at the nearest chapter mark when the file has chapters; interval breaks fall every set number of minutes. Padding fills the time up to the next round time with commercials and bumpers that fit, so programs start at :00 and :30; what is left over is a short gap.",
+            ),
+            check(
+              "Show programs in the guide without their commercial breaks",
+              c.GuideHidesBreaks,
+              (v) => (c.GuideHidesBreaks = v),
             ),
             check(
               "Match commercials to when the program was released or aired",
@@ -2560,6 +2968,38 @@
             (v) => (b.CommercialNetwork = v.trim()),
             "text",
             { placeholder: "e.g. Adult Swim", maxlength: 100 },
+          ),
+          selectField(
+            "Start",
+            b.StartMode,
+            [
+              ["soft", "Soft: after the program before it finishes"],
+              ["exact", "Exact: nothing may run past the start; the time before it is filled with clips"],
+            ],
+            (v) => (b.StartMode = v),
+          ),
+          field(
+            "Skip the block for the day when it would start more than this many minutes late (0 = never)",
+            b.MaxLateMinutes,
+            (v) => (b.MaxLateMinutes = v),
+            "number",
+            { min: 0, max: 1440 },
+          ),
+          selectField(
+            "Fill",
+            b.Fill,
+            [
+              ["count", "Programs per day (above)"],
+              ["fit", "Whole programs that end before the block does, then clips"],
+            ],
+            (v) => (b.Fill = v),
+          ),
+          field(
+            "Guide title (optional, shown for every program in this block)",
+            b.GuideTitle,
+            (v) => (b.GuideTitle = v.trim()),
+            "text",
+            { placeholder: "e.g. Saturday Morning Cartoons", maxlength: 100 },
           ),
           poolEditor(b.Source, "Content for this block"),
         );
@@ -2687,13 +3127,33 @@
       }
       function nextNumber() {
         const used = new Set(
-          [...state.config.Channels, ...state.config.AutomaticChannels].map(
+          [...state.config.Channels, ...state.config.AutomaticChannels, ...(state.config.SmartChannels || []).filter((x) => x.Number)].map(
             (x) => numberKey(x.Number),
           ),
         );
         let next = 1;
         while (used.has(next + ":-1") && next < 999999) next++;
         return String(next);
+      }
+      // Settings added after the first release; channels saved earlier get these on load.
+      function channelDefaults() {
+        return {
+          PadMinutes: 0,
+          BreakMode: "even",
+          BreakIntervalMinutes: 15,
+          MaxBreaksPerProgram: 5,
+          MinBreakProgramMinutes: 10,
+          BreakFreeEndMinutes: 0,
+          CommercialCountMax: 0,
+          GuideHidesBreaks: false,
+          AudioTitle: "",
+          Watermark: "",
+          WatermarkPosition: "bottom-right",
+          WatermarkOpacity: 70,
+          WatermarkSize: 12,
+          Logo: "",
+          OfflineCard: "",
+        };
       }
       function addChannel() {
         const c = {
@@ -2717,6 +3177,7 @@
           MatchCommercialNetwork: true,
           CommercialNetwork: "",
           AlwaysEncode: false,
+          ...channelDefaults(),
         };
         state.config.Channels.push(c);
         state.channel = c.Id;
@@ -2791,7 +3252,12 @@
       function pickerTabs() {
         const tabs = ui("picker-tabs");
         tabs.replaceChildren();
-        const options = state.picker.ads
+        const options = state.picker.smart
+          ? [
+              ["shows", "Shows"],
+              ["movies", "Movies"],
+            ]
+          : state.picker.ads
           ? [
               ["folders", "Folders"],
               ["videos", "Clips"],
@@ -2801,6 +3267,7 @@
           : [
               ["shows", "Shows"],
               ["movies", "Movies"],
+              ["collections", "Collections"],
               ["folders", "Folders"],
               ["libraries", "Whole libraries"],
             ];
@@ -2815,15 +3282,18 @@
           tabs.append(b);
         }
       }
-      function openPicker(p, ads) {
+      function openPicker(p, ads, smart = false) {
         state.picker = {
           pool: p,
           ads,
+          smart,
           kind: ads ? "folders" : "shows",
           start: 0,
           total: 0,
         };
         ui("search").value = "";
+        for (const name of ["genre-filter", "year-from", "year-to"]) ui(name).value = "";
+        ui("picker-filters").hidden = !!ads;
         ui("library-filter").replaceChildren(
           node("option", { value: "" }, "All libraries"),
           ...state.libraries.map((x) =>
@@ -2842,6 +3312,7 @@
         ui("picker").close();
         renderChannels();
         renderEditor();
+        renderSmartChannels();
       }
       async function browse() {
         if (!state.picker) return;
@@ -2880,6 +3351,9 @@
             });
             if (ui("library-filter").value)
               query.set("libraryId", ui("library-filter").value);
+            if (ui("genre-filter").value.trim()) query.set("genre", ui("genre-filter").value.trim());
+            if (Number(ui("year-from").value) > 0) query.set("minYear", ui("year-from").value);
+            if (Number(ui("year-to").value) > 0) query.set("maxYear", ui("year-to").value);
             result = await api("media?" + query);
           }
           if (generation !== state.request || !state.picker) return;
@@ -2922,6 +3396,8 @@
             { class: "ltv-art", "aria-hidden": "true" },
             item.Type === "Series"
               ? "TV"
+              : item.Type === "BoxSet"
+                ? "▦"
               : item.Type === "Folder" || item.Type === "Library"
                 ? "▤"
                 : "▶",
@@ -3075,6 +3551,10 @@
               "Each content restriction needs at least one genre or tag.",
             );
         }
+        for (const smart of state.config.SmartChannels) {
+          if (!smart.Name.trim()) throw new Error("Every smart channel needs a name.");
+          if (smart.Number.trim()) reserve(smart.Number, smart.Name, smart.Enabled !== false);
+        }
         if (state.config.AutoChannels)
           for (const entry of state.config.AutomaticChannels) {
             if (
@@ -3108,8 +3588,11 @@
           if (state.revision === revision) {
             if (savedResult.AutomaticChannels)
               state.config.AutomaticChannels = savedResult.AutomaticChannels;
+            if (savedResult.SmartChannels)
+              state.config.SmartChannels = savedResult.SmartChannels;
             saved();
             renderAutomaticChannels();
+            renderSmartChannels();
             renderChannels();
           }
           try {
@@ -3184,6 +3667,19 @@
           state.config.ClipRules = state.config.ClipRules || [];
           state.config.ClipOverrides = state.config.ClipOverrides || [];
           state.libraries = libraries;
+          state.config.SmartChannels = state.config.SmartChannels || [];
+          for (const smart of state.config.SmartChannels) {
+            smart.LibraryIds = smart.LibraryIds || [];
+            smart.Genres = smart.Genres || [];
+            smart.Years = smart.Years || [];
+            smart.Decades = smart.Decades || [];
+            smart.ItemIds = smart.ItemIds || [];
+          }
+          try {
+            state.genres = await api("genres");
+          } catch (e) {
+            state.genres = [];
+          }
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
             c.Commercials = normalize(c.Commercials);
@@ -3196,7 +3692,15 @@
             c.AudioLanguage = c.AudioLanguage || "";
             if (![1, 2, 4, 8].includes(c.CreditsSpeed)) c.CreditsSpeed = 1;
             c.Blocks = c.Blocks || [];
-            for (const b of c.Blocks) b.Source = normalize(b.Source);
+            for (const [key, value] of Object.entries(channelDefaults()))
+              if (c[key] === undefined || c[key] === null) c[key] = value;
+            for (const b of c.Blocks) {
+              b.Source = normalize(b.Source);
+              b.StartMode = b.StartMode || "soft";
+              b.Fill = b.Fill || "count";
+              b.GuideTitle = b.GuideTitle || "";
+              if (!Number.isInteger(b.MaxLateMinutes)) b.MaxLateMinutes = 0;
+            }
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
             if (c.MatchCommercialNetwork === undefined)
               c.MatchCommercialNetwork = true;
@@ -3217,6 +3721,7 @@
             ])
               for (const key of ["ItemIds", "FolderIds"])
                 for (const value of p[key]) selected.add(value);
+          for (const smart of config.SmartChannels) for (const value of smart.ItemIds) selected.add(value);
           const ids = Array.from(selected);
           for (let offset = 0; offset < ids.length; offset += 500) {
             const items = await api(
@@ -3242,6 +3747,7 @@
             };
           }
           renderAutomaticChannels();
+          renderSmartChannels();
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
@@ -3303,6 +3809,22 @@
         e.preventDefault();
         closePreview();
       });
+      page.querySelector("[data-action=add-smart]").addEventListener("click", () => {
+        state.config.SmartChannels.push({
+          Id: id(),
+          Name: "New smart channel",
+          Number: "",
+          Enabled: true,
+          LibraryIds: [],
+          Genres: [],
+          Years: [],
+          Decades: [],
+          ItemIds: [],
+          Shuffle: true,
+        });
+        dirty();
+        renderSmartChannels();
+      });
       page
         .querySelector("[data-action=close-picker]")
         .addEventListener("click", closePicker);
@@ -3325,6 +3847,17 @@
         state.picker.start = 0;
         browse();
       });
+      for (const name of ["genre-filter", "year-from", "year-to"])
+        ui(name).addEventListener("input", () => {
+          clearTimeout(searchTimer);
+          state.request++;
+          searchTimer = setTimeout(() => {
+            if (state.picker) {
+              state.picker.start = 0;
+              browse();
+            }
+          }, 400);
+        });
       page.querySelector("[data-action=next]").addEventListener("click", () => {
         state.picker.start += 36;
         browse();

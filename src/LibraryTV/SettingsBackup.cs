@@ -10,6 +10,7 @@ public sealed class SettingsBackup
     public bool AutoChannels { get; set; }
     public string[] AutoLibraryIds { get; set; } = [];
     public AutomaticChannel[] AutomaticChannels { get; set; } = [];
+    public SmartChannel[] SmartChannels { get; set; } = [];
     public int AutoChannelStartNumber { get; set; } = 100;
     public string TimeZoneId { get; set; } = "UTC";
     public int GuideDays { get; set; } = 3;
@@ -33,6 +34,7 @@ public sealed class SettingsBackup
         config.AutoChannels = AutoChannels;
         config.AutoLibraryIds = AutoLibraryIds;
         config.AutomaticChannels = AutomaticChannels;
+        config.SmartChannels = SmartChannels;
         config.AutoChannelStartNumber = AutoChannelStartNumber;
         config.TimeZoneId = TimeZoneId;
         config.GuideDays = GuideDays;

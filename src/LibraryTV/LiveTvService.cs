@@ -19,20 +19,28 @@ public sealed class LiveTvService : ILiveTvService
     private IReadOnlyList<ChannelDefinition> Channels => startup?.IsReady == false ? [] : scheduler.Value.Channels;
     public string Name => "Library TV";
     public string HomePageUrl => "https://github.com/thehearthz/jellyfin-plugin-library-tv";
-    public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV }));
-    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(Listings(startup?.IsReady == false ? [] : scheduler.Value.GuideFor(channelId)).Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
+    public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV, ImagePath = ProgramStreamer.IsImage(x.Logo ?? "") && File.Exists(x.Logo) ? x.Logo : null }));
+    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(Listings(startup?.IsReady == false ? [] : scheduler.Value.GuideFor(channelId), HidesBreaks(channelId)).Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
     {
-        Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Title,
-        StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : "From your Jellyfin library"
+        Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Heading ?? x.Title,
+        StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : x.Heading is null ? "From your Jellyfin library" : x.Title
     }));
 
     // The guide lists a program once, from its first part to its last, with the breaks inside it.
-    internal static List<Airing> Listings(IReadOnlyList<Airing> guide)
+    private bool HidesBreaks(string channelId) => startup?.IsReady != false && scheduler.Value.Channels.FirstOrDefault(x => x.Id == channelId)?.GuideHidesBreaks == true;
+
+    // With hideBreaks, commercials are left out and the program before them runs through them.
+    internal static List<Airing> Listings(IReadOnlyList<Airing> guide, bool hideBreaks = false)
     {
         var listings = new List<Airing>();
         var program = -1;
         foreach (var entry in guide)
         {
+            if (hideBreaks && entry.Commercial)
+            {
+                if (program >= 0 && listings[^1].End == entry.Start) listings[^1] = listings[^1] with { End = entry.End };
+                continue;
+            }
             if (!entry.Commercial && entry.Offset > 0 && program >= 0 && listings[program].ItemId == entry.ItemId)
             {
                 listings.RemoveRange(program + 1, listings.Count - program - 1);

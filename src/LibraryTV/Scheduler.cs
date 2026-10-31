@@ -125,6 +125,15 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.Captions is not ("off" or "forced" or "on") || channel.CaptionLanguage is null || channel.CaptionLanguage.Length > 40) throw new ArgumentException("Captions must be off, forced or on, with a caption language of 40 characters or fewer.");
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
+            if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
+            foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
+                if (image is null || image.Length > 500 || image.Length > 0 && (!Path.IsPathFullyQualified(image) || !ProgramStreamer.IsImage(image) || image.Any(char.IsControl))) throw new ArgumentException("Logo, watermark and offline-card images must be full paths to PNG, JPG or WebP files.");
+            if (channel.AudioTitle is null || channel.AudioTitle.Length > 60) throw new ArgumentException("The preferred audio title must be 60 characters or fewer.");
+            if (channel.WatermarkPosition is not ("top-left" or "top-right" or "bottom-left" or "bottom-right") || channel.WatermarkOpacity is < 10 or > 100 || channel.WatermarkSize is < 3 or > 50) throw new ArgumentException("Watermark position: a corner; opacity 10–100; size 3–50 percent.");
+            if (channel.BreakMode is not ("even" or "interval")) throw new ArgumentException("Break placement must be even or interval.");
+            if (channel.BreakIntervalMinutes is < 3 or > 120 || channel.MaxBreaksPerProgram is < 0 or > 20 || channel.MinBreakProgramMinutes is < 1 or > 600 || channel.BreakFreeEndMinutes is < 0 or > 60)
+                throw new ArgumentException("Break interval: 3–120 minutes; breaks per program: 0–20; shortest program to split: 1–600 minutes; break-free ending: 0–60 minutes.");
+            if (channel.CommercialCountMax is < 0 or > 20 || channel.CommercialCountMax != 0 && channel.CommercialCountMax < channel.CommercialCount) throw new ArgumentException("The longest break must be 0 (fixed) or between the commercials per break and 20.");
             if (channel.CommercialNetwork is null || channel.CommercialNetwork.Length > 100 || channel.Blocks.Any(x => x is not null && (x.CommercialNetwork is null || x.CommercialNetwork.Length > 100))) throw new ArgumentException("Commercial network names must be 100 characters or fewer.");
             if (channel.Blocks.Select(x => x.Id).Distinct().Count() != channel.Blocks.Length) throw new ArgumentException("Block IDs must be unique within each channel.");
             foreach (var block in channel.Blocks)
@@ -132,14 +141,31 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 if (block.Id is "default" || block.Id.StartsWith("commercials", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(block.Id)) throw new ArgumentException("Block ID is empty or reserved.");
                 if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) || block.Start == block.End) throw new ArgumentException("Time blocks require different start/end times in HH:mm format.");
                 if (block.MaxItemsPerDay < 0) throw new ArgumentException("Daily episode limits cannot be negative.");
+                if (block.StartMode is not ("soft" or "exact") || block.Fill is not ("count" or "fit")) throw new ArgumentException("A block starts soft or exact and fills by count or fit.");
+                if (block.MaxLateMinutes is < 0 or > 1440) throw new ArgumentException("Allowed lateness must be 0–1440 minutes.");
+                if (block.GuideTitle is null || block.GuideTitle.Length > 100) throw new ArgumentException("Guide titles must be 100 characters or fewer.");
                 if (block.Days is null || block.Days.Length == 0 || block.Days.Any(x => !Enum.IsDefined(x))) throw new ArgumentException("Choose at least one valid day for every time block.");
             }
             foreach (var pool in channel.Blocks.Select(x => x.Source).Append(channel.Source).Append(channel.Commercials).Append(channel.Bumpers))
             {
                 if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
                 if (pool.EpisodesInARow is < 0 or > 100) throw new ArgumentException("Episodes in a row must be 0–100.");
+                ValidatePool(pool);
                 foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
             }
+        }
+        if (c.SmartChannels is null || c.SmartChannels.Length > 50 || c.SmartChannels.Any(x => x is null)) throw new ArgumentException("Use at most 50 smart channels.");
+        if (c.SmartChannels.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != c.SmartChannels.Length) throw new ArgumentException("Smart channel IDs must be unique.");
+        foreach (var smart in c.SmartChannels)
+        {
+            if (string.IsNullOrWhiteSpace(smart.Name) || smart.Name.Length > 100 || !System.Text.RegularExpressions.Regex.IsMatch(smart.Id, "^[a-zA-Z0-9_-]{1,80}$")) throw new ArgumentException("Give every smart channel a name of 100 characters or fewer.");
+            if (smart.Number is null) throw new ArgumentException("Smart channel numbers cannot be null.");
+            if (!string.IsNullOrWhiteSpace(smart.Number)) _ = ChannelNumbers.Key(smart.Number);
+            if (smart.LibraryIds is null || smart.Genres is null || smart.Years is null || smart.Decades is null || smart.ItemIds is null) throw new ArgumentException("Smart channel selections cannot be null.");
+            if (smart.Genres.Length > 100 || smart.Genres.Any(g => g is null || g.Length > 100) || smart.Years.Length > 300 || smart.ItemIds.Length > 500 || smart.LibraryIds.Length > 50)
+                throw new ArgumentException("A smart channel has at most 100 genres, 300 years, 500 chosen shows and movies, and 50 libraries.");
+            if (smart.Years.Any(y => y is < 1850 or > 2200) || smart.Decades.Any(d => d is < 1850 or > 2200 || d % 10 != 0)) throw new ArgumentException("Smart channel years must be 1850–2200, and decades must start on a multiple of ten.");
+            foreach (var id in smart.LibraryIds.Concat(smart.ItemIds)) _ = Guid.Parse(id);
         }
         foreach (var pool in new[] { c.SharedCommercials, c.SharedBumpers })
         {
@@ -167,6 +193,18 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         foreach (var edit in c.ClipOverrides) _ = Guid.Parse(edit.ItemId);
         ChannelNumbers.ValidateUnique(c.Channels.Where(x => x.Enabled));
         foreach (var id in c.AutoLibraryIds) _ = Guid.Parse(id);
+    }
+
+    private static void ValidatePool(Pool pool)
+    {
+        if (pool.Order is not ("" or "chronological" or "alphabetical")) throw new ArgumentException("Order must be blank, chronological or alphabetical.");
+        if (pool.Turns is null || pool.Turns.Length > 200 || pool.Turns.Any(x => x is null || x.Show is null || x.Show.Length > 200 || x.Episodes is < 0 or > 100)) throw new ArgumentException("Use at most 200 shows with 0–100 episodes in a row.");
+        if (pool.TitleContains is null || pool.TitleExcludes is null || pool.TitleContains.Concat(pool.TitleExcludes).Any(x => x is null || x.Length > 100) || pool.TitleContains.Length > 50 || pool.TitleExcludes.Length > 50) throw new ArgumentException("Use at most 50 title words of 100 characters or fewer for each filter.");
+        if (pool.Years is null || pool.Decades is null || pool.AlwaysItemIds is null || pool.Years.Length > 300 || pool.Years.Any(y => y is < 1850 or > 2200) || pool.Decades.Any(d => d is < 1850 or > 2200 || d % 10 != 0)) throw new ArgumentException("Years must be 1850–2200 and decades must start on a multiple of ten.");
+        foreach (var id in pool.AlwaysItemIds) _ = Guid.Parse(id);
+        if (pool.ExcludeGenres is null || pool.MaxRating is null || pool.MaxRating.Length > 20) throw new ArgumentException("Content selections cannot be null.");
+        if (pool.MinYear is not 0 and (< 1850 or > 2200) || pool.MaxYear is not 0 and (< 1850 or > 2200) || pool.MaxYear != 0 && pool.MaxYear < pool.MinYear) throw new ArgumentException("Years must be between 1850 and 2200, and the last year cannot be before the first.");
+        if (pool.MinMinutes < 0 || pool.MaxMinutes < 0 || pool.MaxMinutes != 0 && pool.MaxMinutes < pool.MinMinutes) throw new ArgumentException("Length limits cannot be negative, and the longest cannot be shorter than the shortest.");
     }
 
     public async Task SaveConfiguration(Configuration config, CancellationToken ct)
@@ -272,6 +310,12 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 if (different > 0 && different < 8 && adsAhead.Length >= 3 * different)
                     notes.Add($"Only {different} different commercials fit this channel's programs, so they repeat often. Add more commercials, especially general ones without a network in their name.");
                 if (pools["bumpers"].Count > 0 && aired && !Planned("bumpers")) notes.Add("No bumpers fit this channel's programs: every bumper is named after a network or show these programs don't match.");
+                foreach (var (label, image) in new[] { ("watermark", channel.Watermark), ("logo", channel.Logo), ("offline card", channel.OfflineCard) })
+                    if (image.Length > 0 && !File.Exists(image)) notes.Add($"The {label} image was not found at {image}.");
+                if (channel.PadMinutes > 0 && pools["commercials"].Count + pools["bumpers"].Count == 0) notes.Add("Padding is on, but there are no commercials or bumpers to fill the time, so the gaps before round times are dead air.");
+                foreach (var block in channel.Blocks.Where(x => x.StartMode == "exact" || x.Fill == "fit"))
+                    if (pools[block.Id].Count > 0 && pools["default"].Count == 0 && pools["commercials"].Count + pools["bumpers"].Count == 0)
+                        notes.Add($"The {block.Start}–{block.End} block waits for its exact start or fills to its end, but the default lineup and clips are empty, so the time before it is dead air.");
                 if (channel.CreditsSpeed > 1 && aired && !ahead.Any(x => x.Speed > 1)) notes.Add("None of the upcoming programs have credits markers, so their credits play at normal speed. Credits detection may still be scanning them; otherwise add credits chapters or an Outro media segment (for example with the Intro Skipper plugin).");
                 var upcoming = state.Guide.Where(x => x.End > now).ToArray();
                 if (upcoming.Zip(upcoming.Skip(1)).Any(x => x.Second.Start - x.First.End > TimeSpan.FromMinutes(1)))
@@ -285,7 +329,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             foreach (var id in working.Keys.ToArray())
             {
                 var keepAutomatic = id.StartsWith("auto-", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(id[5..], out var libraryId) && selectedLibraries.Contains(libraryId);
-                if (!retained.Contains(id) && !keepAutomatic) working.Remove(id);
+                var keepSmart = id.StartsWith("smart-", StringComparison.Ordinal) && config.SmartChannels.Any(x => "smart-" + x.Id == id);
+                if (!retained.Contains(id) && !keepAutomatic && !keepSmart) working.Remove(id);
             }
             var library = Summarize("Commercials", ClipEdits.Of(sharedClips, "commercials")).Concat(Summarize("Bumpers", ClipEdits.Of(sharedClips, "bumpers"))).ToArray();
             var snapshot = BuildClipSnapshot(resolvedClips.Values.SelectMany(x => x), networks, allPrograms.DistinctBy(x => x.Id).ToArray());
@@ -329,7 +374,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     {
         PlanningRules, DetectedCredits = config.DetectCredits ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
-        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
+        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
     })));
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);

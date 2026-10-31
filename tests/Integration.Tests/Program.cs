@@ -59,6 +59,62 @@ try
     autoConfig.AutomaticChannels[0].Name = "Custom station";
     autoConfig.AutomaticChannels[0].Number = "7-10";
     Check(autoCatalog.Channels(autoConfig).Any(x => x.Name == "Custom station" && x.Number == "7-10"), "Automatic channels use custom names and subchannel numbers");
+    // Smart channels: genres, years, decades and chosen titles in any combination.
+    {
+        var smartRoot = Path.Combine(directory, "smart"); Directory.CreateDirectory(smartRoot);
+        var smartLibrary = Guid.NewGuid();
+        MediaBrowser.Controller.Entities.Movies.Movie Film(string name, int year, params string[] genres) => new() { Id = Guid.NewGuid(), Name = name, Path = Path.Combine(smartRoot, name + ".mkv"), ProductionYear = year, Genres = genres, RunTimeTicks = TimeSpan.FromHours(1).Ticks };
+        var films = new[] { Film("Laugh 1994", 1994, "Comedy"), Film("Laugh 2003", 2003, "Comedy"), Film("Scare 1996", 1996, "Horror"), Film("Drama 1999", 1999, "Drama", "Comedy"), Film("Odd 1971", 1971, "Drama") };
+        var smartCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemList" => films.Cast<MediaBrowser.Controller.Entities.BaseItem>().ToList(),
+            "GetItemById" => films.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetVirtualFolders" => new List<VirtualFolderInfo>(),
+            _ => throw new NotSupportedException(name)
+        }));
+        string[] Names(Pool pool) => smartCatalog.Read(pool).Select(x => x.Title).Order().ToArray();
+        var libs = new[] { smartLibrary.ToString() };
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy", "Horror"] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Laugh 2003", "Scare 1996"]), "Several genres match any one of them");
+        Check(Names(new Pool { LibraryIds = libs, Decades = [1990] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Scare 1996"]), "A decade matches every year in it");
+        Check(Names(new Pool { LibraryIds = libs, Years = [1971, 2003] }).SequenceEqual(["Laugh 2003", "Odd 1971"]), "Several years match any one of them");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] }).SequenceEqual(["Drama 1999", "Laugh 1994"]), "Genres and decades together must both match");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Horror"], Years = [2003], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Odd 1971"]), "Chosen shows and movies air whether or not they match, and nothing else does when nothing else matches");
+        Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy"], Decades = [1990], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Odd 1971"]), "A smart channel combines matches with chosen titles");
+        Check(Names(new Pool { AlwaysItemIds = [films[2].Id.ToString()] }).SequenceEqual(["Scare 1996"]), "A channel with no libraries airs only its chosen titles");
+        // A collection only links to its movies, so reading its library or the collection itself must open it.
+        var collection = new MediaBrowser.Controller.Entities.Movies.BoxSet { Id = Guid.NewGuid(), Name = "Laugh collection", LinkedChildren = [new() { ItemId = films[0].Id }, new() { ItemId = films[1].Id }] };
+        var linkedLibrary = Proxy<ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemList" => ((InternalItemsQuery)args![0]!).ParentId == smartLibrary ? new List<MediaBrowser.Controller.Entities.BaseItem> { collection } : new List<MediaBrowser.Controller.Entities.BaseItem>(),
+            "GetItemById" => (Guid)args![0]! == collection.Id ? collection : films.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetItemsResult" or "GetVirtualFolders" => throw new NotSupportedException(name),
+            _ => throw new NotSupportedException(name)
+        });
+        var linkedCatalog = new Catalog(linkedLibrary);
+        var previousLibrary = MediaBrowser.Controller.Entities.BaseItem.LibraryManager;
+        MediaBrowser.Controller.Entities.BaseItem.LibraryManager = linkedLibrary;
+        try
+        {
+            Check(linkedCatalog.Read(new Pool { LibraryIds = libs }).Select(x => x.Title).Order().SequenceEqual(["Laugh 1994", "Laugh 2003"]), "A Collections library airs the movies its collections link to");
+            Check(linkedCatalog.Read(new Pool { AlwaysItemIds = [collection.Id.ToString()] }).Select(x => x.Title).Order().SequenceEqual(["Laugh 1994", "Laugh 2003"]), "A chosen collection airs its movies");
+            Check(linkedCatalog.Read(new Pool { ItemIds = [collection.Id.ToString()], Decades = [2000] }).Select(x => x.Title).SequenceEqual(["Laugh 2003"]), "Collection contents follow a pool's filters");
+        }
+        finally { MediaBrowser.Controller.Entities.BaseItem.LibraryManager = previousLibrary; }
+        var smartConfig = new Configuration { AutoChannelStartNumber = 200, Channels = [new ChannelDefinition { Id = "m", Number = "200" }], SmartChannels = [
+            new SmartChannel { Id = "one", Name = "Nineties comedy", LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] },
+            new SmartChannel { Id = "two", Name = "Fixed", Number = "201" }, new SmartChannel { Id = "three", Name = "Off", Number = "5", Enabled = false }] };
+        Check(smartCatalog.PrepareAutomaticChannels(smartConfig) && smartConfig.SmartChannels[0].Number == "202", "Smart channels receive free numbers that skip manual and fixed ones");
+        var made = smartCatalog.Channels(smartConfig);
+        Check(made.Count(x => x.Id.StartsWith("smart-")) == 2 && made.Single(x => x.Id == "smart-one").Source is { Genres: ["Comedy"], Decades: [1990] }, "Enabled smart channels become channels with their criteria as the content");
+        smartConfig.SmartChannels[1].Number = "202";
+        try { smartCatalog.Channels(smartConfig); throw new Exception("Duplicate smart number accepted"); }
+        catch (ArgumentException) { Check(true, "A smart channel cannot share a number with another channel"); }
+        foreach (var (label, bad) in new (string, SmartChannel)[] { ("a year before 1850", new() { Years = [1200] }), ("a decade not on a multiple of ten", new() { Decades = [1995] }), ("an unnamed smart channel", new() { Name = " " }) })
+        {
+            try { Scheduler.Validate(new Configuration { SmartChannels = [bad] }); throw new Exception("Accepted " + label); }
+            catch (ArgumentException) { Check(true, "Rejected " + label); }
+        }
+    }
     autoConfig.AutomaticCommercialCount = 3;
     Check(autoCatalog.Channels(autoConfig).Where(x => x.Id.StartsWith("auto-")).All(x => x.CommercialCount == 3), "Automatic channels get commercial breaks from the shared library");
     autoConfig.Channels[0].Number = "7.10";
@@ -210,6 +266,9 @@ try
     var sounds = new[] { Sound("spa", 0, isDefault: true, codec: "ac3", channels: 6), Sound("eng", 1, commentary: true), Sound("eng", 2), Sound("fre", 3) };
     Check(AudioTrack.Pick(sounds, "English") == sounds[2] && AudioTrack.Pick(sounds, "") == sounds[0] && AudioTrack.Pick(sounds, "German") == sounds[0] && AudioTrack.Pick(sounds, "fr") == sounds[3] && AudioTrack.Pick([], "eng") is null,
         "The preferred audio language picks that track, skipping commentary, and otherwise the file's default track plays");
+    var titled = new[] { Sound("eng", 0, isDefault: true) with { Title = "Stereo" }, Sound("eng", 1, codec: "ac3", channels: 6) with { Title = "Dolby Surround" }, Sound("eng", 2, codec: "ac3", channels: 2) };
+    Check(AudioTrack.Pick(titled, "", "dolby") == titled[1] && AudioTrack.Pick(titled, "", "nothing") == titled[0] && AudioTrack.Pick([Sound("eng", 0), Sound("eng", 1, channels: 6)], "") is { Index: 1 },
+        "A preferred audio title picks the matching track, and without a default the track with the most channels plays");
     var dubbed = new SourceFormat("h264", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9, null, sounds);
     var englishPlan = StreamPlan.For(dubbed, new ChannelDefinition { AudioLanguage = "eng" });
     var defaultPlan = StreamPlan.For(dubbed, new ChannelDefinition());
@@ -356,6 +415,21 @@ try
     invalid = new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock { Id = "default" }] }] };
     try { Scheduler.Validate(invalid); throw new Exception("Reserved ID accepted"); }
     catch (ArgumentException) { Check(true, "Reserved block IDs are rejected"); }
+    foreach (var (label, bad) in new (string, ChannelDefinition)[] {
+        ("a relative watermark path", new() { Watermark = "logo.png" }), ("a watermark that is not an image", new() { Watermark = "/etc/passwd" }), ("an unknown padding", new() { PadMinutes = 7 }),
+        ("an unknown break mode", new() { BreakMode = "random" }), ("a longest break shorter than the usual", new() { CommercialCount = 3, CommercialCountMax = 2 }),
+        ("an unknown block start mode", new() { Blocks = [new TimeBlock { StartMode = "later" }] }), ("an unknown pool order", new() { Source = new Pool { Order = "backwards" } }),
+        ("a last year before the first", new() { Source = new Pool { MinYear = 2000, MaxYear = 1990 } }) })
+    {
+        try { Scheduler.Validate(new Configuration { Channels = [bad] }); throw new Exception("Accepted " + label); }
+        catch (ArgumentException) { Check(true, "Rejected " + label); }
+    }
+    Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { PadMinutes = 30, BreakMode = "interval", CommercialCount = 1, CommercialCountMax = 3, Watermark = OperatingSystem.IsWindows() ? @"C:\logo.png" : "/media/logo.png",
+        Blocks = [new TimeBlock { StartMode = "exact", Fill = "fit", MaxLateMinutes = 10, GuideTitle = "Saturday Morning" }], Source = new Pool { Order = "chronological", MaxRating = "TV-PG", MinYear = 1980, MaxYear = 1999, Turns = [new ShowTurn { Show = "X", Episodes = 3 }] } }] });
+    Check(true, "The new schedule, break, pool and image settings pass validation");
+    var hidden = new List<Airing> { new("c", Guid.NewGuid(), "A", "a", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddMinutes(10), false), new("c", Guid.NewGuid(), "Ad", "ad", DateTimeOffset.UnixEpoch.AddMinutes(10), DateTimeOffset.UnixEpoch.AddMinutes(11), true), new("c", Guid.NewGuid(), "B", "b", DateTimeOffset.UnixEpoch.AddMinutes(11), DateTimeOffset.UnixEpoch.AddMinutes(20), false) };
+    var shown = LiveTvService.Listings(hidden, true);
+    Check(shown.Count == 2 && shown[0].End == DateTimeOffset.UnixEpoch.AddMinutes(11) && LiveTvService.Listings(hidden).Count == 3, "A guide that hides breaks runs the program through them");
     Console.WriteLine($"{checks} integration checks passed.");
 }
 finally { Directory.Delete(directory, true); }

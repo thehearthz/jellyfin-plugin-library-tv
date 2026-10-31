@@ -88,6 +88,23 @@ public static class TransportTests
             "A 4:3 program on a 16:9 channel is encoded into a 16:9 picture with square pixels and black bars");
         var fourByThree = await streamer.Stream(Item(square, 1), new ChannelDefinition { PictureShape = "4:3" }, null, _ => Task.CompletedTask, default);
         check(fourByThree.StartsWith("Direct"), "A 4:3 program on a 4:3 channel is copied without encoding");
+        // A channel logo is drawn on everything, and an image plays as an offline card.
+        var logo = Path.Combine(root, "logo.png");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=red:s=64x64","-frames:v","1",logo]);
+        var marked = new ChannelDefinition { Watermark = logo, WatermarkPosition = "top-left", WatermarkOpacity = 80, WatermarkSize = 20 };
+        using var drawn = new MemoryStream();
+        var drawnMethod = await streamer.Stream(Item(clips[0]), marked, null, bytes => { drawn.Write(bytes); return Task.CompletedTask; }, default);
+        var drawnPath = Path.Combine(root, "marked.ts"); await File.WriteAllBytesAsync(drawnPath, drawn.ToArray());
+        var drawnVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=codec_name,width,height","-of","json",drawnPath])).RootElement.GetProperty("streams")[0];
+        check(drawnMethod.Contains("logo") && drawnVideo.GetProperty("codec_name").GetString() == "h264" && drawnVideo.GetProperty("width").GetInt32() == 320, "A channel logo is drawn onto the encoded picture");
+        var missingLogo = await streamer.Stream(Item(clips[0], 1), new ChannelDefinition { Watermark = Path.Combine(root, "missing.png") }, null, _ => Task.CompletedTask, default);
+        check(missingLogo.StartsWith("Direct"), "A watermark whose image is missing is ignored instead of failing the program");
+        using var cardStream = new MemoryStream();
+        var card = Item(logo, 2) with { Commercial = true };
+        await streamer.Stream(card, new ChannelDefinition(), null, bytes => { cardStream.Write(bytes); return Task.CompletedTask; }, default);
+        var cardPath = Path.Combine(root, "card.ts"); await File.WriteAllBytesAsync(cardPath, cardStream.ToArray());
+        var cardStreams = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-show_entries","stream=codec_name,codec_type","-of","json",cardPath])).RootElement.GetProperty("streams").EnumerateArray().Select(x => x.GetProperty("codec_name").GetString()).ToArray();
+        check(cardStreams.Contains("h264") && cardStreams.Contains("aac"), "An offline card plays as H.264 video with a silent AAC track");
         using var compatibility = new MemoryStream();
         await streamer.Stream(Item(clips[0],1), new ChannelDefinition { AlwaysEncode = true }, null, bytes => { compatibility.Write(bytes); return Task.CompletedTask; }, default);
         var compatiblePath = Path.Combine(root,"compatibility.ts"); await File.WriteAllBytesAsync(compatiblePath,compatibility.ToArray());
