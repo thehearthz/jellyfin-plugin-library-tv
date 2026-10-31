@@ -90,14 +90,16 @@ public static class TransportTests
         check(fourByThree.StartsWith("Direct"), "A 4:3 program on a 4:3 channel is copied without encoding");
         // HDR pictures are tone-mapped to SDR and tagged BT.709.
         var hdrClip = Path.Combine(root, "hdr.mp4");
-        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=640x360:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-vf","format=yuv420p10le","-c:v","libx264","-profile:v","high10","-preset","ultrafast","-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc","-c:a","aac","-ac","2",hdrClip]);
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=640x360:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-vf","format=yuv420p10le","-c:v","libx264","-profile:v","high10","-preset","ultrafast","-x264-params","colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc","-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc","-c:a","aac","-ac","2",hdrClip]);
+        var hdrSource = await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","csv=p=0",hdrClip]);
+        check(hdrSource.Contains("smpte2084"), "The HDR test clip really is tagged PQ (" + hdrSource.Trim() + ")");
         using var tonemapped = new MemoryStream();
         var hdrMethod = await streamer.Stream(Item(hdrClip), Auto, null, bytes => { tonemapped.Write(bytes); return Task.CompletedTask; }, default);
         var hdrPath = Path.Combine(root, "tonemapped.ts"); await File.WriteAllBytesAsync(hdrPath, tonemapped.ToArray());
         var hdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=codec_name,pix_fmt,color_transfer,color_primaries,color_space,width","-of","json",hdrPath])).RootElement.GetProperty("streams")[0];
         check(hdrMethod.Contains("tone-mapped") && hdrVideo.GetProperty("codec_name").GetString() == "h264" && hdrVideo.GetProperty("pix_fmt").GetString() == "yuv420p"
             && hdrVideo.GetProperty("color_transfer").GetString() == "bt709" && hdrVideo.GetProperty("color_primaries").GetString() == "bt709" && hdrVideo.GetProperty("color_space").GetString() == "bt709",
-            "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709");
+            "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709 (" + hdrMethod + " | " + hdrVideo.GetRawText() + ")");
         var sdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","json",Path.Combine(root, "transition.ts")])).RootElement.GetProperty("streams")[0];
         check(!hdrMethod.StartsWith("Direct") && !(sdrVideo.TryGetProperty("color_transfer", out var sdrTransfer) && sdrTransfer.GetString() == "smpte2084"), "SDR programs are untouched by tone mapping");
         // A channel logo is drawn on everything, and an image plays as an offline card.
