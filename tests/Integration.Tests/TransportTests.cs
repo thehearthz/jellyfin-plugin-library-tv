@@ -97,7 +97,7 @@ public static class TransportTests
         var hdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=codec_name,pix_fmt,color_transfer,color_primaries,color_space,width","-of","json",hdrPath])).RootElement.GetProperty("streams")[0];
         check(hdrMethod.Contains("tone-mapped") && hdrVideo.GetProperty("codec_name").GetString() == "h264" && hdrVideo.GetProperty("pix_fmt").GetString() == "yuv420p"
             && hdrVideo.GetProperty("color_transfer").GetString() == "bt709" && hdrVideo.GetProperty("color_primaries").GetString() == "bt709" && hdrVideo.GetProperty("color_space").GetString() == "bt709",
-            "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709");
+            "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709 (" + hdrMethod + " | " + hdrVideo.GetRawText() + ")");
         var sdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","json",Path.Combine(root, "transition.ts")])).RootElement.GetProperty("streams")[0];
         check(!hdrMethod.StartsWith("Direct") && !(sdrVideo.TryGetProperty("color_transfer", out var sdrTransfer) && sdrTransfer.GetString() == "smpte2084"), "SDR programs are untouched by tone mapping");
         // A channel logo is drawn on everything, and an image plays as an offline card.
