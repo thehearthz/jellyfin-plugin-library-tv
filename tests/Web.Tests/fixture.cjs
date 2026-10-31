@@ -135,6 +135,13 @@ function install(window, options = {}) {
             Error: "Library TV is waiting for Jellyfin startup to finish.",
           },
         };
+      if (path.startsWith("hardware"))
+        return {
+          Encoders: [
+            { Id: "nvenc", Name: "NVIDIA NVENC", Works: true, Detail: "Working." },
+            { Id: "vaapi", Name: "VAAPI (Intel/AMD)", Works: false, Detail: "No such device" },
+          ],
+        };
       if (path === "genres") return ["Animation", "Comedy", "Drama"];
       if (path === "libraries")
         return [

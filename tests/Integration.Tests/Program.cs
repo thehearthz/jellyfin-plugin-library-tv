@@ -438,6 +438,36 @@ try
     var shown = LiveTvService.Listings(hidden, true);
     Check(shown.Count == 2 && shown[0].End == DateTimeOffset.UnixEpoch.AddMinutes(11) && LiveTvService.Listings(hidden).Count == 3, "A guide that hides breaks runs the program through them");
     {
+        var gpuSource = new SourceFormat("hevc", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9);
+        var gpuAiring = new Airing("c", Guid.NewGuid(), "t", "/m.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false);
+        System.Collections.ObjectModel.Collection<string> Command(string encoderName, string quality = "balanced", Watermark? mark = null)
+        {
+            var plan = StreamPlan.For(gpuSource, new ChannelDefinition { EncodeQuality = quality }) with { Encoder = encoderName, Device = encoderName == "vaapi" ? "/dev/dri/renderD129" : "", Mark = mark };
+            return ProgramStreamer.Command("ffmpeg", gpuAiring, plan, DateTimeOffset.UtcNow).ArgumentList;
+        }
+        var nv = Command("nvenc", "high");
+        Check(nv.Contains("h264_nvenc") && !nv.Contains("libx264") && nv[nv.IndexOf("-cq") + 1] == "23" && nv[nv.IndexOf("-preset") + 1] == "p4" && nv.Contains("-forced-idr") && nv[nv.IndexOf("-vf") + 1].EndsWith("format=yuv420p"), "NVENC encodes with the chosen quality, and the picture filters stay in software");
+        var qs = Command("qsv", "best");
+        Check(qs.Contains("h264_qsv") && qs[qs.IndexOf("-global_quality") + 1] == "19" && !qs.Contains("-vaapi_device"), "Quick Sync encodes with the chosen quality");
+        var va = Command("vaapi");
+        Check(va.Contains("h264_vaapi") && va[va.IndexOf("-vaapi_device") + 1] == "/dev/dri/renderD129" && va[va.IndexOf("-vf") + 1].EndsWith("format=nv12,hwupload") && va[va.IndexOf("-qp") + 1] == "26", "VAAPI names its device and uploads the finished picture to the card");
+        var vaMark = Command("vaapi", mark: new Watermark("/logo.png", "top-left", 70, 100, 10));
+        Check(vaMark[vaMark.IndexOf("-filter_complex") + 1].EndsWith("format=yuv420p,format=nv12,hwupload[video]"), "VAAPI uploads after the logo is drawn");
+        var cpuCommand = Command("cpu");
+        Check(cpuCommand.Contains("libx264") && !cpuCommand.Contains("-vaapi_device") && StreamPlan.For(gpuSource, new ChannelDefinition()).Encoder == "cpu", "The CPU encoder is the default and unchanged");
+        var copied = ProgramStreamer.Command("ffmpeg", gpuAiring, StreamPlan.Copy with { Encoder = "vaapi" }, DateTimeOffset.UtcNow).ArgumentList;
+        Check(copied.Contains("copy") && !copied.Contains("-vaapi_device") && !copied.Contains("h264_vaapi"), "Copied programs never touch the encoder");
+        foreach (var (label, bad) in new (string, Configuration)[] { ("an unknown hardware encoder", new() { HardwareEncoder = "cuda" }), ("a VAAPI device outside /dev", new() { HardwareDevice = "/etc/passwd" }), ("a VAAPI device with ..", new() { HardwareDevice = "/dev/../etc/x" }) })
+        {
+            try { Scheduler.Validate(bad); throw new Exception("Accepted " + label); }
+            catch (ArgumentException) { Check(true, "Rejected " + label); }
+        }
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { EncodeWith = "gpu" }] }); throw new Exception("Bad encode-with accepted"); }
+        catch (ArgumentException) { Check(true, "A channel can only be pinned to the CPU"); }
+        Scheduler.Validate(new Configuration { HardwareEncoder = "vaapi", HardwareDevice = "/dev/dri/renderD128", Channels = [new ChannelDefinition { EncodeWith = "cpu" }] });
+        Check(true, "Hardware encoder settings pass validation");
+    }
+    {
         var hdrFormat = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9, Hdr: true);
         var hdrPlan = StreamPlan.For(hdrFormat, new ChannelDefinition());
         var hdrArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hdr.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), hdrPlan, DateTimeOffset.UtcNow).ArgumentList;
