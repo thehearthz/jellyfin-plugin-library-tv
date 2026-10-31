@@ -90,7 +90,9 @@ public static class TransportTests
         check(fourByThree.StartsWith("Direct"), "A 4:3 program on a 4:3 channel is copied without encoding");
         // HDR pictures are tone-mapped to SDR and tagged BT.709.
         var hdrClip = Path.Combine(root, "hdr.mp4");
-        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=640x360:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-vf","format=yuv420p10le","-c:v","libx264","-profile:v","high10","-preset","ultrafast","-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc","-c:a","aac","-ac","2",hdrClip]);
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=640x360:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-vf","format=yuv420p10le","-c:v","libx264","-profile:v","high10","-preset","ultrafast","-x264-params","colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc","-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc","-c:a","aac","-ac","2",hdrClip]);
+        var hdrSource = await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","csv=p=0",hdrClip]);
+        check(hdrSource.Contains("smpte2084"), "The HDR test clip really is tagged PQ (" + hdrSource.Trim() + ")");
         using var tonemapped = new MemoryStream();
         var hdrMethod = await streamer.Stream(Item(hdrClip), Auto, null, bytes => { tonemapped.Write(bytes); return Task.CompletedTask; }, default);
         var hdrPath = Path.Combine(root, "tonemapped.ts"); await File.WriteAllBytesAsync(hdrPath, tonemapped.ToArray());
