@@ -81,6 +81,25 @@ try
         Check(Names(new Pool { LibraryIds = libs, Genres = ["Horror"], Years = [2003], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Odd 1971"]), "Chosen shows and movies air whether or not they match, and nothing else does when nothing else matches");
         Check(Names(new Pool { LibraryIds = libs, Genres = ["Comedy"], Decades = [1990], AlwaysItemIds = [films[4].Id.ToString()] }).SequenceEqual(["Drama 1999", "Laugh 1994", "Odd 1971"]), "A smart channel combines matches with chosen titles");
         Check(Names(new Pool { AlwaysItemIds = [films[2].Id.ToString()] }).SequenceEqual(["Scare 1996"]), "A channel with no libraries airs only its chosen titles");
+        // A collection only links to its movies, so reading its library or the collection itself must open it.
+        var collection = new MediaBrowser.Controller.Entities.Movies.BoxSet { Id = Guid.NewGuid(), Name = "Laugh collection", LinkedChildren = [new() { ItemId = films[0].Id }, new() { ItemId = films[1].Id }] };
+        var linkedLibrary = Proxy<ILibraryManager>.Make((name, args) => name switch
+        {
+            "GetItemList" => ((InternalItemsQuery)args![0]!).ParentId == smartLibrary ? new List<MediaBrowser.Controller.Entities.BaseItem> { collection } : new List<MediaBrowser.Controller.Entities.BaseItem>(),
+            "GetItemById" => (Guid)args![0]! == collection.Id ? collection : films.FirstOrDefault(x => x.Id == (Guid)args![0]!),
+            "GetItemsResult" or "GetVirtualFolders" => throw new NotSupportedException(name),
+            _ => throw new NotSupportedException(name)
+        });
+        var linkedCatalog = new Catalog(linkedLibrary);
+        var previousLibrary = MediaBrowser.Controller.Entities.BaseItem.LibraryManager;
+        MediaBrowser.Controller.Entities.BaseItem.LibraryManager = linkedLibrary;
+        try
+        {
+            Check(linkedCatalog.Read(new Pool { LibraryIds = libs }).Select(x => x.Title).Order().SequenceEqual(["Laugh 1994", "Laugh 2003"]), "A Collections library airs the movies its collections link to");
+            Check(linkedCatalog.Read(new Pool { AlwaysItemIds = [collection.Id.ToString()] }).Select(x => x.Title).Order().SequenceEqual(["Laugh 1994", "Laugh 2003"]), "A chosen collection airs its movies");
+            Check(linkedCatalog.Read(new Pool { ItemIds = [collection.Id.ToString()], Decades = [2000] }).Select(x => x.Title).SequenceEqual(["Laugh 2003"]), "Collection contents follow a pool's filters");
+        }
+        finally { MediaBrowser.Controller.Entities.BaseItem.LibraryManager = previousLibrary; }
         var smartConfig = new Configuration { AutoChannelStartNumber = 200, Channels = [new ChannelDefinition { Id = "m", Number = "200" }], SmartChannels = [
             new SmartChannel { Id = "one", Name = "Nineties comedy", LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] },
             new SmartChannel { Id = "two", Name = "Fixed", Number = "201" }, new SmartChannel { Id = "three", Name = "Off", Number = "5", Enabled = false }] };

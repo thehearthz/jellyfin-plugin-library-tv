@@ -68,8 +68,8 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         BaseItemKind[] types = kind switch
         {
             "shows" => [BaseItemKind.Series], "movies" => [BaseItemKind.Movie],
-            "folders" => [BaseItemKind.Folder], "videos" => [BaseItemKind.Video],
-            _ => throw new ArgumentException("Choose shows, movies, folders, or videos.")
+            "folders" => [BaseItemKind.Folder], "videos" => [BaseItemKind.Video], "collections" => [BaseItemKind.BoxSet],
+            _ => throw new ArgumentException("Choose shows, movies, collections, folders, or videos.")
         };
         var result = library.GetItemsResult(new InternalItemsQuery
         {
@@ -216,23 +216,35 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         // An empty selector deliberately means no content, never every library.
         if (pool.LibraryIds.Length + pool.FolderIds.Length + pool.ItemIds.Length + pool.AlwaysItemIds.Length == 0) return [];
         var items = new Dictionary<Guid, BaseItem>();
-        foreach (var id in pool.LibraryIds.Concat(pool.FolderIds))
-            foreach (var item in library.GetItemList(new InternalItemsQuery { ParentId = Guid.Parse(id), Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) items[item.Id] = item;
-        foreach (var id in pool.ItemIds)
+        BaseItemKind[] playable = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video];
+        // A collection (box set) only links to its shows and movies, which live in other libraries, so a query
+        // under the Collections library finds the box sets but none of their content: open each one.
+        void Add(BaseItem item, Dictionary<Guid, BaseItem> into, HashSet<Guid>? opened = null)
         {
-            var item = library.GetItemById(Guid.Parse(id));
-            if (item is MediaBrowser.Controller.Entities.Folder)
-                foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = item.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) items[child.Id] = child;
-            else if (item is not null) items[item.Id] = item;
+            opened ??= [];
+            if (item is MediaBrowser.Controller.Entities.Movies.BoxSet box)
+            {
+                if (!opened.Add(box.Id)) return;
+                foreach (var child in box.GetLinkedChildren()) Add(child, into, opened);
+            }
+            else if (item is MediaBrowser.Controller.Entities.Folder folder)
+            {
+                foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = folder.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [.. playable, BaseItemKind.BoxSet] })) Add(child, into, opened);
+            }
+            else into[item.Id] = item;
         }
+        foreach (var id in pool.LibraryIds.Concat(pool.FolderIds))
+            foreach (var item in library.GetItemList(new InternalItemsQuery { ParentId = Guid.Parse(id), Recursive = true, IsVirtualItem = false, IncludeItemTypes = [.. playable, BaseItemKind.BoxSet] }))
+                Add(item, items);
+        foreach (var id in pool.ItemIds)
+            if (library.GetItemById(Guid.Parse(id)) is { } item) Add(item, items);
         // Shows and movies that always air skip the filters below.
         var pinned = new HashSet<Guid>();
         foreach (var id in pool.AlwaysItemIds)
         {
-            var item = library.GetItemById(Guid.Parse(id));
-            if (item is MediaBrowser.Controller.Entities.Folder)
-                foreach (var child in library.GetItemList(new InternalItemsQuery { ParentId = item.Id, Recursive = true, IsVirtualItem = false, IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Episode, BaseItemKind.Video] })) { items[child.Id] = child; pinned.Add(child.Id); }
-            else if (item is not null) { items[item.Id] = item; pinned.Add(item.Id); }
+            var chosen = new Dictionary<Guid, BaseItem>();
+            if (library.GetItemById(Guid.Parse(id)) is { } item) Add(item, chosen);
+            foreach (var (key, value) in chosen) { items[key] = value; pinned.Add(key); }
         }
         // Check each media folder once, not every file: this catches an offline mount cheaply.
         // Jellyfin's library scan removes deleted files, and playback recovery skips stragglers.

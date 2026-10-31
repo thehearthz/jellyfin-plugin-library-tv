@@ -3267,6 +3267,7 @@
           : [
               ["shows", "Shows"],
               ["movies", "Movies"],
+              ["collections", "Collections"],
               ["folders", "Folders"],
               ["libraries", "Whole libraries"],
             ];
@@ -3395,6 +3396,8 @@
             { class: "ltv-art", "aria-hidden": "true" },
             item.Type === "Series"
               ? "TV"
+              : item.Type === "BoxSet"
+                ? "▦"
               : item.Type === "Folder" || item.Type === "Library"
                 ? "▤"
                 : "▶",

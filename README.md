@@ -149,6 +149,10 @@ This needs to know where the credits are: an Outro media segment (added by plugi
 
 Results are saved in `library-tv/credits.json` in Jellyfin's data folder. A file that changes is read again; a program where nothing was found is tried again after two weeks. When a scan finds new credits, the planned guide is rebuilt once, after the current program, so breaks and **Credits** speed use them. Chapters and Outro segments take priority when a program has them. Open **Credits detection** in the builder to turn it off or see its progress.
 
+### Collections
+
+Jellyfin collections (box sets) only link to their movies and shows, which live in other libraries, so a library made of collections has no media of its own. Library TV opens each collection and airs what it links to, including shows inside a collection and collections inside collections. This applies to an automatic channel for your Collections library, to a smart channel's libraries, and to any content selection. The **Collections** tab in the **Choose shows & movies** picker selects individual collections, so a channel can air just *Star Wars* and *Marvel*, and a smart channel can always air a collection.
+
 ### Smart channels
 
 Under **Automatic channels → Smart channels**, **+ Add smart channel** builds a channel from what is in your library instead of from a hand-picked list:
