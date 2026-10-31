@@ -25,6 +25,8 @@ public sealed class Configuration : BasePluginConfiguration
     public Pool SharedBumpers { get; set; } = new();
     // Commercials per break on automatic library channels, which use the shared commercials and bumpers.
     public int AutomaticCommercialCount { get; set; } = 2;
+    // How much faster credits play on automatic and smart channels (1 = normal). Hand-built channels set their own.
+    public int AutomaticCreditsSpeed { get; set; } = 1;
     // Reads every program's file in the background to find where its credits start, for programs without
     // a credits chapter or Outro segment.
     public bool DetectCredits { get; set; } = true;

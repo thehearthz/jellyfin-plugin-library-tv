@@ -20,6 +20,7 @@ public sealed class SettingsBackup
     public Pool SharedCommercials { get; set; } = new();
     public Pool SharedBumpers { get; set; } = new();
     public int AutomaticCommercialCount { get; set; } = 2;
+    public int AutomaticCreditsSpeed { get; set; } = 1;
     public bool DetectCredits { get; set; } = true;
     public ClipEdit[] ClipRules { get; set; } = [];
     public ClipEdit[] ClipOverrides { get; set; } = [];
@@ -44,6 +45,7 @@ public sealed class SettingsBackup
         config.SharedCommercials = SharedCommercials;
         config.SharedBumpers = SharedBumpers;
         config.AutomaticCommercialCount = AutomaticCommercialCount;
+        config.AutomaticCreditsSpeed = AutomaticCreditsSpeed;
         config.DetectCredits = DetectCredits;
         config.ClipRules = ClipRules;
         config.ClipOverrides = ClipOverrides;

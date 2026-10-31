@@ -173,6 +173,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (pool is null || pool.LibraryIds is null || pool.ItemIds is null || pool.FolderIds is null || pool.Genres is null || pool.Tags is null) throw new ArgumentException("Content selections cannot be null.");
             foreach (var id in pool.LibraryIds.Concat(pool.ItemIds).Concat(pool.FolderIds)) _ = Guid.Parse(id);
         }
+        if (c.AutomaticCreditsSpeed is not (1 or 2 or 4 or 8)) throw new ArgumentException("Credits speed on automatic channels must be 1 (normal), 2, 4 or 8.");
         if (c.AutomaticCommercialCount is < 0 or > 20) throw new ArgumentException("Commercials per break on automatic channels must be 0–20.");
         if (c.Restrictions is null || c.Restrictions.Length > 50 || c.Restrictions.Any(x => x is null)) throw new ArgumentException("Use at most 50 content restrictions.");
         foreach (var rule in c.Restrictions)

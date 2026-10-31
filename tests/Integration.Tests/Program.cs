@@ -104,7 +104,9 @@ try
             new SmartChannel { Id = "one", Name = "Nineties comedy", LibraryIds = libs, Genres = ["Comedy"], Decades = [1990] },
             new SmartChannel { Id = "two", Name = "Fixed", Number = "201" }, new SmartChannel { Id = "three", Name = "Off", Number = "5", Enabled = false }] };
         Check(smartCatalog.PrepareAutomaticChannels(smartConfig) && smartConfig.SmartChannels[0].Number == "202", "Smart channels receive free numbers that skip manual and fixed ones");
+        smartConfig.AutomaticCreditsSpeed = 8;
         var made = smartCatalog.Channels(smartConfig);
+        Check(made.Where(x => x.Id.StartsWith("smart-")).All(x => x.CreditsSpeed == 8), "Smart channels use the credits speed set for automatic channels");
         Check(made.Count(x => x.Id.StartsWith("smart-")) == 2 && made.Single(x => x.Id == "smart-one").Source is { Genres: ["Comedy"], Decades: [1990] }, "Enabled smart channels become channels with their criteria as the content");
         smartConfig.SmartChannels[1].Number = "202";
         try { smartCatalog.Channels(smartConfig); throw new Exception("Duplicate smart number accepted"); }
@@ -115,6 +117,11 @@ try
             catch (ArgumentException) { Check(true, "Rejected " + label); }
         }
     }
+    autoConfig.AutomaticCreditsSpeed = 4;
+    Check(autoCatalog.Channels(autoConfig).Where(x => x.Id.StartsWith("auto-")).All(x => x.CreditsSpeed == 4), "Automatic channels use the credits speed set for them");
+    try { Scheduler.Validate(new Configuration { AutomaticCreditsSpeed = 3 }); throw new Exception("Bad credits speed accepted"); }
+    catch (ArgumentException) { Check(true, "An unknown credits speed on automatic channels is rejected"); }
+    autoConfig.AutomaticCreditsSpeed = 1;
     autoConfig.AutomaticCommercialCount = 3;
     Check(autoCatalog.Channels(autoConfig).Where(x => x.Id.StartsWith("auto-")).All(x => x.CommercialCount == 3), "Automatic channels get commercial breaks from the shared library");
     autoConfig.Channels[0].Number = "7.10";
