@@ -430,6 +430,31 @@ try
     var hidden = new List<Airing> { new("c", Guid.NewGuid(), "A", "a", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddMinutes(10), false), new("c", Guid.NewGuid(), "Ad", "ad", DateTimeOffset.UnixEpoch.AddMinutes(10), DateTimeOffset.UnixEpoch.AddMinutes(11), true), new("c", Guid.NewGuid(), "B", "b", DateTimeOffset.UnixEpoch.AddMinutes(11), DateTimeOffset.UnixEpoch.AddMinutes(20), false) };
     var shown = LiveTvService.Listings(hidden, true);
     Check(shown.Count == 2 && shown[0].End == DateTimeOffset.UnixEpoch.AddMinutes(11) && LiveTvService.Listings(hidden).Count == 3, "A guide that hides breaks runs the program through them");
+    {
+        var hdrFormat = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9, Hdr: true);
+        var hdrPlan = StreamPlan.For(hdrFormat, new ChannelDefinition());
+        var hdrArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hdr.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), hdrPlan, DateTimeOffset.UtcNow).ArgumentList;
+        Check(hdrPlan.ToneMap && !hdrPlan.CopyVideo && StreamPlan.For(hdrFormat with { Hdr = false }, new ChannelDefinition()).CopyVideo, "HDR video is never copied, even when it is 8-bit H.264");
+        Check(hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("zscale=t=linear") && hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("tonemap=tonemap=hable") && hdrArgs[hdrArgs.IndexOf("-color_trc") + 1] == "bt709" && hdrPlan.Describe().Contains("tone-mapped"), "An HDR program gets the tone-mapping filters and BT.709 tags, and Channel health says so");
+        Check(HighDynamicRange.Is("smpte2084") && HighDynamicRange.Is("ARIB-STD-B67") && !HighDynamicRange.Is("bt709") && !HighDynamicRange.Is(null), "PQ and HLG transfers count as HDR");
+    }
+    {
+        var odd = new SourceFormat("hevc", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9);
+        string Arg(System.Diagnostics.ProcessStartInfo c, string name) => c.ArgumentList[c.ArgumentList.IndexOf(name) + 1];
+        var airing = new Airing("c", Guid.NewGuid(), "t", "/m.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false);
+        var normal = StreamPlan.For(odd, new ChannelDefinition());
+        var best = StreamPlan.For(odd, new ChannelDefinition { EncodeQuality = "best", EncodeHeight = 1080 });
+        var low = StreamPlan.For(odd, new ChannelDefinition { EncodeQuality = "fast", EncodeHeight = 480 });
+        var normalCommand = ProgramStreamer.Command("ffmpeg", airing, normal, DateTimeOffset.UtcNow);
+        var bestCommand = ProgramStreamer.Command("ffmpeg", airing, best, DateTimeOffset.UtcNow);
+        Check(normal.FrameHeight == 720 && best.FrameHeight == 1080 && best.FrameWidth == 1920 && low.FrameHeight == 480 && low.FrameWidth == 854, "The tallest encoded picture follows the channel's setting");
+        Check(Arg(normalCommand, "-crf") == "23" && Arg(normalCommand, "-preset") == "ultrafast" && Arg(normalCommand, "-b:a") == "192k" && Arg(bestCommand, "-crf") == "17" && Arg(bestCommand, "-preset") == "faster" && Arg(bestCommand, "-b:a") == "256k"
+            && Arg(ProgramStreamer.Command("ffmpeg", airing, low, DateTimeOffset.UtcNow), "-crf") == "27", "Encoding quality sets the x264 preset, quality and audio bitrate, with balanced matching earlier versions");
+        var always = StreamPlan.For(odd, new ChannelDefinition { AlwaysEncode = true, EncodeHeight = 1080, EncodeQuality = "high" });
+        Check(always.Normalize && always.FrameWidth == 1920 && always.Describe().Contains("1080p") && StreamPlan.For(odd, new ChannelDefinition { EncodeQuality = "bogus", EncodeHeight = 999 }).FrameHeight == 720, "Always encode uses the chosen height, and unknown values fall back to the defaults");
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { EncodeQuality = "ultra" }] }); throw new Exception("Bad quality accepted"); }
+        catch (ArgumentException) { Check(true, "Unknown encoding quality is rejected"); }
+    }
     Console.WriteLine($"{checks} integration checks passed.");
 }
 finally { Directory.Delete(directory, true); }

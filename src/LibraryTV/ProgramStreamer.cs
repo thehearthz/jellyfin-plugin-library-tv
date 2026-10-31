@@ -20,7 +20,7 @@ public interface IProgramStreamer
 // What the file holds, from Jellyfin's library metadata or FFprobe. Null means unknown.
 // PixelAspect is the sample aspect ratio (1 for square pixels); DisplayAspect is the picture's shape.
 public sealed record SourceFormat(string? Video, string? PixelFormat, int? BitDepth, bool Interlaced, string? Audio, int? Channels, int? SampleRate,
-    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null, CaptionTrack[]? Captions = null, AudioTrack[]? AudioTracks = null)
+    int? Width = null, int? Height = null, double? PixelAspect = null, double? DisplayAspect = null, CaptionTrack[]? Captions = null, AudioTrack[]? AudioTracks = null, bool Hdr = false)
 {
     public double? Shape => DisplayAspect ?? (Width > 0 && Height > 0 ? Width.Value * (PixelAspect ?? 1) / Height.Value : null);
 }
@@ -93,13 +93,36 @@ public sealed record CaptionTrack(string Codec, string? Language, bool Forced, b
 // Captions, when set, is burned into the picture, which always means encoding the video.
 // AudioIndex is the audio track played, as FFmpeg counts the file's audio streams.
 // A channel logo: where it goes, how opaque it is, its width in pixels and its distance from the edges.
+// HDR transfers: PQ (HDR10, Dolby Vision's base layer) and HLG.
+public static class HighDynamicRange
+{
+    public static bool Is(string? colorTransfer) => colorTransfer?.ToLowerInvariant() is "smpte2084" or "arib-std-b67" or "smpte2084 (hdr10)" or "hlg";
+
+    // Brings HDR down to SDR at the picture's final size: linear light, BT.709 primaries, Hable tone mapping,
+    // then BT.709 limited-range 8-bit video. Needs FFmpeg's zscale filter (libzimg), which Jellyfin's FFmpeg has.
+    public const string ToneMap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv";
+}
+
 public sealed record Watermark(string Path, string Position, int Opacity, int Width, int Margin);
 
 public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
-    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null)
+    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null, string Quality = "balanced", int Height = 720, bool ToneMap = false)
 {
     public static readonly StreamPlan Copy = new(true, true);
     public static readonly StreamPlan Encode = new(false, false, Normalize: true, FrameWidth: 1280, FrameHeight: 720);
+
+    public static readonly string[] Qualities = ["fast", "balanced", "high", "best"];
+    public static readonly int[] Heights = [480, 576, 720, 1080];
+
+    // x264 preset, constant rate factor (lower is better) and audio bitrate for each quality. "balanced" is
+    // what Library TV has always used.
+    public (string Preset, string Crf, string AudioRate) Settings => Quality switch
+    {
+        "fast" => ("ultrafast", "27", "128k"),
+        "high" => ("veryfast", "20", "224k"),
+        "best" => ("faster", "17", "256k"),
+        _ => ("ultrafast", "23", "192k"),
+    };
 
     // 8-bit H.264 video and stereo AAC audio play on almost every client without Jellyfin re-encoding
     // them, so they are copied. Anything else is encoded to those formats, so every program on a channel
@@ -111,20 +134,23 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // The logo is drawn over the picture, so it also means encoding: set watermark to false when its file is missing.
     public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1, bool watermark = true)
     {
-        var plan = ForSpeed(format, channel, shapeOverride, speed > 1);
+        var height = Heights.Contains(channel.EncodeHeight) ? channel.EncodeHeight : 720;
+        var plan = ForSpeed(format, channel, shapeOverride, speed > 1, height) with { Quality = Qualities.Contains(channel.EncodeQuality) ? channel.EncodeQuality : "balanced", Height = height };
         if (speed > 1) plan = plan with { CopyVideo = false, CopyAudio = false, Captions = null, Speed = speed };
+        // An HDR picture is brought down to SDR, so it can never be copied.
+        if (format?.Hdr == true) plan = plan with { CopyVideo = false, ToneMap = true };
         if (!watermark || string.IsNullOrWhiteSpace(channel.Watermark)) return plan;
         // The logo is sized from the picture's width, so the picture needs a size: programs that keep their own shape keep their own size, up to 1280 wide.
         if (!plan.Normalize && plan.FrameWidth == 0)
         {
-            var wide = Math.Min((format?.Width ?? 1280) * (format?.PixelAspect ?? 1), 1280);
+            var wide = Math.Min((format?.Width ?? 1280) * (format?.PixelAspect ?? 1), plan.Height * 16.0 / 9);
             plan = plan with { FrameWidth = Even(wide), FrameHeight = Even(wide / (format?.Shape ?? 16.0 / 9)) };
         }
-        var width = plan.Normalize ? 1280 : plan.FrameWidth;
+        var width = plan.FrameWidth > 0 ? plan.FrameWidth : 1280;
         return plan with { CopyVideo = false, Mark = new Watermark(channel.Watermark, channel.WatermarkPosition, Math.Clamp(channel.WatermarkOpacity, 10, 100), Even(width * Math.Clamp(channel.WatermarkSize, 3, 50) / 100.0), Even(width * 0.03)) };
     }
 
-    private static StreamPlan ForSpeed(SourceFormat? format, ChannelDefinition channel, double? shapeOverride, bool fast)
+    private static StreamPlan ForSpeed(SourceFormat? format, ChannelDefinition channel, double? shapeOverride, bool fast, int cap)
     {
         // The chosen audio track decides whether audio can be copied, as the first track did before.
         var chosen = AudioTrack.Pick(format?.AudioTracks, channel.AudioLanguage, channel.AudioTitle);
@@ -133,9 +159,9 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         var audioLanguage = string.IsNullOrWhiteSpace(channel.AudioLanguage) && string.IsNullOrWhiteSpace(channel.AudioTitle) ? null : chosen?.Language ?? chosen?.Title;
         var hasAudio = format is null || format.Audio is not null;
         var captions = fast ? null : CaptionTrack.Pick(format?.Captions, channel.Captions, channel.CaptionLanguage);
-        if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions, AudioIndex = audioIndex, AudioLanguage = audioLanguage };
+        if (channel.AlwaysEncode) return Encode with { FrameWidth = Even(cap * 16.0 / 9), FrameHeight = cap, HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions, AudioIndex = audioIndex, AudioLanguage = audioLanguage };
         var shape = shapeOverride ?? channel.PictureShape switch { "off" or "restart" => null, "4:3" => 4.0 / 3, _ => (double?)(16.0 / 9) };
-        if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(720 * shape.Value), FrameHeight: shape is null ? 0 : 720);
+        if (format is null) return new(false, false, FrameWidth: shape is null ? 0 : Even(cap * shape.Value), FrameHeight: shape is null ? 0 : cap);
         var pixel = format.PixelAspect ?? 1;
         var display = format.Shape;
         // Only shapes that would visibly stretch are corrected: 1.85:1 films stay as they are on a 16:9 channel.
@@ -151,7 +177,7 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
         var width = (format.Width ?? 1280) * pixel;
         var height = (double)(format.Height ?? 720);
         var wide = (display ?? target) >= target;
-        var frameHeight = wide ? Math.Min(width, 720 * target) / target : Math.Min(height, 720);
+        var frameHeight = wide ? Math.Min(width, cap * target) / target : Math.Min(height, cap);
         return plan with { FrameWidth = Even(frameHeight * target), FrameHeight = Even(frameHeight) };
     }
 
@@ -163,11 +189,11 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     public string Describe()
     {
         var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
-        if (Normalize && Speed <= 1) return "Encoding to 720p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture");
+        if (Normalize && Speed <= 1) return $"Encoding to {Height}p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding" + (AudioLanguage is null ? "" : $" ({AudioLanguage} audio)");
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = (!HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
-        var mark = Mark is null ? "" : "; channel logo drawn on the picture";
+        var mark = (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
         var credits = Speed > 1 ? $"; credits at {Speed:0.#}× speed, music at normal speed" : "";
         return video + "; " + audio + captions + credits + mark;
     }
@@ -222,14 +248,18 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         }
         var position = seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed;
         var deinterlace = (plan.Deinterlace ? "yadif," : "") + (plan.Speed > 1 ? $"setpts=PTS/{Num(plan.Speed)}," : "");
-        var size = plan.Normalize ? Fit(1280, 720) : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight) : "scale=w='min(iw,1280)':h='min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+        var size = plan.Normalize ? Fit(plan.FrameWidth > 0 ? plan.FrameWidth : 1280, plan.FrameHeight > 0 ? plan.FrameHeight : 720)
+            : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight)
+            : $"scale=w='min(iw,{(int)Math.Round(plan.Height * 16.0 / 9)})':h='min(ih,{plan.Height})':force_original_aspect_ratio=decrease:force_divisible_by=2";
         var finish = (plan.Normalize || plan.Speed > 1 ? ",fps=30" : "") + ",format=yuv420p";
+        // HDR is tone-mapped after scaling, so the work is done on the small picture.
+        var tone = plan.ToneMap ? "," + HighDynamicRange.ToneMap : "";
         var video = "0:v:0";
         if (plan.CopyVideo) Args("-t", seconds);
         else if (plan.Captions is { Image: true } picture)
         {
             // Picture subtitles come from the same file, so they are seeked with the video.
-            var drawn = $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{finish}";
+            var drawn = $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{tone}{finish}";
             Args("-t", seconds, "-filter_complex", plan.Mark is { } logo2 ? drawn + "[video0];" + Logo("[video0]", logo2) : drawn + "[video]");
             video = "[video]";
         }
@@ -242,21 +272,50 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 : "";
             if (plan.Mark is { } logo3)
             {
-                Args("-t", seconds, "-filter_complex", $"[0:v:0]{deinterlace}{size}{text}{finish}[video0];{Logo("[video0]", logo3)}");
+                Args("-t", seconds, "-filter_complex", $"[0:v:0]{deinterlace}{size}{tone}{text}{finish}[video0];{Logo("[video0]", logo3)}");
                 video = "[video]";
             }
-            else Args("-t", seconds, "-vf", deinterlace + size + text + finish);
+            else Args("-t", seconds, "-vf", deinterlace + size + tone + text + finish);
         }
         Args("-map", video, "-map", plan.HasAudio ? $"0:a:{plan.AudioIndex}?" : "1:a:0", "-sn", "-dn");
-        if (plan.Normalize) Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60");
+        // Tone-mapped video says so: BT.709, limited range, so players do not treat it as HDR.
+        if (plan.ToneMap) Args("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv");
+        var (preset, crf, audioRate) = plan.Settings;
+        if (plan.Normalize) Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-g", "60");
         else if (plan.CopyVideo) Args("-c:v", "copy");
-        else Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-force_key_frames", "expr:gte(t,n_forced*2)");
+        else Args("-c:v", "libx264", "-preset", preset, "-crf", crf, "-force_key_frames", "expr:gte(t,n_forced*2)");
         // Sped-up credits keep their music at normal speed, fading out just before the next program.
         if (plan.Speed > 1 && plan.HasAudio) Args("-af", $"afade=t=out:st={Num(Math.Max(0, double.Parse(seconds, CultureInfo.InvariantCulture) - 1.5))}:d=1.5");
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize) Args("-c:a", "copy");
-        else Args("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
+        else Args("-c:a", "aac", "-b:a", audioRate, "-ar", "48000", "-ac", "2");
         Args("-output_ts_offset", Num(from.ToUnixTimeMilliseconds() / 1000.0), "-mpegts_flags", "+initial_discontinuity+resend_headers", "-mpegts_start_pid", "256", "-mpegts_pmt_start_pid", "4096", "-f", "mpegts", "pipe:1");
         return start;
+    }
+
+    // Tone mapping needs FFmpeg's zscale filter (libzimg). Asked once per FFmpeg and remembered.
+    private readonly SemaphoreSlim toneMapCheck = new(1);
+    private bool? toneMap;
+    internal async Task<bool> CanToneMap(CancellationToken ct)
+    {
+        if (toneMap is { } known) return known;
+        await toneMapCheck.WaitAsync(ct);
+        try
+        {
+            if (toneMap is { } again) return again;
+            var start = new ProcessStartInfo(encoder.EncoderPath, ["-hide_banner", "-filters"]) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            try
+            {
+                using var process = Process.Start(start);
+                if (process is null) return false;
+                var errors = process.StandardError.ReadToEndAsync(ct);
+                var text = await process.StandardOutput.ReadToEndAsync(ct);
+                await process.WaitForExitAsync(ct);
+                await errors;
+                return (toneMap = process.ExitCode == 0 && text.Contains(" zscale ", StringComparison.Ordinal) && text.Contains(" tonemap ", StringComparison.Ordinal)).Value;
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException) { return false; }
+        }
+        finally { toneMapCheck.Release(); }
     }
 
     internal static bool IsImage(string path) => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".webp";
@@ -269,8 +328,12 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
         // The offline card is a still picture with no sound; it is always encoded, in the channel's picture shape.
         var plan = IsImage(program.Path) ? StreamPlan.Encode with { HasAudio = false } : StreamPlan.For(await Format(program, ct), channel, shape, program.Speed, string.IsNullOrWhiteSpace(channel.Watermark) || File.Exists(channel.Watermark));
+        // Without FFmpeg's zscale filter an HDR picture cannot be tone-mapped; it is encoded as it is.
+        var hdr = plan.ToneMap;
+        if (hdr && !await CanToneMap(ct)) plan = plan with { ToneMap = false };
+        var how = plan.Describe() + (hdr && !plan.ToneMap ? "; HDR could not be tone-mapped because this FFmpeg has no zscale filter" : "");
         var now = DateTimeOffset.UtcNow;
-        report?.Invoke(plan.Describe(), false);
+        report?.Invoke(how, false);
         Process started;
         try { started = Process.Start(Command(encoder.EncoderPath, program, plan, now, await ResumePoint(program, plan, now, ct))) ?? throw new EncoderUnavailableException(); }
         catch (System.ComponentModel.Win32Exception) { throw new EncoderUnavailableException(); }
@@ -308,7 +371,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             await errors;
             if (stalled || process.ExitCode != 0 || bytes == 0)
                 throw bytes == 0 && !stalled ? new IOException("The scheduled item could not produce a playable transport stream.") : new PlaybackInterruptedException(stalled, bytes > 0);
-            return plan.Describe();
+            return how;
         }
         finally
         {
@@ -407,7 +470,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                     var audioTracks = streams.Where(x => x.Type == MediaStreamType.Audio && !x.IsExternal).OrderBy(x => x.Index)
                         .Select((x, n) => new AudioTrack((x.Codec ?? "").ToLowerInvariant(), x.Language, x.Channels, x.SampleRate, x.IsDefault, x.Title?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n, x.Title)).ToArray();
                     return new(video.Codec?.ToLowerInvariant(), video.PixelFormat, video.BitDepth, video.IsInterlaced, audio?.Codec?.ToLowerInvariant(), audio?.Channels, audio?.SampleRate,
-                        video.Width, video.Height, pixel, display, captions, audioTracks);
+                        video.Width, video.Height, pixel, display, captions, audioTracks, HighDynamicRange.Is(video.ColorTransfer) || video.VideoRange == Jellyfin.Data.Enums.VideoRange.HDR);
                 }
             }
         }
@@ -446,7 +509,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
 
     private async Task<SourceFormat?> Probe(string path, CancellationToken ct)
     {
-        var json = await RunProbe(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,hearing_impaired,comment", "-of", "json", path], ct);
+        var json = await RunProbe(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt,color_transfer,bits_per_raw_sample,field_order,channels,sample_rate,width,height,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,hearing_impaired,comment", "-of", "json", path], ct);
         if (json is null) return null;
         try
         {
@@ -462,7 +525,8 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 hasAudio ? Text(audio, "codec_name") : null, hasAudio ? Number(audio, "channels") : null, hasAudio ? Number(audio, "sample_rate") : null,
                 Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")), captions,
                 all.Where(x => Text(x, "codec_type") == "audio").Select((x, n) => new AudioTrack(Text(x, "codec_name") ?? "", Tag(x, "language"), Number(x, "channels"), Number(x, "sample_rate"),
-                    Flag(x, "default"), Flag(x, "comment") || Tag(x, "title")?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n, Tag(x, "title"))).ToArray());
+                    Flag(x, "default"), Flag(x, "comment") || Tag(x, "title")?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n, Tag(x, "title"))).ToArray(),
+                HighDynamicRange.Is(Text(video, "color_transfer")));
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
         static string? Tag(JsonElement e, string name) => e.TryGetProperty("tags", out var tags) ? Text(tags, name) : null;

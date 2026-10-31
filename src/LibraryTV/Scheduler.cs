@@ -125,6 +125,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.Captions is not ("off" or "forced" or "on") || channel.CaptionLanguage is null || channel.CaptionLanguage.Length > 40) throw new ArgumentException("Captions must be off, forced or on, with a caption language of 40 characters or fewer.");
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
+            if (!StreamPlan.Qualities.Contains(channel.EncodeQuality ?? "") || !StreamPlan.Heights.Contains(channel.EncodeHeight)) throw new ArgumentException("Encoding quality must be fast, balanced, high or best, and the encoded height 480, 576, 720 or 1080.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
             foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
                 if (image is null || image.Length > 500 || image.Length > 0 && (!Path.IsPathFullyQualified(image) || !ProgramStreamer.IsImage(image) || image.Any(char.IsControl))) throw new ArgumentException("Logo, watermark and offline-card images must be full paths to PNG, JPG or WebP files.");

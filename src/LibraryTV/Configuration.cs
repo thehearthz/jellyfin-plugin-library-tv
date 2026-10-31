@@ -123,6 +123,11 @@ public sealed class ChannelDefinition
     // program. Needs a credits marker: an Outro media segment, a chapter named like "Credits", or credits
     // detection.
     public int CreditsSpeed { get; set; } = 1;
+    // How well programs that have to be encoded look: "fast" (smallest CPU load), "balanced", "high" or "best".
+    // Programs that are copied are never touched.
+    public string EncodeQuality { get; set; } = "balanced";
+    // The tallest picture an encoded program is made in: 480, 576, 720 or 1080.
+    public int EncodeHeight { get; set; } = 720;
     // Pads each program with commercials or bumpers until the next multiple of this many minutes on the
     // clock (for example 30 starts programs at :00 and :30); 0 starts each program as soon as the last ends.
     public int PadMinutes { get; set; }

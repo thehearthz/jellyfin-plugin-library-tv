@@ -2590,6 +2590,32 @@
               (v) => (c.AlwaysEncode = v),
             ),
             node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Encoding quality",
+                c.EncodeQuality,
+                [
+                  ["fast", "Fast: lightest on the CPU, softer picture"],
+                  ["balanced", "Balanced (default)"],
+                  ["high", "High: sharper, more CPU"],
+                  ["best", "Best: sharpest, most CPU"],
+                ],
+                (v) => (c.EncodeQuality = v),
+              ),
+              selectField(
+                "Tallest encoded picture",
+                c.EncodeHeight,
+                [[480, "480p"], [576, "576p"], [720, "720p (default)"], [1080, "1080p"]],
+                (v) => (c.EncodeHeight = Number(v)),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "These apply only to programs that have to be encoded (other formats, a different picture shape, captions, a watermark, sped-up credits or Always encode). Programs that are copied keep their original quality. Higher quality and 1080p use much more CPU; Channel health warns when encoding cannot keep up with real time.",
+            ),
+            node(
               "p",
               { class: "ltv-muted" },
               "Leave this off to play H.264/AAC files directly and encode only programs in other formats. Turn it on if a channel still freezes when programs change; every program is then converted to 720p.",
@@ -3138,6 +3164,8 @@
       // Settings added after the first release; channels saved earlier get these on load.
       function channelDefaults() {
         return {
+          EncodeQuality: "balanced",
+          EncodeHeight: 720,
           PadMinutes: 0,
           BreakMode: "even",
           BreakIntervalMinutes: 15,
