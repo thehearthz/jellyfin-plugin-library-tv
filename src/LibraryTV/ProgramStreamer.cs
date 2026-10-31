@@ -26,16 +26,20 @@ public sealed record SourceFormat(string? Video, string? PixelFormat, int? BitDe
 }
 
 // An audio track in a file. Index is its position among the file's audio streams, as FFmpeg counts them (0:a:N).
-public sealed record AudioTrack(string Codec, string? Language, int? Channels, int? SampleRate, bool Default, bool Commentary, int Index)
+public sealed record AudioTrack(string Codec, string? Language, int? Channels, int? SampleRate, bool Default, bool Commentary, int Index, string? Title = null)
 {
     // The track in the preferred language, avoiding commentary and preferring the file's default; without a
     // preference or a match, the file's default track (or the first).
-    public static AudioTrack? Pick(IReadOnlyList<AudioTrack>? tracks, string language)
+    // A preferred title ("Dolby") narrows the tracks first, when any carries it. Among the tracks left, the file's
+    // default wins, then the one with the most channels.
+    public static AudioTrack? Pick(IReadOnlyList<AudioTrack>? tracks, string language, string title = "")
     {
         if (tracks is null || tracks.Count == 0) return null;
         var wanted = CaptionTrack.Languages(language);
-        var ordered = tracks.OrderBy(x => x.Commentary).ThenByDescending(x => x.Default).ThenBy(x => x.Index).ToArray();
-        return (wanted.Count > 0 ? ordered.FirstOrDefault(x => CaptionTrack.Languages(x.Language).Overlaps(wanted)) : null) ?? ordered[0];
+        var ordered = tracks.OrderBy(x => x.Commentary).ThenByDescending(x => x.Default).ThenByDescending(x => x.Channels ?? 0).ThenBy(x => x.Index).ToArray();
+        var named = string.IsNullOrWhiteSpace(title) ? ordered : ordered.Where(x => x.Title?.Contains(title.Trim(), StringComparison.OrdinalIgnoreCase) == true).ToArray();
+        if (named.Length == 0) named = ordered;
+        return (wanted.Count > 0 ? named.FirstOrDefault(x => CaptionTrack.Languages(x.Language).Overlaps(wanted)) ?? ordered.FirstOrDefault(x => CaptionTrack.Languages(x.Language).Overlaps(wanted)) : null) ?? named[0];
     }
 }
 
@@ -88,8 +92,11 @@ public sealed record CaptionTrack(string Codec, string? Language, bool Forced, b
 // FrameWidth/FrameHeight, when set, is the picture the video is encoded into, with black bars.
 // Captions, when set, is burned into the picture, which always means encoding the video.
 // AudioIndex is the audio track played, as FFmpeg counts the file's audio streams.
+// A channel logo: where it goes, how opaque it is, its width in pixels and its distance from the edges.
+public sealed record Watermark(string Path, string Position, int Opacity, int Width, int Margin);
+
 public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
-    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1)
+    CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null)
 {
     public static readonly StreamPlan Copy = new(true, true);
     public static readonly StreamPlan Encode = new(false, false, Normalize: true, FrameWidth: 1280, FrameHeight: 720);
@@ -101,19 +108,29 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // shape would be stretched. Video in a visibly different shape is therefore encoded
     // into the channel's picture shape with black bars; programs already in that shape are still copied.
     // Speed above 1 (credits) always encodes: the picture is sped up while the sound plays normally and fades out.
-    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1)
+    // The logo is drawn over the picture, so it also means encoding: set watermark to false when its file is missing.
+    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1, bool watermark = true)
     {
         var plan = ForSpeed(format, channel, shapeOverride, speed > 1);
-        return speed > 1 ? plan with { CopyVideo = false, CopyAudio = false, Captions = null, Speed = speed } : plan;
+        if (speed > 1) plan = plan with { CopyVideo = false, CopyAudio = false, Captions = null, Speed = speed };
+        if (!watermark || string.IsNullOrWhiteSpace(channel.Watermark)) return plan;
+        // The logo is sized from the picture's width, so the picture needs a size: programs that keep their own shape keep their own size, up to 1280 wide.
+        if (!plan.Normalize && plan.FrameWidth == 0)
+        {
+            var wide = Math.Min((format?.Width ?? 1280) * (format?.PixelAspect ?? 1), 1280);
+            plan = plan with { FrameWidth = Even(wide), FrameHeight = Even(wide / (format?.Shape ?? 16.0 / 9)) };
+        }
+        var width = plan.Normalize ? 1280 : plan.FrameWidth;
+        return plan with { CopyVideo = false, Mark = new Watermark(channel.Watermark, channel.WatermarkPosition, Math.Clamp(channel.WatermarkOpacity, 10, 100), Even(width * Math.Clamp(channel.WatermarkSize, 3, 50) / 100.0), Even(width * 0.03)) };
     }
 
     private static StreamPlan ForSpeed(SourceFormat? format, ChannelDefinition channel, double? shapeOverride, bool fast)
     {
         // The chosen audio track decides whether audio can be copied, as the first track did before.
-        var chosen = AudioTrack.Pick(format?.AudioTracks, channel.AudioLanguage);
+        var chosen = AudioTrack.Pick(format?.AudioTracks, channel.AudioLanguage, channel.AudioTitle);
         if (chosen is not null) format = format! with { Audio = chosen.Codec, Channels = chosen.Channels, SampleRate = chosen.SampleRate };
         var audioIndex = chosen?.Index ?? 0;
-        var audioLanguage = string.IsNullOrWhiteSpace(channel.AudioLanguage) ? null : chosen?.Language;
+        var audioLanguage = string.IsNullOrWhiteSpace(channel.AudioLanguage) && string.IsNullOrWhiteSpace(channel.AudioTitle) ? null : chosen?.Language ?? chosen?.Title;
         var hasAudio = format is null || format.Audio is not null;
         var captions = fast ? null : CaptionTrack.Pick(format?.Captions, channel.Captions, channel.CaptionLanguage);
         if (channel.AlwaysEncode) return Encode with { HasAudio = hasAudio, Deinterlace = format?.Interlaced == true, Captions = captions, AudioIndex = audioIndex, AudioLanguage = audioLanguage };
@@ -146,12 +163,13 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     public string Describe()
     {
         var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
-        if (Normalize && Speed <= 1) return "Encoding to 720p H.264/AAC (always encode)" + captions;
+        if (Normalize && Speed <= 1) return "Encoding to 720p H.264/AAC (always encode)" + captions + (Mark is null ? "" : "; channel logo drawn on the picture");
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding" + (AudioLanguage is null ? "" : $" ({AudioLanguage} audio)");
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = (!HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
+        var mark = Mark is null ? "" : "; channel logo drawn on the picture";
         var credits = Speed > 1 ? $"; credits at {Speed:0.#}× speed, music at normal speed" : "";
-        return video + "; " + audio + captions + credits;
+        return video + "; " + audio + captions + credits + mark;
     }
 }
 
@@ -189,10 +207,19 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         var from = item.Start > now ? item.Start : now;
         var seconds = Num(Math.Max(0.001, (item.End - from).TotalSeconds));
         Args("-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:2", "-stats_period", "2");
-        // A sped-up part covers its file that many times faster than the clock.
-        Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed), "-i", item.Path);
+        // A sped-up part covers its file that many times faster than the clock. A still image (the offline card) is looped.
+        if (IsImage(item.Path)) Args("-loop", "1", "-framerate", "30", "-i", item.Path);
+        else Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed), "-i", item.Path);
         // Programs without audio get a silent track, so the stream layout never changes between programs.
         if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
+        if (plan.Mark is { } logo) Args("-loop", "1", "-i", logo.Path);
+        // The logo is the last input. Everything it is drawn on is named [video0], and the result [video].
+        string Logo(string input, Watermark logo)
+        {
+            var x = logo.Position.EndsWith("left", StringComparison.Ordinal) ? logo.Margin.ToString(CultureInfo.InvariantCulture) : $"main_w-overlay_w-{logo.Margin}";
+            var y = logo.Position.StartsWith("top", StringComparison.Ordinal) ? logo.Margin.ToString(CultureInfo.InvariantCulture) : $"main_h-overlay_h-{logo.Margin}";
+            return $"[{(plan.HasAudio ? 1 : 2)}:v]format=rgba,colorchannelmixer=aa={(logo.Opacity / 100.0).ToString("0.##", CultureInfo.InvariantCulture)},scale={logo.Width}:-1[mark];{input}[mark]overlay={x}:{y}:format=auto,format=yuv420p[video]";
+        }
         var position = seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed;
         var deinterlace = (plan.Deinterlace ? "yadif," : "") + (plan.Speed > 1 ? $"setpts=PTS/{Num(plan.Speed)}," : "");
         var size = plan.Normalize ? Fit(1280, 720) : plan.FrameWidth > 0 ? Fit(plan.FrameWidth, plan.FrameHeight) : "scale=w='min(iw,1280)':h='min(ih,720)':force_original_aspect_ratio=decrease:force_divisible_by=2";
@@ -202,7 +229,8 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         else if (plan.Captions is { Image: true } picture)
         {
             // Picture subtitles come from the same file, so they are seeked with the video.
-            Args("-t", seconds, "-filter_complex", $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{finish}[video]");
+            var drawn = $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{finish}";
+            Args("-t", seconds, "-filter_complex", plan.Mark is { } logo2 ? drawn + "[video0];" + Logo("[video0]", logo2) : drawn + "[video]");
             video = "[video]";
         }
         else
@@ -212,7 +240,12 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
             var text = plan.Captions is { } track
                 ? $",setpts=PTS+{Num(position)}/TB,subtitles={FilterValue("filename=" + Quote(track.ExternalPath ?? item.Path) + (track.ExternalPath is null ? $":si={track.EmbeddedIndex}" : ""))},setpts=PTS-{Num(position)}/TB"
                 : "";
-            Args("-t", seconds, "-vf", deinterlace + size + text + finish);
+            if (plan.Mark is { } logo3)
+            {
+                Args("-t", seconds, "-filter_complex", $"[0:v:0]{deinterlace}{size}{text}{finish}[video0];{Logo("[video0]", logo3)}");
+                video = "[video]";
+            }
+            else Args("-t", seconds, "-vf", deinterlace + size + text + finish);
         }
         Args("-map", video, "-map", plan.HasAudio ? $"0:a:{plan.AudioIndex}?" : "1:a:0", "-sn", "-dn");
         if (plan.Normalize) Args("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-g", "60");
@@ -226,13 +259,16 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         return start;
     }
 
+    internal static bool IsImage(string path) => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".webp";
+
     public async Task<double?> Shape(Airing program, CancellationToken ct) => (await Format(program, ct))?.Shape;
 
     public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
     {
         ct.ThrowIfCancellationRequested();
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
-        var plan = StreamPlan.For(await Format(program, ct), channel, shape, program.Speed);
+        // The offline card is a still picture with no sound; it is always encoded, in the channel's picture shape.
+        var plan = IsImage(program.Path) ? StreamPlan.Encode with { HasAudio = false } : StreamPlan.For(await Format(program, ct), channel, shape, program.Speed, string.IsNullOrWhiteSpace(channel.Watermark) || File.Exists(channel.Watermark));
         var now = DateTimeOffset.UtcNow;
         report?.Invoke(plan.Describe(), false);
         Process started;
@@ -369,7 +405,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                     var captions = streams.Where(x => x.Type == MediaStreamType.Subtitle && (!x.IsExternal || !string.IsNullOrEmpty(x.Path)))
                         .Select(x => new CaptionTrack((x.Codec ?? "").ToLowerInvariant(), x.Language, x.IsForced, x.IsHearingImpaired, x.IsDefault, x.IsExternal ? x.Path : null, x.IsExternal ? -1 : embedded.IndexOf(x))).ToArray();
                     var audioTracks = streams.Where(x => x.Type == MediaStreamType.Audio && !x.IsExternal).OrderBy(x => x.Index)
-                        .Select((x, n) => new AudioTrack((x.Codec ?? "").ToLowerInvariant(), x.Language, x.Channels, x.SampleRate, x.IsDefault, x.Title?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n)).ToArray();
+                        .Select((x, n) => new AudioTrack((x.Codec ?? "").ToLowerInvariant(), x.Language, x.Channels, x.SampleRate, x.IsDefault, x.Title?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n, x.Title)).ToArray();
                     return new(video.Codec?.ToLowerInvariant(), video.PixelFormat, video.BitDepth, video.IsInterlaced, audio?.Codec?.ToLowerInvariant(), audio?.Channels, audio?.SampleRate,
                         video.Width, video.Height, pixel, display, captions, audioTracks);
                 }
@@ -426,7 +462,7 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 hasAudio ? Text(audio, "codec_name") : null, hasAudio ? Number(audio, "channels") : null, hasAudio ? Number(audio, "sample_rate") : null,
                 Number(video, "width"), Number(video, "height"), Ratio(Text(video, "sample_aspect_ratio")), Ratio(Text(video, "display_aspect_ratio")), captions,
                 all.Where(x => Text(x, "codec_type") == "audio").Select((x, n) => new AudioTrack(Text(x, "codec_name") ?? "", Tag(x, "language"), Number(x, "channels"), Number(x, "sample_rate"),
-                    Flag(x, "default"), Flag(x, "comment") || Tag(x, "title")?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n)).ToArray());
+                    Flag(x, "default"), Flag(x, "comment") || Tag(x, "title")?.Contains("commentary", StringComparison.OrdinalIgnoreCase) == true, n, Tag(x, "title"))).ToArray());
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
         static string? Tag(JsonElement e, string name) => e.TryGetProperty("tags", out var tags) ? Text(tags, name) : null;

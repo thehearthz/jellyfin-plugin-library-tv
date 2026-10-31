@@ -126,6 +126,10 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
+            foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
+                if (image is null || image.Length > 500 || image.Length > 0 && (!Path.IsPathFullyQualified(image) || !ProgramStreamer.IsImage(image) || image.Any(char.IsControl))) throw new ArgumentException("Logo, watermark and offline-card images must be full paths to PNG, JPG or WebP files.");
+            if (channel.AudioTitle is null || channel.AudioTitle.Length > 60) throw new ArgumentException("The preferred audio title must be 60 characters or fewer.");
+            if (channel.WatermarkPosition is not ("top-left" or "top-right" or "bottom-left" or "bottom-right") || channel.WatermarkOpacity is < 10 or > 100 || channel.WatermarkSize is < 3 or > 50) throw new ArgumentException("Watermark position: a corner; opacity 10–100; size 3–50 percent.");
             if (channel.BreakMode is not ("even" or "interval")) throw new ArgumentException("Break placement must be even or interval.");
             if (channel.BreakIntervalMinutes is < 3 or > 120 || channel.MaxBreaksPerProgram is < 0 or > 20 || channel.MinBreakProgramMinutes is < 1 or > 600 || channel.BreakFreeEndMinutes is < 0 or > 60)
                 throw new ArgumentException("Break interval: 3–120 minutes; breaks per program: 0–20; shortest program to split: 1–600 minutes; break-free ending: 0–60 minutes.");
@@ -290,6 +294,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 if (different > 0 && different < 8 && adsAhead.Length >= 3 * different)
                     notes.Add($"Only {different} different commercials fit this channel's programs, so they repeat often. Add more commercials, especially general ones without a network in their name.");
                 if (pools["bumpers"].Count > 0 && aired && !Planned("bumpers")) notes.Add("No bumpers fit this channel's programs: every bumper is named after a network or show these programs don't match.");
+                foreach (var (label, image) in new[] { ("watermark", channel.Watermark), ("logo", channel.Logo), ("offline card", channel.OfflineCard) })
+                    if (image.Length > 0 && !File.Exists(image)) notes.Add($"The {label} image was not found at {image}.");
                 if (channel.PadMinutes > 0 && pools["commercials"].Count + pools["bumpers"].Count == 0) notes.Add("Padding is on, but there are no commercials or bumpers to fill the time, so the gaps before round times are dead air.");
                 foreach (var block in channel.Blocks.Where(x => x.StartMode == "exact" || x.Fill == "fit"))
                     if (pools[block.Id].Count > 0 && pools["default"].Count == 0 && pools["commercials"].Count + pools["bumpers"].Count == 0)

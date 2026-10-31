@@ -116,6 +116,21 @@ public sealed class ChannelDefinition
     public int BreakFreeEndMinutes { get; set; }
     // A break plays CommercialCount commercials, or a varying number up to this one when it is higher.
     public int CommercialCountMax { get; set; }
+    // A preferred audio track by title (for example "Dolby" or "Original"); with several tracks left, the one
+    // with the most channels wins when the file marks no default.
+    public string AudioTitle { get; set; } = "";
+    // A channel logo "bug" drawn over the picture of everything on the channel, which means encoding it. The
+    // path is an image file (PNG, JPG or WebP) readable by Jellyfin.
+    public string Watermark { get; set; } = "";
+    // top-left, top-right, bottom-left or bottom-right.
+    public string WatermarkPosition { get; set; } = "bottom-right";
+    // Opacity 10–100 and the logo's width as a percentage of the picture's width, 3–50.
+    public int WatermarkOpacity { get; set; } = 70;
+    public int WatermarkSize { get; set; } = 12;
+    // An image shown in the Live TV guide for the channel.
+    public string Logo { get; set; } = "";
+    // An image shown during gaps in the schedule instead of a black screen.
+    public string OfflineCard { get; set; } = "";
     // The guide lists a program without its commercial breaks, so it appears to run through them.
     public bool GuideHidesBreaks { get; set; }
 

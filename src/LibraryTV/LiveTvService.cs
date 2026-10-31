@@ -19,7 +19,7 @@ public sealed class LiveTvService : ILiveTvService
     private IReadOnlyList<ChannelDefinition> Channels => startup?.IsReady == false ? [] : scheduler.Value.Channels;
     public string Name => "Library TV";
     public string HomePageUrl => "https://github.com/thehearthz/jellyfin-plugin-library-tv";
-    public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV }));
+    public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV, ImagePath = ProgramStreamer.IsImage(x.Logo ?? "") && File.Exists(x.Logo) ? x.Logo : null }));
     public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(Listings(startup?.IsReady == false ? [] : scheduler.Value.GuideFor(channelId), HidesBreaks(channelId)).Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
     {
         Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Heading ?? x.Title,
@@ -27,7 +27,7 @@ public sealed class LiveTvService : ILiveTvService
     }));
 
     // The guide lists a program once, from its first part to its last, with the breaks inside it.
-    private bool HidesBreaks(string channelId) => scheduler.Value.Channels.FirstOrDefault(x => x.Id == channelId)?.GuideHidesBreaks == true;
+    private bool HidesBreaks(string channelId) => startup?.IsReady != false && scheduler.Value.Channels.FirstOrDefault(x => x.Id == channelId)?.GuideHidesBreaks == true;
 
     // With hideBreaks, commercials are left out and the program before them runs through them.
     internal static List<Airing> Listings(IReadOnlyList<Airing> guide, bool hideBreaks = false)

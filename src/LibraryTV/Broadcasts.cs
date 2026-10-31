@@ -25,6 +25,8 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
     internal static TimeSpan MaxGap { get; set; } = TimeSpan.FromMinutes(15);
     // A program ending this much earlier than the guide says is followed at once by the next one.
     internal static TimeSpan EarlyEnd { get; set; } = TimeSpan.FromSeconds(5);
+    // Shorter gaps are bridged with filler packets: starting a picture for them is not worth the wait.
+    internal static TimeSpan OfflineCardMinimum { get; set; } = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan KeepAlive = TimeSpan.FromMilliseconds(500);
     // With the "restart" picture shape, players are restarted this long after a program of a new shape starts,
     // so Jellyfin sizes the restarted stream from the new program.
@@ -108,7 +110,20 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     // Content restrictions or an empty pool can leave a short gap. Stay connected through it.
                     var upcoming = item ?? scheduler.GuideFor(id).FirstOrDefault(x => x.Start > now);
                     if (upcoming is null || upcoming.Start - now > MaxGap) throw new InvalidOperationException("No program is scheduled. Check channel health.");
-                    await Hold(broadcast, upcoming.Start - now - ProgramStreamer.Lead, ct);
+                    var wait = upcoming.Start - now - ProgramStreamer.Lead;
+                    // A channel with an offline card shows it through longer gaps instead of a black screen.
+                    var card = scheduler.Channels.FirstOrDefault(x => x.Id == id) is { OfflineCard.Length: > 0 } offline && wait > OfflineCardMinimum && File.Exists(offline.OfflineCard) ? offline : null;
+                    if (card is null) { await Hold(broadcast, wait, ct); continue; }
+                    try
+                    {
+                        await streamer.Stream(new Airing(id, Guid.Empty, "Off air", card.OfflineCard, now, now + wait, true), card, programShape, chunk => Send(broadcast, chunk, ct), ct);
+                    }
+                    catch (IOException ex)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        log.LogWarning(ex, "Library TV channel {Channel}: the offline card could not play", id);
+                        await Hold(broadcast, TimeSpan.FromTicks(Math.Max(0, (upcoming.Start - DateTimeOffset.UtcNow - ProgramStreamer.Lead).Ticks)), ct);
+                    }
                     continue;
                 }
                 finished = null;
