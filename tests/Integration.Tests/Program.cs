@@ -431,6 +431,14 @@ try
     var shown = LiveTvService.Listings(hidden, true);
     Check(shown.Count == 2 && shown[0].End == DateTimeOffset.UnixEpoch.AddMinutes(11) && LiveTvService.Listings(hidden).Count == 3, "A guide that hides breaks runs the program through them");
     {
+        var hdrFormat = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9, Hdr: true);
+        var hdrPlan = StreamPlan.For(hdrFormat, new ChannelDefinition());
+        var hdrArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hdr.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), hdrPlan, DateTimeOffset.UtcNow).ArgumentList;
+        Check(hdrPlan.ToneMap && !hdrPlan.CopyVideo && StreamPlan.For(hdrFormat with { Hdr = false }, new ChannelDefinition()).CopyVideo, "HDR video is never copied, even when it is 8-bit H.264");
+        Check(hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("zscale=t=linear") && hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("tonemap=tonemap=hable") && hdrArgs[hdrArgs.IndexOf("-color_trc") + 1] == "bt709" && hdrPlan.Describe().Contains("tone-mapped"), "An HDR program gets the tone-mapping filters and BT.709 tags, and Channel health says so");
+        Check(HighDynamicRange.Is("smpte2084") && HighDynamicRange.Is("ARIB-STD-B67") && !HighDynamicRange.Is("bt709") && !HighDynamicRange.Is(null), "PQ and HLG transfers count as HDR");
+    }
+    {
         var odd = new SourceFormat("hevc", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9);
         string Arg(System.Diagnostics.ProcessStartInfo c, string name) => c.ArgumentList[c.ArgumentList.IndexOf(name) + 1];
         var airing = new Airing("c", Guid.NewGuid(), "t", "/m.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false);
