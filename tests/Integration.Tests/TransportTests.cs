@@ -102,6 +102,23 @@ public static class TransportTests
             "An HDR program is tone-mapped to 8-bit SDR and tagged BT.709 (" + hdrMethod + " | " + hdrVideo.GetRawText() + ")");
         var sdrVideo = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-select_streams","v:0","-show_entries","stream=color_transfer","-of","json",Path.Combine(root, "transition.ts")])).RootElement.GetProperty("streams")[0];
         check(!hdrMethod.StartsWith("Direct") && !(sdrVideo.TryGetProperty("color_transfer", out var sdrTransfer) && sdrTransfer.GetString() == "smpte2084"), "SDR programs are untouched by tone mapping");
+        // A file flagged HDR whose frames carry no colour tags used to produce no picture at all.
+        var untagged = Path.Combine(root, "untagged hdr.mp4");
+        await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=640x360:rate=25","-f","lavfi","-i","sine=frequency=440:sample_rate=48000","-t","2","-vf","format=yuv420p10le","-c:v","libx264","-profile:v","high10","-preset","ultrafast","-c:a","aac","-ac","2",untagged]);
+        var flagged = Proxy<MediaBrowser.Controller.Library.IMediaSourceManager>.Make((name, args) => name == "GetMediaStreams" && args![0] is Guid
+            ? new List<MediaBrowser.Model.Entities.MediaStream> { new() { Index = 0, Type = MediaBrowser.Model.Entities.MediaStreamType.Video, Codec = "h264", PixelFormat = "yuv420p10le", BitDepth = 10, ColorTransfer = "smpte2084", Width = 640, Height = 360 }, new() { Index = 1, Type = MediaBrowser.Model.Entities.MediaStreamType.Audio, Codec = "aac", Channels = 2, SampleRate = 48000 } }
+            : throw new NotSupportedException(name));
+        long untaggedBytes = 0;
+        var untaggedMethod = await new ProgramStreamer(encoder, flagged).Stream(Item(untagged), Auto, null, bytes => { untaggedBytes += bytes.Length; return Task.CompletedTask; }, default);
+        check(untaggedBytes > 0 && untaggedMethod.Contains("tone-mapped") && !untaggedMethod.Contains("failed"), "A program flagged HDR without colour tags on its frames is still tone-mapped and plays");
+        // When an extra makes FFmpeg fail before sending anything, the program plays without it instead of being skipped.
+        var badLogo = Path.Combine(root, "broken logo.png"); await File.WriteAllTextAsync(badLogo, "not an image");
+        long plainBytes = 0; string? fallbackNote = null;
+        var plainMethod = await streamer.Stream(Item(clips[0]), new ChannelDefinition { Watermark = badLogo }, null, bytes => { plainBytes += bytes.Length; return Task.CompletedTask; }, default, (text, problem) => { if (problem) fallbackNote = text; });
+        check(plainBytes > 0 && plainMethod.Contains("started without the channel logo") && fallbackNote is not null && fallbackNote.Contains("FFmpeg said"), "A program whose extras make FFmpeg fail plays without them, and Channel health quotes FFmpeg (" + fallbackNote + ")");
+        var corrupt = Path.Combine(root, "corrupt.mp4"); await File.WriteAllTextAsync(corrupt, "not a video");
+        try { await streamer.Stream(Item(corrupt), Auto, null, _ => Task.CompletedTask, default); throw new Exception("A corrupt file played"); }
+        catch (IOException ex) { check(ex.Data["ffmpeg"] is string said && said.Length > 0, "A file FFmpeg cannot read fails with FFmpeg's own message (" + ex.Data["ffmpeg"] + ")"); }
         // Asking for a graphics encoder that this machine does not have falls back to the CPU instead of failing.
         var gpuStreamer = new ProgramStreamer(encoder) { Hardware = () => ("nvenc", "") };
         using var gpuOut = new MemoryStream();

@@ -6,7 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null)
+public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null,
+    MediaBrowser.Model.Tasks.ITaskManager? tasks = null)
 {
     public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
@@ -75,6 +76,23 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         }
         finally { gate.Release(); }
     }
+    // How many times programs already in the guide were replaced or moved, which Jellyfin's copy of the guide must follow.
+    public int GuideChanges { get; private set; }
+
+    // Jellyfin keeps its own copy of the guide and re-reads it once a day. When programs it already has are
+    // replaced or moved, ask for its Refresh Guide task now; a refresh that is running or queued covers this.
+    public void RequestGuideImport(MediaBrowser.Model.Tasks.ITaskManager? fallback = null)
+    {
+        GuideChanges++;
+        try
+        {
+            var manager = tasks ?? fallback;
+            var worker = manager?.ScheduledTasks.FirstOrDefault(x => x.ScheduledTask.Key == "RefreshGuide");
+            if (worker is { State: MediaBrowser.Model.Tasks.TaskState.Idle }) manager!.QueueScheduledTask(worker.ScheduledTask, new MediaBrowser.Model.Tasks.TaskOptions());
+        }
+        catch (Exception ex) { log.LogWarning(ex, "Could not queue Jellyfin's guide refresh after the Library TV guide changed"); }
+    }
+
     public string? LastError { get; private set; }
     public double? LastRefreshMilliseconds { get; private set; }
     public DateTimeOffset? LastRefresh { get; private set; }
@@ -278,6 +296,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             var networks = new Planner.NetworkIndex(allPrograms.SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
                 .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))), allPrograms.Select(x => x.Show), labels);
             DateTimeOffset? rebuiltFrom = null;
+            var guideChanged = false;
             var warnings = new Dictionary<string, string[]>();
             foreach (var defined in definitions)
             {
@@ -295,10 +314,13 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 // current program, without a manual rebuild; the guide planned days ahead would otherwise keep the old ones.
                 var plannedWith = Fingerprint(channel, config, detections?.Generation ?? 0);
                 DateTimeOffset? from = null;
+                var planned = state.Guide.Where(x => x.Start > now).Select(x => (x.ItemId, x.Start, x.End)).ToArray();
                 if (channel.Id == rebuildChannel || state.PlannedWith != plannedWith && state.Guide.Any(x => x.Start > now)) from = Planner.RewindFuture(state, now);
                 if (channel.Id == rebuildChannel) rebuiltFrom = from;
                 Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), from, config.Restrictions, chapters, networks, credits);
                 state.PlannedWith = plannedWith;
+                // Programs Jellyfin already lists were replaced or moved: its guide must be read again.
+                if (from is not null && !state.Guide.Where(x => x.Start > now).Select(x => (x.ItemId, x.Start, x.End)).Take(planned.Length).SequenceEqual(planned)) guideChanged = true;
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
@@ -352,6 +374,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             LastRefresh = now;
             LastRefreshMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             LastError = null;
+            if (guideChanged) RequestGuideImport();
             return rebuiltFrom;
             // How the shared clips were sorted, for the builder: counts per network and decade.
             IEnumerable<ClipGroup> Summarize(string kind, List<Media> clips) => clips
@@ -378,7 +401,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     // Newly detected credits count too: they move breaks before the credits and speed the credits up.
     private static string Fingerprint(ChannelDefinition c, Configuration config, int detectedCredits) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
     {
-        PlanningRules, DetectedCredits = config.DetectCredits ? detectedCredits : -1,
+        PlanningRules, DetectedCredits = config.DetectCredits && c.CreditsSpeed > 1 ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
         c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
     })));

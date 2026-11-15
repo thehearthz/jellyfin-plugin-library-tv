@@ -18,6 +18,7 @@ using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Authorization;
 
 int checks = 0;
+Broadcasts.Linger = TimeSpan.Zero; // Each test stops its channel as soon as the viewer leaves; lingering has its own test.
 void Check(bool ok, string label) { if (!ok) throw new Exception(label); checks++; Console.WriteLine("PASS: " + label); }
 var directory = Path.Combine(Path.GetTempPath(), "library-tv-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(directory);
@@ -472,7 +473,12 @@ try
         var hdrPlan = StreamPlan.For(hdrFormat, new ChannelDefinition());
         var hdrArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hdr.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), hdrPlan, DateTimeOffset.UtcNow).ArgumentList;
         Check(hdrPlan.ToneMap && !hdrPlan.CopyVideo && StreamPlan.For(hdrFormat with { Hdr = false }, new ChannelDefinition()).CopyVideo, "HDR video is never copied, even when it is 8-bit H.264");
-        Check(hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("zscale=t=linear") && hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("tonemap=tonemap=hable") && hdrArgs[hdrArgs.IndexOf("-color_trc") + 1] == "bt709" && hdrPlan.Describe().Contains("tone-mapped"), "An HDR program gets the tone-mapping filters and BT.709 tags, and Channel health says so");
+        Check(hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("zscale=tin=smpte2084:min=bt2020nc:pin=bt2020") && hdrArgs[hdrArgs.IndexOf("-vf") + 1].Contains("tonemap=tonemap=hable") && hdrArgs[hdrArgs.IndexOf("-color_trc") + 1] == "bt709" && hdrPlan.Describe().Contains("tone-mapped"), "An HDR program gets the tone-mapping filters and BT.709 tags, and Channel health says so");
+        var hlgArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hlg.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), StreamPlan.For(hdrFormat with { Hlg = true }, new ChannelDefinition()), DateTimeOffset.UtcNow).ArgumentList;
+        Check(hlgArgs[hlgArgs.IndexOf("-vf") + 1].Contains("tin=arib-std-b67") && HighDynamicRange.IsHlg("arib-std-b67") && !HighDynamicRange.IsHlg("smpte2084"), "HLG programs are tone-mapped from their own transfer curve");
+        var fancy = hdrPlan with { Encoder = "nvenc", Mark = new Watermark("/l.png", "top-left", 70, 100, 10) };
+        Check(ProgramStreamer.Plain(fancy) is { ToneMap: false, Encoder: "cpu", Mark: null, CopyVideo: false } && ProgramStreamer.Plain(StreamPlan.Copy) is null && ProgramStreamer.Plain(StreamPlan.For(hdrFormat with { Hdr = false, Video = "hevc" }, new ChannelDefinition())) is null,
+            "A program that cannot start with its extras has a plain plan to fall back on, and plain programs have none");
         Check(HighDynamicRange.Is("smpte2084") && HighDynamicRange.Is("ARIB-STD-B67") && !HighDynamicRange.Is("bt709") && !HighDynamicRange.Is(null), "PQ and HLG transfers count as HDR");
     }
     {

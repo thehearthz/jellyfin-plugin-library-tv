@@ -72,6 +72,35 @@ public static class PlaybackTests
                 await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 check(live.StatusFor("playback").Viewers == 0, "The final viewer disconnect stops the media worker with no idle playback");
             }
+            // Jellyfin reads a channel briefly to learn its format, disconnects, then connects again to play it.
+            Broadcasts.Linger = TimeSpan.FromSeconds(1);
+            var lingerExit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var lingering = new DelegateStreamer(async (_, _, write, ct) =>
+            {
+                try { while (true) { await write(new byte[188]); await Task.Delay(20, ct); } }
+                finally { lingerExit.TrySetResult(); }
+            });
+            using (var live = new Broadcasts(scheduler, lingering, NullLogger<Broadcasts>.Instance))
+            {
+                using (var probeStop = new CancellationTokenSource())
+                {
+                    var probeOutput = new SignalStream();
+                    var probe = live.Watch("playback", probeOutput, probeStop.Token);
+                    await probeOutput.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    probeStop.Cancel(); await IgnoreCancellation(probe);
+                }
+                using var playStop = new CancellationTokenSource();
+                var playOutput = new SignalStream();
+                var play = live.Watch("playback", playOutput, playStop.Token);
+                await playOutput.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Task.Delay(1300);
+                check(lingering.Calls == 1 && !lingerExit.Task.IsCompleted && live.StatusFor("playback").Viewers == 1, "A viewer who reconnects within the linger time joins the program already playing instead of starting it again");
+                playStop.Cancel(); await IgnoreCancellation(play);
+                check(!lingerExit.Task.IsCompleted, "A channel keeps playing briefly after its last viewer leaves");
+                await lingerExit.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                check(live.StatusFor("playback").Viewers == 0, "A channel nobody returns to stops after the linger time, so nothing runs while idle");
+            }
+            Broadcasts.Linger = TimeSpan.Zero;
             var stopping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var finishStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             DelegateStreamer restart = null!;
@@ -95,6 +124,18 @@ public static class PlaybackTests
                 check(received && restart.Calls == 2, "A viewer joining while the previous worker shuts down starts a fresh worker instead of receiving an empty stream");
                 slowStop.Cancel(); lateStop.Cancel();
                 await IgnoreCancellation(slow); await IgnoreCancellation(late);
+            }
+            {
+                var guideScheduler = await Fresh();
+                var savedSettings = Plugin.Instance.Configuration;
+                await guideScheduler.Refresh(default);
+                check(guideScheduler.GuideChanges == 0, "Refreshing an unchanged schedule never asks Jellyfin to read the guide again");
+                Plugin.Instance.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "playback", Name = "Playback", Source = new Pool { ItemIds = items.Reverse().Select(x => x.Id.ToString()).ToArray(), Shuffle = false, EpisodesInARow = 5 } }] });
+                await guideScheduler.Refresh(default);
+                check(guideScheduler.GuideChanges == 1, "Replacing programs already in the guide asks Jellyfin to read the guide again");
+                await guideScheduler.Refresh(default);
+                check(guideScheduler.GuideChanges == 1, "The guide is only re-read when its programs actually changed");
+                Plugin.Instance.UpdateConfiguration(savedSettings);
             }
             scheduler = await Fresh();
             check(scheduler.LastRefreshMilliseconds >= 0 && scheduler.WarningsFor("playback").Length == 0, "Refresh timing and source diagnostics are captured during normal refresh without another library scan");
