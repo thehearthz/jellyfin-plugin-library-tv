@@ -119,6 +119,9 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     {
         if (c.Channels is null || c.AutoLibraryIds is null || c.AutomaticChannels is null) throw new ArgumentException("Channel and library lists cannot be null.");
         if (c.Channels.Any(x => x is null) || c.AutomaticChannels.Any(x => x is null)) throw new ArgumentException("Channel entries cannot be null.");
+        // The automatic and smart channels' playback settings are checked like a channel's.
+        if (c.AutomaticPlayback is { } template)
+            Validate(new Configuration { AutomaticPlayback = null!, TimeZoneId = c.TimeZoneId, Channels = [new ChannelDefinition { Id = "automatic", Name = "Automatic", Number = "1" }.WithPlayback(template)] });
         if (c.AutoChannelStartNumber is < 1 or > 999999) throw new ArgumentException("Automatic channel numbers must start between 1 and 999999.");
         if (c.GuideDays is < 1 or > 7 || c.RefreshMinutes is < 5 or > 1440 || c.MaxActiveChannels is < 1 or > 16) throw new ArgumentException("Guide days: 1–7; refresh minutes: 5–1440; active channels: 1–16.");
         _ = TimeZoneInfo.FindSystemTimeZoneById(c.TimeZoneId);

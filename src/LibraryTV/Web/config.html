@@ -539,6 +539,13 @@
             detection (see Credits detection below). Hand-built channels set
             this on their own Content tab.
           </p>
+          <details class="ltv-subpanel" data-ui="auto-playback-panel">
+            <summary>
+              Playback for automatic &amp; smart channels: volume, Up next,
+              cards, bug, idents, encoding
+            </summary>
+            <div data-ui="auto-playback"></div>
+          </details>
           <div data-ui="auto-libraries"></div>
           <p class="ltv-muted">
             Automatic channels use the whole library, with commercials and
@@ -1144,6 +1151,20 @@
         const x = numberParts(a.Number) || [9999999, 0],
           y = numberParts(b.Number) || [9999999, 0];
         return x[0] - y[0] || x[1] - y[1] || a.Name.localeCompare(b.Name);
+      }
+      function renderAutomaticPlayback() {
+        const target = ui("auto-playback");
+        if (!target || !state.config) return;
+        state.config.AutomaticPlayback = Object.assign(channelDefaults(), state.config.AutomaticPlayback || {});
+        target.replaceChildren(
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "These apply to every automatic and smart channel. Hand-built channels have their own, on each channel's Playback tab.",
+          ),
+          ...playbackSettings(state.config.AutomaticPlayback, true),
+        );
+        foldHelp(target);
       }
       function renderAutomaticChannels() {
         const target = ui("auto-libraries");
@@ -2664,132 +2685,9 @@
           ),
         );
       }
-      function renderEditor() {
-        renderSharedClips();
-        const area = ui("editor"),
-          c = current();
-        area.replaceChildren();
-        if (!c) {
-          area.append(
-            node(
-              "section",
-              { class: "ltv-empty" },
-              node("h2", {}, "Build your first channel"),
-              node(
-                "p",
-                { class: "ltv-muted" },
-                "Choose shows and movies you love, give them a time slot, and let Library TV keep the lineup moving.",
-              ),
-              button("+ Create a channel", addChannel, "ltv-primary"),
-            ),
-          );
-          return;
-        }
-        const head = node("section", { class: "ltv-panel" });
-        head.append(
-          node(
-            "div",
-            { class: "ltv-cols" },
-            field("Channel name", c.Name, (v) => {
-              c.Name = v;
-              renderChannels();
-            }),
-            field(
-              "Channel number",
-              c.Number,
-              (v) => {
-                c.Number = v;
-                renderChannels();
-              },
-              "text",
-              { placeholder: "e.g. 42, 7.2 or 7-10", inputmode: "decimal" },
-            ),
-          ),
-          check("Channel enabled", c.Enabled !== false, (v) => {
-            c.Enabled = v;
-            renderChannels();
-          }),
-          node(
-            "p",
-            { class: "ltv-muted" },
-            "Choose your own channel number, including subchannels such as 7.2. Changing a number or temporarily disabling a channel keeps its episode progress.",
-          ),
-        );
-        head.append(
-          node(
-            "div",
-            { class: "ltv-row" },
-            button("Duplicate", () => {
-              const copy = clone(c);
-              copy.Id = id();
-              copy.Name += " copy";
-              copy.Number = nextNumber();
-              copy.Blocks.forEach((b) => (b.Id = id()));
-              state.config.Channels.push(copy);
-              state.channel = copy.Id;
-              dirty();
-              renderChannels();
-              renderEditor();
-            }),
-            button(
-              "Delete channel",
-              () => {
-                if (
-                  !confirm(
-                    "Delete “" + c.Name + "”? This takes effect when you save.",
-                  )
-                )
-                  return;
-                state.config.Channels = state.config.Channels.filter(
-                  (x) => x.Id !== c.Id,
-                );
-                state.channel = state.config.Channels[0]?.Id || null;
-                dirty();
-                renderChannels();
-                renderEditor();
-              },
-              "ltv-danger",
-            ),
-          ),
-        );
-        area.append(head);
-        const tabs = node("div", {
-          class: "ltv-tabs",
-          role: "tablist",
-          "aria-label": "Channel editor",
-        });
-        for (const [key, label] of [
-          ["content", "Content"],
-          ["schedule", "Schedule"],
-          ["commercials", "Commercials"],
-          ["bumpers", "Bumpers"],
-          ["playback", "Playback"],
-          ["preview", "Guide preview"],
-        ]) {
-          const b = button(label, () => {
-            state.tab = key;
-            renderEditor();
-          });
-          b.setAttribute("role", "tab");
-          b.setAttribute("aria-selected", String(state.tab === key));
-          tabs.append(b);
-        }
-        area.append(tabs);
-        const body = node("section", { class: "ltv-panel", role: "tabpanel" });
-        area.append(body);
-        if (state.tab === "content") {
-          body.append(
-            node("h2", {}, "Default lineup"),
-            node(
-              "p",
-              { class: "ltv-muted" },
-              "This content fills the day whenever no scheduled block is active.",
-            ),
-            poolEditor(c.Source, "Channel content"),
-          );
-        }
-        if (state.tab === "playback") {
-          body.append(
+      // The Playback tab's settings. Automatic and smart channels share one set, without images or credits.
+      function playbackSettings(c, automatic = false) {
+        const shared = [
             node("h2", {}, "Picture and sound"),
             node(
               "p",
@@ -3020,6 +2918,9 @@
                 maxlength: 60,
               },
             ),
+        ];
+        if (automatic) return shared;
+        return shared.concat([
             node("h3", {}, "Channel images"),
             field("Channel logo for the guide (full path to a PNG, JPG or WebP)", c.Logo || "", (v) => (c.Logo = v.trim()), "text", { maxlength: 500 }),
             field("Offline card shown during gaps (full path)", c.OfflineCard || "", (v) => (c.OfflineCard = v.trim()), "text", { maxlength: 500 }),
@@ -3077,8 +2978,133 @@
               { class: "ltv-muted" },
               "Captions are drawn into the picture, so everyone watching this channel sees them, in every app. They come from subtitle tracks in the file or subtitle files beside it, such as Episode.en.srt; SDH and closed-caption tracks are preferred. Programs with captions are encoded while they play, which uses more CPU. For a channel with and without captions, duplicate it and turn captions on in the copy. The preferred audio language picks that soundtrack when a program has several, avoiding commentary tracks; programs without it play their default soundtrack.",
             ),
+        ]);
+      }
+      function renderEditor() {
+        renderSharedClips();
+        const area = ui("editor"),
+          c = current();
+        area.replaceChildren();
+        if (!c) {
+          area.append(
+            node(
+              "section",
+              { class: "ltv-empty" },
+              node("h2", {}, "Build your first channel"),
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "Choose shows and movies you love, give them a time slot, and let Library TV keep the lineup moving.",
+              ),
+              button("+ Create a channel", addChannel, "ltv-primary"),
+            ),
+          );
+          return;
+        }
+        const head = node("section", { class: "ltv-panel" });
+        head.append(
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field("Channel name", c.Name, (v) => {
+              c.Name = v;
+              renderChannels();
+            }),
+            field(
+              "Channel number",
+              c.Number,
+              (v) => {
+                c.Number = v;
+                renderChannels();
+              },
+              "text",
+              { placeholder: "e.g. 42, 7.2 or 7-10", inputmode: "decimal" },
+            ),
+          ),
+          check("Channel enabled", c.Enabled !== false, (v) => {
+            c.Enabled = v;
+            renderChannels();
+          }),
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Choose your own channel number, including subchannels such as 7.2. Changing a number or temporarily disabling a channel keeps its episode progress.",
+          ),
+        );
+        head.append(
+          node(
+            "div",
+            { class: "ltv-row" },
+            button("Duplicate", () => {
+              const copy = clone(c);
+              copy.Id = id();
+              copy.Name += " copy";
+              copy.Number = nextNumber();
+              copy.Blocks.forEach((b) => (b.Id = id()));
+              state.config.Channels.push(copy);
+              state.channel = copy.Id;
+              dirty();
+              renderChannels();
+              renderEditor();
+            }),
+            button(
+              "Delete channel",
+              () => {
+                if (
+                  !confirm(
+                    "Delete “" + c.Name + "”? This takes effect when you save.",
+                  )
+                )
+                  return;
+                state.config.Channels = state.config.Channels.filter(
+                  (x) => x.Id !== c.Id,
+                );
+                state.channel = state.config.Channels[0]?.Id || null;
+                dirty();
+                renderChannels();
+                renderEditor();
+              },
+              "ltv-danger",
+            ),
+          ),
+        );
+        area.append(head);
+        const tabs = node("div", {
+          class: "ltv-tabs",
+          role: "tablist",
+          "aria-label": "Channel editor",
+        });
+        for (const [key, label] of [
+          ["content", "Content"],
+          ["schedule", "Schedule"],
+          ["commercials", "Commercials"],
+          ["bumpers", "Bumpers"],
+          ["playback", "Playback"],
+          ["preview", "Guide preview"],
+        ]) {
+          const b = button(label, () => {
+            state.tab = key;
+            renderEditor();
+          });
+          b.setAttribute("role", "tab");
+          b.setAttribute("aria-selected", String(state.tab === key));
+          tabs.append(b);
+        }
+        area.append(tabs);
+        const body = node("section", { class: "ltv-panel", role: "tabpanel" });
+        area.append(body);
+        if (state.tab === "content") {
+          body.append(
+            node("h2", {}, "Default lineup"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "This content fills the day whenever no scheduled block is active.",
+            ),
+            poolEditor(c.Source, "Channel content"),
           );
         }
+        if (state.tab === "playback") body.append(...playbackSettings(c));
         if (state.tab === "schedule") {
           body.append(
             node("h2", {}, "Time blocks"),
@@ -4042,6 +4068,7 @@
             state.config.AutomaticCommercialCount ?? 2;
           state.config.DetectCredits = state.config.DetectCredits ?? true;
           state.config.AutomaticCreditsSpeed = state.config.AutomaticCreditsSpeed ?? 1;
+          state.config.AutomaticPlayback = Object.assign(channelDefaults(), state.config.AutomaticPlayback || {});
           state.config.HardwareEncoder = state.config.HardwareEncoder || "cpu";
           state.config.HardwareDevice = state.config.HardwareDevice || "/dev/dri/renderD128";
           state.config.ClipRules = state.config.ClipRules || [];
@@ -4135,6 +4162,7 @@
             };
           }
           renderAutomaticChannels();
+          renderAutomaticPlayback();
           renderSmartChannels();
           renderExportLinks();
           showView(state.view || "channels");

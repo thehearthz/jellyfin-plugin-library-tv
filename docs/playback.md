@@ -29,6 +29,11 @@ The **Library TV** folder on the home screen has a **Watch from the start** fold
 
 Guide entries carry what your library knows about each program: the show and episode name, season and episode number, description, genres, rating, year and picture. Live TV's **Movies**, **Shows**, **Kids**, **News** and **Sports** sections use the genres (Kids covers Kids, Children and Family; Sports and News match genres containing those words). Programs are marked as repeats, so the guide doesn't badge them as new. The XMLTV export carries the same details for IPTV apps.
 
+## Where these settings are
+
+- **Hand-built channels**: open the channel, then its **Playback** tab.
+- **Automatic and smart channels**: **Automatic & smart → Playback for automatic & smart channels**. One set of settings applies to all of them. Logos, watermarks and offline cards are per channel, so they're only on hand-built channels; credits speed for automatic and smart channels is the **Credits speed** setting just above.
+
 ## Volume
 
 **Even out volume** (Playback tab) levels loudness to broadcast TV's standard (−24 LUFS, ATSC A/85) so commercials aren't louder or quieter than the shows around them.

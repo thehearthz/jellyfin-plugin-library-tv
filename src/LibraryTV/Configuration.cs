@@ -36,6 +36,9 @@ public sealed class Configuration : BasePluginConfiguration
     public int AutomaticCommercialCount { get; set; } = 2;
     // How much faster credits play on automatic and smart channels (1 = normal). Hand-built channels set their own.
     public int AutomaticCreditsSpeed { get; set; } = 1;
+    // Picture, sound and on-screen graphics for automatic and smart channels: volume, Up next, the Now playing
+    // card, the bug, idents, encoding, picture shape, captions and audio. Images and credits are set elsewhere.
+    public ChannelDefinition AutomaticPlayback { get; set; } = new();
     // Reads every program's file in the background to find where its credits start, for programs without
     // a credits chapter or Outro segment.
     public bool DetectCredits { get; set; } = true;
@@ -191,6 +194,17 @@ public sealed class ChannelDefinition
     public int IdentSeconds { get; set; }
     // The ident plays a short chime.
     public bool IdentChime { get; set; } = true;
+
+    // Copies the playback settings (not content, schedule, breaks, images or credits) from a template.
+    internal ChannelDefinition WithPlayback(ChannelDefinition? template)
+    {
+        if (template is null) return this;
+        (AlwaysEncode, PictureShape, Captions, CaptionLanguage, AudioLanguage, AudioTitle) = (template.AlwaysEncode, template.PictureShape, template.Captions, template.CaptionLanguage, template.AudioLanguage, template.AudioTitle);
+        (EncodeQuality, EncodeWith, EncodeHeight, GuideHidesBreaks) = (template.EncodeQuality, template.EncodeWith, template.EncodeHeight, template.GuideHidesBreaks);
+        (NormalizeVolume, UpNext, UpNextStyle, IntroCard, Bug, BugMinutes, CardLook, IdentSeconds, IdentChime) =
+            (template.NormalizeVolume, template.UpNext, template.UpNextStyle, template.IntroCard, template.Bug, template.BugMinutes, template.CardLook, template.IdentSeconds, template.IdentChime);
+        return this;
+    }
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {
