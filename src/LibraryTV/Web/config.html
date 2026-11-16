@@ -82,6 +82,7 @@
       color: #ffaaa7;
     }
     .ltv-app input:not([type="checkbox"]),
+    .ltv-app textarea,
     .ltv-app select {
       background: rgba(128, 128, 128, 0.1);
       border: 1px solid var(--ltv-border);
@@ -163,6 +164,26 @@
       max-width: 400px;
       margin: 12px auto 24px;
       line-height: 1.6;
+    }
+    .ltv-views {
+      margin-bottom: 18px;
+    }
+    .ltv-app details.ltv-help {
+      margin: 4px 0 12px;
+    }
+    .ltv-app details.ltv-help > summary {
+      cursor: pointer;
+      font-weight: 400;
+    }
+    .ltv-export-link {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 6px 0;
+    }
+    .ltv-export-link input {
+      flex: 1;
+      min-width: 0;
     }
     .ltv-tabs {
       display: flex;
@@ -466,7 +487,8 @@
       Retry loading builder
     </button>
     <div data-ui="body" hidden>
-      <div class="ltv-layout">
+      <nav class="ltv-tabs ltv-views" data-ui="views" role="tablist" aria-label="Sections"></nav>
+      <div class="ltv-layout" data-view="channels">
         <aside class="ltv-panel ltv-sidebar">
           <h2>Your channels</h2>
           <nav data-ui="channels" aria-label="Channel selection"></nav>
@@ -479,7 +501,7 @@
         </aside>
         <main data-ui="editor"></main>
       </div>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="automatic" open>
         <summary>Automatic channels</summary>
         <div>
           <label class="ltv-check"
@@ -536,7 +558,7 @@
           <button type="button" data-action="add-smart">+ Add smart channel</button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="restrictions" open>
         <summary>Content restrictions</summary>
         <div>
           <p class="ltv-muted">
@@ -550,7 +572,7 @@
           </button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="clips" open>
         <summary>Commercial library</summary>
         <div>
           <p class="ltv-muted">
@@ -588,7 +610,7 @@
           </div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="health" open>
         <summary>Credits detection</summary>
         <div>
           <label class="ltv-check"
@@ -607,9 +629,17 @@
             again.
           </p>
           <div data-ui="credits-scan" aria-live="polite"></div>
+          <h3>Volume measuring</h3>
+          <p class="ltv-muted">
+            Clips on channels that even out volume, and programs on channels
+            that even out everything, are measured once in the background so
+            each one plays at the same level from its first second. Until a
+            file is measured it is levelled as it plays.
+          </p>
+          <div data-ui="loudness-scan" aria-live="polite"></div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="health" open>
         <summary>Channel health</summary>
         <div>
           <p class="ltv-muted">
@@ -620,7 +650,30 @@
           <div data-ui="health" aria-live="polite"></div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="server" open>
+        <summary>Watch in other apps (M3U)</summary>
+        <div>
+          <label class="ltv-check"
+            ><input type="checkbox" data-setting="ExportEnabled" />Let other
+            apps play these channels with a link</label
+          >
+          <div data-ui="export-links"></div>
+          <button type="button" data-action="new-export-token">
+            Make new links
+          </button>
+          <p class="ltv-muted">
+            Add the playlist link to an IPTV app such as VLC, TiviMate or
+            Kodi; the guide link is its XMLTV guide. Anyone who has a link can
+            watch without signing in to Jellyfin, so share it like a password.
+            Make new links to cut off everyone using the old ones. Save after
+            changing this. Links use the address you opened this page with, so
+            open the page from the address your other devices use. Streams are
+            H.264 video with AAC sound in MPEG-TS, and count toward the
+            maximum channels streaming at once.
+          </p>
+        </div>
+      </details>
+      <details class="ltv-panel" data-view="server" open>
         <summary>Backup &amp; restore settings</summary>
         <div>
           <p class="ltv-muted">
@@ -644,7 +697,7 @@
           </button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="server" open>
         <summary>Server settings &amp; Plugin Pages</summary>
         <div>
           <p data-ui="plugin-pages" class="ltv-muted"></p>
@@ -851,6 +904,7 @@
         ExcludeGenres: [],
         TitleContains: [],
         TitleExcludes: [],
+        SkipWatchedBy: "",
       });
       function normalize(p) {
         p = p || pool();
@@ -869,6 +923,7 @@
         if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
         p.Order = p.Order || "";
         p.MaxRating = p.MaxRating || "";
+        p.SkipWatchedBy = p.SkipWatchedBy || "";
         for (const key of ["MinYear", "MaxYear", "MinMinutes", "MaxMinutes"])
           if (!Number.isInteger(p[key])) p[key] = 0;
         return p;
@@ -1294,6 +1349,72 @@
           target.append(box);
         });
       }
+      // The page is split into sections; one shows at a time.
+      const views = [
+        ["channels", "Channels"],
+        ["automatic", "Automatic & smart"],
+        ["clips", "Commercial library"],
+        ["restrictions", "Restrictions"],
+        ["health", "Health"],
+        ["server", "Server & export"],
+      ];
+      function showView(name) {
+        state.view = name;
+        for (const element of page.querySelectorAll("[data-view]"))
+          element.hidden = element.dataset.view !== name;
+        const bar = ui("views");
+        bar.replaceChildren();
+        for (const [key, label] of views) {
+          const b = button(label, () => showView(key));
+          b.setAttribute("role", "tab");
+          b.setAttribute("aria-selected", String(key === name));
+          bar.append(b);
+        }
+      }
+      // Long explanations fold up behind their first sentence, so settings stay close together.
+      function foldHelp(root) {
+        for (const p of root.querySelectorAll("p.ltv-muted:not([data-ui])")) {
+          const text = p.textContent.replace(/\s+/g, " ").trim();
+          if (text.length < 170 || p.children.length || p.closest("details.ltv-help")) continue;
+          const cut = text.search(/[.:;] /);
+          if (cut < 20 || cut > 150) continue;
+          const more = node("details", { class: "ltv-help ltv-muted" }, node("summary", {}, text.slice(0, cut + 1) + " More…"), node("div", {}, text.slice(cut + 2)));
+          p.replaceWith(more);
+        }
+      }
+      function renderExportLinks() {
+        const target = ui("export-links");
+        if (!target || !state.config) return;
+        target.replaceChildren();
+        if (!state.config.ExportEnabled) return;
+        const token = encodeURIComponent(state.config.ExportToken);
+        for (const [label, path] of [["Playlist (M3U)", "LibraryTV/playlist.m3u"], ["Guide (XMLTV)", "LibraryTV/epg.xml"]]) {
+          const url = new URL(ApiClient.getUrl(path), location.href).href + "?token=" + token;
+          const input = node("input", { type: "text", readonly: "", value: url, "aria-label": label });
+          target.append(
+            node(
+              "div",
+              { class: "ltv-export-link" },
+              node("strong", {}, label),
+              input,
+              button("Copy", async () => {
+                input.select();
+                try {
+                  await navigator.clipboard.writeText(url);
+                  notice(label + " link copied.");
+                } catch (e) {
+                  notice("Select the link and copy it.");
+                }
+              }),
+            ),
+          );
+        }
+      }
+      function newToken() {
+        const bytes = new Uint8Array(32);
+        (window.crypto || globalThis.crypto).getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+      }
       function renderCreditsScan(scan) {
         const target = ui("credits-scan");
         if (!target) return;
@@ -1328,12 +1449,25 @@
         for (const line of lines)
           target.append(node("p", { class: "ltv-muted" }, line));
       }
+      function renderLoudnessScan(scan) {
+        const target = ui("loudness-scan");
+        if (!target) return;
+        target.replaceChildren();
+        if (!scan) return;
+        let line;
+        if (!scan.Enabled) line = "No channel evens out volume.";
+        else if (scan.Running)
+          line = "Measuring: " + scan.Remaining + " of " + scan.Files + " files left" + (scan.Current ? " · now " + scan.Current : "") + ".";
+        else line = "Measured " + scan.Measured + " of " + scan.Files + " files" + (scan.LastPass ? ", last checked " + new Date(scan.LastPass).toLocaleString() : "") + ".";
+        target.append(node("p", { class: "ltv-muted" }, line));
+      }
       async function refreshHealth() {
         const target = ui("health");
         target.textContent = "Checking saved channels…";
         try {
           const result = await api("status");
           renderCreditsScan(result.CreditsScan);
+          renderLoudnessScan(result.LoudnessScan);
           target.replaceChildren();
           if (result.LastError)
             target.append(
@@ -1565,6 +1699,10 @@
                   "How many episodes of one show air before the next show takes a turn. Use 0 to play each show straight through.",
                 ),
                 node(
+                  "details",
+                  { open: p.Order || p.RandomStart || p.KeepMultiPart || p.Turns.length ? "" : null },
+                  node("summary", {}, "Order & turns"),
+                node(
                   "label",
                   { class: "ltv-field" },
                   node("span", {}, "Episodes in a row for particular shows (one per line, like “Show name = 3”)"),
@@ -1601,6 +1739,7 @@
                   p.KeepMultiPart,
                   (v) => (p.KeepMultiPart = v),
                 ),
+                ),
               ]),
           check(
             "Repeat after all selected content has aired",
@@ -1623,6 +1762,7 @@
                 p.TitleContains.length +
                 p.TitleExcludes.length +
                 (p.MaxRating ? 1 : 0) +
+                (p.SkipWatchedBy ? 1 : 0) +
                 p.MinYear +
                 p.MaxYear +
                 p.MinMinutes +
@@ -1631,7 +1771,7 @@
                 ? ""
                 : null,
           },
-          node("summary", {}, "Filters: genre, tag, title, rating, year & length"),
+          node("summary", {}, "Filters: genre, tag, title, rating, year, length & watched"),
         );
         advanced.append(
           node(
@@ -1676,6 +1816,23 @@
                 p.MaxRating,
                 [["", "Any"], ["G", "G / TV-Y / TV-G"], ["TV-Y7", "TV-Y7"], ["PG", "PG / TV-PG"], ["PG-13", "PG-13 / TV-14"], ["R", "R / TV-MA"]],
                 (v) => (p.MaxRating = v),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Skip what this person has watched",
+                p.SkipWatchedBy,
+                [["", "Nobody (air everything)"], ...(state.users || []).map((u) => [u.Id, u.Name])].concat(
+                  p.SkipWatchedBy && !(state.users || []).some((u) => u.Id === p.SkipWatchedBy) ? [[p.SkipWatchedBy, "A user who no longer exists"]] : [],
+                ),
+                (v) => (p.SkipWatchedBy = v),
+              ),
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "Played episodes and movies are left out at the next refresh. When everything has been watched, everything airs again. Watching on Live TV doesn't mark things as played.",
               ),
             ),
             node(
@@ -2606,6 +2763,7 @@
           ["schedule", "Schedule"],
           ["commercials", "Commercials"],
           ["bumpers", "Bumpers"],
+          ["playback", "Playback"],
           ["preview", "Guide preview"],
         ]) {
           const b = button(label, () => {
@@ -2628,6 +2786,16 @@
               "This content fills the day whenever no scheduled block is active.",
             ),
             poolEditor(c.Source, "Channel content"),
+          );
+        }
+        if (state.tab === "playback") {
+          body.append(
+            node("h2", {}, "Picture and sound"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "How this channel's programs are encoded, shaped, captioned and branded. None of this changes the schedule.",
+            ),
             check(
               "Always encode every program (uses more CPU)",
               c.AlwaysEncode,
@@ -2669,6 +2837,102 @@
               "p",
               { class: "ltv-muted" },
               "Leave this off to play H.264/AAC files directly and encode only programs in other formats. Turn it on if a channel still freezes when programs change; every program is then converted to 720p.",
+            ),
+            node("h3", {}, "Volume"),
+            selectField(
+              "Even out volume",
+              c.NormalizeVolume,
+              [
+                ["commercials", "Commercials and bumpers (default)"],
+                ["all", "Everything, programs too"],
+                ["off", "Off"],
+              ],
+              (v) => (c.NormalizeVolume = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Levels loudness to broadcast TV's standard (−24 LUFS) so clips aren't louder or quieter than the shows around them, in every app, with no app add-on. Each file is measured once in the background (see Health) and then played with a fixed correction and a limiter, so it is even from its first second, never clips and is never muted. Only the sound is re-encoded, which costs very little CPU.",
+            ),
+            node("h3", {}, "Up next"),
+            check(
+              'Show "Up next" near the end of programs',
+              c.UpNext,
+              (v) => (c.UpNext = v),
+            ),
+            selectField(
+              "Up next style",
+              c.UpNextStyle,
+              [
+                ["card", "Card: poster and title art"],
+                ["poster", "Card: poster and title"],
+                ["logo", "Card: title art only"],
+                ["text", "One line of text"],
+              ],
+              (v) => (c.UpNextStyle = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "A card slides in at the lower left 40 seconds before a program ends, or during sped-up credits, and stays for 12 seconds. It uses the poster and title art from your library; programs without title art show their title. It only appears on programs that are already being encoded (sped-up credits, a logo, captions, a picture-shape change or Always encode), so it never adds encoding on its own.",
+            ),
+            node("h3", {}, "On-screen graphics"),
+            check(
+              'Show a "Now playing" card as each program starts',
+              c.IntroCard,
+              (v) => (c.IntroCard = v),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              check(
+                "Show a lower-third channel bug",
+                c.Bug,
+                (v) => (c.Bug = v),
+              ),
+              selectField(
+                "Bug appears every",
+                c.BugMinutes,
+                [[5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [20, "20 minutes"], [30, "30 minutes (default)"], [60, "Hour"], [120, "2 hours"]].concat(
+                  [5, 10, 15, 20, 30, 60, 120].includes(c.BugMinutes) ? [] : [[c.BugMinutes, c.BugMinutes + " minutes"]],
+                ),
+                (v) => (c.BugMinutes = Number(v)),
+              ),
+            ),
+            selectField(
+              "Card and bug look",
+              c.CardLook,
+              [
+                ["frosted", "Frosted glass with a shadow (default)"],
+                ["solid", "Solid dark with a shadow"],
+              ],
+              (v) => (c.CardLook = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "The Now playing card shows the program's backdrop and title art for 8 seconds. The bug slides in with the channel logo (or number), name and what's on for 8 seconds on the clock: every 30 minutes means :00 and :30. Like Up next, these appear only on programs that are already being encoded. Frosted glass blurs the picture behind the card, which costs a little CPU while it shows.",
+            ),
+            node("h3", {}, "Station ident"),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Before each program",
+                c.IdentSeconds,
+                [[0, "No ident"], [3, "3-second ident"], [5, "5-second ident"], [8, "8-second ident"], [10, "10-second ident"]],
+                (v) => (c.IdentSeconds = Number(v)),
+              ),
+              check(
+                "Play a chime with the ident",
+                c.IdentChime,
+                (v) => (c.IdentChime = v),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "An animated ident made from the channel's logo (Guide image, or the watermark) and name, or its number when there's no logo. It's added to the schedule, so changing it rebuilds the guide from the next program.",
             ),
             node(
               "label",
@@ -2841,6 +3105,8 @@
                 MaxLateMinutes: 0,
                 Fill: "count",
                 GuideTitle: "",
+                FromDate: "",
+                ToDate: "",
               });
               dirty();
               renderEditor();
@@ -3077,6 +3343,29 @@
             "text",
             { placeholder: "e.g. Saturday Morning Cartoons", maxlength: 100 },
           ),
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field(
+              "Only from (month-day, optional)",
+              b.FromDate,
+              (v) => (b.FromDate = v.trim()),
+              "text",
+              { placeholder: "e.g. 12-01", maxlength: 5, pattern: "[0-1][0-9]-[0-3][0-9]" },
+            ),
+            field(
+              "Until (month-day)",
+              b.ToDate,
+              (v) => (b.ToDate = v.trim()),
+              "text",
+              { placeholder: "e.g. 12-25", maxlength: 5, pattern: "[0-1][0-9]-[0-3][0-9]" },
+            ),
+          ),
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Seasonal blocks: with dates, the block runs only between them each year (12-20 to 01-05 runs over New Year). Put seasonal blocks first; the first block that fits wins. 00:00 to 00:00 means all day.",
+          ),
           poolEditor(b.Source, "Content for this block"),
         );
         return box;
@@ -3225,6 +3514,15 @@
           BreakFreeEndMinutes: 0,
           CommercialCountMax: 0,
           GuideHidesBreaks: false,
+          NormalizeVolume: "commercials",
+          UpNext: false,
+          UpNextStyle: "card",
+          IntroCard: false,
+          Bug: false,
+          BugMinutes: 30,
+          CardLook: "frosted",
+          IdentSeconds: 0,
+          IdentChime: true,
           AudioTitle: "",
           Watermark: "",
           WatermarkPosition: "bottom-right",
@@ -3762,6 +4060,11 @@
           } catch (e) {
             state.genres = [];
           }
+          try {
+            state.users = await api("users");
+          } catch (e) {
+            state.users = [];
+          }
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
             c.Commercials = normalize(c.Commercials);
@@ -3781,6 +4084,8 @@
               b.StartMode = b.StartMode || "soft";
               b.Fill = b.Fill || "count";
               b.GuideTitle = b.GuideTitle || "";
+              b.FromDate = b.FromDate || "";
+              b.ToDate = b.ToDate || "";
               if (!Number.isInteger(b.MaxLateMinutes)) b.MaxLateMinutes = 0;
             }
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;
@@ -3826,13 +4131,17 @@
                     ? Number(input.value)
                     : input.value;
               dirty();
+              if (key === "ExportEnabled") renderExportLinks();
             };
           }
           renderAutomaticChannels();
           renderSmartChannels();
+          renderExportLinks();
+          showView(state.view || "channels");
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
+          renderLoudnessScan(status.LoudnessScan);
           state.clips = freshClips();
           renderClipRules();
           await loadClips();
@@ -3891,6 +4200,14 @@
         e.preventDefault();
         closePreview();
       });
+      page.querySelector("[data-action=new-export-token]").addEventListener("click", () => {
+        state.config.ExportToken = newToken();
+        dirty();
+        renderExportLinks();
+        notice("New links made. Save to switch to them; the old links stop working.");
+      });
+      new MutationObserver(() => foldHelp(page)).observe(page, { childList: true, subtree: true });
+      foldHelp(page);
       page.querySelector("[data-action=test-hardware]").addEventListener("click", async () => {
         const target = ui("hardware-results");
         target.textContent = "Testing the graphics encoders with Jellyfin's FFmpeg…";

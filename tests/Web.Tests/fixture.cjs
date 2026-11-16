@@ -7,6 +7,8 @@ const configuration = () => ({
   TimeZoneId: "America/New_York",
   InternalBaseUrl: "http://127.0.0.1:8096",
   StreamToken: "private-test-token-".repeat(4),
+  ExportEnabled: false,
+  ExportToken: "EXPORTTOKEN".repeat(4),
   Channels: [
     {
       Id: "evening-tv",
@@ -143,6 +145,7 @@ function install(window, options = {}) {
           ],
         };
       if (path === "genres") return ["Animation", "Comedy", "Drama"];
+      if (path === "users") return [{ Id: "1111aaaa1111aaaa1111aaaa1111aaaa", Name: "Sam" }];
       if (path === "libraries")
         return [
           { ItemId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "TV Shows" },

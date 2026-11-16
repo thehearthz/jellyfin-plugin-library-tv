@@ -18,6 +18,7 @@ public sealed class Controller : ControllerBase
     private readonly Lazy<Broadcasts?> broadcastService;
     private readonly Lazy<CreditsScanner?> creditsService = new(() => null);
     private readonly Lazy<IProgramStreamer?> streamerService = new(() => null);
+    private readonly Lazy<LoudnessScanner?> loudnessService = new(() => null);
     public Controller(IServiceProvider services, StartupGate startup)
     {
         this.startup = startup;
@@ -26,6 +27,7 @@ public sealed class Controller : ControllerBase
         broadcastService = new(() => services.GetRequiredService<Broadcasts>());
         creditsService = new(() => services.GetService<CreditsScanner>());
         streamerService = new(() => services.GetService<IProgramStreamer>());
+        loudnessService = new(() => services.GetService<LoudnessScanner>());
     }
     internal Controller(Catalog catalog, Scheduler scheduler, Broadcasts? broadcasts)
     {
@@ -73,13 +75,16 @@ public sealed class Controller : ControllerBase
     [HttpGet("genres")]
     public ActionResult<string[]> Genres() => catalog.Genres();
 
+    [HttpGet("users")]
+    public object Users() => catalog.Users();
+
     [HttpGet("libraries")]
     public object Libraries() => catalog.Libraries();
 
     [HttpGet("status")]
     public object Status() => startup?.IsReady == false
         ? new { IsReady = false, LastRefresh = (DateTimeOffset?)null, LastRefreshMilliseconds = (double?)null, LastError = (string?)null, PluginPages = PluginPagesIntegration.Status, Channels = Array.Empty<object>() }
-        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, scheduler.ClipLibrary, ClipMinimum = Planner.MinimumVariety, CreditsScan = creditsService.Value?.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
+        : new { scheduler.IsReady, scheduler.LastRefresh, scheduler.LastRefreshMilliseconds, scheduler.LastError, PluginPages = PluginPagesIntegration.Status, scheduler.ClipLibrary, ClipMinimum = Planner.MinimumVariety, CreditsScan = creditsService.Value?.Status, LoudnessScan = loudnessService.Value?.Status, Channels = scheduler.Channels.Select(x => new { x.Id, x.Name, x.Number, x.AlwaysEncode, Programs = scheduler.GuideFor(x.Id).Count, Current = scheduler.Current(x.Id, DateTimeOffset.UtcNow)?.Title, HasUpcomingPrograms = scheduler.GuideFor(x.Id).Any(p => p.End > DateTimeOffset.UtcNow), Warnings = scheduler.WarningsFor(x.Id), Runtime = broadcasts?.StatusFor(x.Id) }) };
 
     [HttpPost("rebuild/{id}")]
     public async Task<IActionResult> Rebuild(string id, CancellationToken ct)
@@ -127,7 +132,7 @@ public sealed class Controller : ControllerBase
     public ActionResult<ClipMatches> ClipMatches(string id) => scheduler.MatchesFor(id.Replace("-", "").ToLowerInvariant()) is { } matches ? matches : NotFound(new { Error = "That clip isn't in the clip library yet. Save and refresh first." });
 
     [HttpGet("guide/{id}")]
-    public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial, x.Match, x.Speed, Kind = !x.Commercial ? "Program" : x.Undo?.PoolKey.StartsWith("bumpers", StringComparison.Ordinal) == true ? "Bumper" : "Commercial" });
+    public object Guide(string id, [FromQuery] int start = 0, [FromQuery] int limit = 40) => scheduler.GuideFor(id).Where(x => x.End > DateTimeOffset.UtcNow).Skip(Math.Max(0, start)).Take(Math.Clamp(limit, 1, 200)).Select(x => new { x.Title, x.ItemId, x.Start, x.End, x.Commercial, x.Match, x.Speed, Kind = !x.Commercial ? "Program" : Planner.IsIdent(x.Path) ? "Ident" : x.Undo?.PoolKey.StartsWith("bumpers", StringComparison.Ordinal) == true ? "Bumper" : "Commercial" });
 
     [HttpGet("configuration")]
     public Configuration Configuration() => Plugin.Instance.Configuration;
@@ -153,6 +158,40 @@ public sealed class Controller : ControllerBase
         var address = HttpContext.Connection.RemoteIpAddress;
         if (address is null || !System.Net.IPAddress.IsLoopback(address) || token is null || !CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(token)), SHA256.HashData(Encoding.UTF8.GetBytes(Plugin.Instance.Configuration.StreamToken)) ))
         { Response.StatusCode = 403; return; }
+        await Serve(id, ct);
+    }
+
+    // The channel list for other apps. Links are built from the address the request came to.
+    [AllowAnonymous]
+    [HttpGet("playlist.m3u")]
+    public IActionResult Playlist([FromQuery] string? token)
+    {
+        var config = Plugin.Instance.Configuration;
+        if (!Export.Allowed(config, token)) return StatusCode(403);
+        Response.Headers.CacheControl = "no-store";
+        return Content(Export.M3u(scheduler.Channels, $"{Request.Scheme}://{Request.Host}{Request.PathBase}", config.ExportToken), "audio/x-mpegurl", Encoding.UTF8);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("epg.xml")]
+    public IActionResult Epg([FromQuery] string? token)
+    {
+        if (!Export.Allowed(Plugin.Instance.Configuration, token)) return StatusCode(403);
+        Response.Headers.CacheControl = "no-store";
+        return Content(Export.Xmltv(scheduler.Channels, scheduler.GuideFor, DateTimeOffset.UtcNow, catalog.Details, $"{Request.Scheme}://{Request.Host}{Request.PathBase}"), "application/xml", Encoding.UTF8);
+    }
+
+    // A channel as plain MPEG-TS for other apps, from any address, guarded by the export token.
+    [AllowAnonymous]
+    [HttpGet("live/{id}.ts")]
+    public async Task Live(string id, [FromQuery] string? token, CancellationToken ct)
+    {
+        if (!Export.Allowed(Plugin.Instance.Configuration, token)) { Response.StatusCode = 403; return; }
+        await Serve(id, ct);
+    }
+
+    private async Task Serve(string id, CancellationToken ct)
+    {
         var now = DateTimeOffset.UtcNow;
         // A short gap left by content restrictions is bridged by the broadcast, so tuning in may start in one.
         if (scheduler.Current(id, now) is null && !scheduler.GuideFor(id).Any(x => x.Start > now && x.Start - now <= Broadcasts.MaxGap)) { Response.StatusCode = 404; return; }

@@ -10,21 +10,64 @@ public sealed class LiveTvService : ILiveTvService
 {
     private readonly Lazy<Scheduler> scheduler;
     private readonly StartupGate? startup;
+    private readonly Func<Guid, ProgramDetails?> details;
     public LiveTvService(IServiceProvider services, StartupGate startup)
     {
         this.startup = startup;
         scheduler = new(() => services.GetRequiredService<Scheduler>());
+        var catalog = new Lazy<Catalog>(() => services.GetRequiredService<Catalog>());
+        details = id => catalog.Value.Details(id);
     }
-    internal LiveTvService(Scheduler scheduler) => this.scheduler = new(() => scheduler);
+    internal LiveTvService(Scheduler scheduler, Func<Guid, ProgramDetails?>? details = null)
+    {
+        this.scheduler = new(() => scheduler);
+        this.details = details ?? (_ => null);
+    }
     private IReadOnlyList<ChannelDefinition> Channels => startup?.IsReady == false ? [] : scheduler.Value.Channels;
     public string Name => "Library TV";
     public string HomePageUrl => "https://github.com/thehearthz/jellyfin-plugin-library-tv";
     public Task<IEnumerable<ChannelInfo>> GetChannelsAsync(CancellationToken ct) => Task.FromResult(Channels.Select(x => new ChannelInfo { Id = x.Id, Name = x.Name, Number = x.Number, ChannelType = ChannelType.TV, ImagePath = ProgramStreamer.IsImage(x.Logo ?? "") && File.Exists(x.Logo) ? x.Logo : null }));
-    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct) => Task.FromResult(Listings(startup?.IsReady == false ? [] : scheduler.Value.GuideFor(channelId), HidesBreaks(channelId)).Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start).Select(x => new ProgramInfo
+    public Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime start, DateTime end, CancellationToken ct)
     {
-        Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Heading ?? x.Title,
-        StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : x.Heading is null ? "From your Jellyfin library" : x.Title
-    }));
+        var known = new Dictionary<Guid, ProgramDetails?>();
+        return Task.FromResult<IEnumerable<ProgramInfo>>(Listings(startup?.IsReady == false ? [] : scheduler.Value.GuideFor(channelId), HidesBreaks(channelId))
+            .Where(x => x.Start.UtcDateTime < end && x.End.UtcDateTime > start)
+            .Select(x => Program(x, x.Commercial ? null : known.TryGetValue(x.ItemId, out var found) ? found : known[x.ItemId] = details(x.ItemId))).ToList());
+    }
+
+    // A guide entry with what the library knows about it, so the guide shows its picture, episode, genres and
+    // rating, and Live TV's Movies, Shows, Kids, News and Sports sections find it.
+    internal static ProgramInfo Program(Airing x, ProgramDetails? about)
+    {
+        var info = new ProgramInfo
+        {
+            Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Heading ?? x.Title,
+            StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = Planner.IsIdent(x.Path) ? "Station ident" : x.Commercial ? "Commercial break" : x.Heading is null ? "From your Jellyfin library" : x.Title,
+            // A new Etag when what airs in a slot changes makes Jellyfin replace its copy of the entry.
+            Etag = $"{x.ItemId:N}-{x.End.UtcTicks}", IsRepeat = true,
+        };
+        if (about is null) return info;
+        var genres = about.Genres.ToList();
+        bool Has(params string[] names) => genres.Any(g => names.Any(n => g.Contains(n, StringComparison.OrdinalIgnoreCase)));
+        info.Name = x.Heading ?? about.Name ?? x.Title;
+        info.EpisodeTitle = x.Heading is not null ? (about.Series ? $"{about.Name}: {about.EpisodeTitle}" : about.Name) : about.EpisodeTitle;
+        info.SeasonNumber = about.Season;
+        info.EpisodeNumber = about.Episode;
+        info.IsSeries = about.Series;
+        info.IsMovie = about.Movie;
+        info.SeriesId = about.SeriesId;
+        info.Genres = genres;
+        info.IsKids = Has("Kids", "Children", "Family");
+        info.IsSports = Has("Sport");
+        info.IsNews = Has("News");
+        info.OfficialRating = about.Rating;
+        info.ProductionYear = about.Year;
+        info.OriginalAirDate = about.Aired;
+        info.CommunityRating = about.Score;
+        info.Overview = about.Overview is { Length: > 0 } overview ? overview : info.Overview;
+        if (about.Image is { } image && File.Exists(image)) (info.ImagePath, info.HasImage) = (image, true);
+        return info;
+    }
 
     // The guide lists a program once, from its first part to its last, with the breaks inside it.
     private bool HidesBreaks(string channelId) => startup?.IsReady != false && scheduler.Value.Channels.FirstOrDefault(x => x.Id == channelId)?.GuideHidesBreaks == true;

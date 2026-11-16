@@ -6,7 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Jellyfin.Plugin.LibraryTV;
 
-public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null)
+public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, ILogger<Scheduler> log, StartupGate? startup = null, CreditsStore? detections = null,
+    MediaBrowser.Model.Tasks.ITaskManager? tasks = null)
 {
     public bool IsReady => startup?.IsReady ?? true;
     private readonly SemaphoreSlim gate = new(1);
@@ -75,6 +76,23 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         }
         finally { gate.Release(); }
     }
+    // How many times programs already in the guide were replaced or moved, which Jellyfin's copy of the guide must follow.
+    public int GuideChanges { get; private set; }
+
+    // Jellyfin keeps its own copy of the guide and re-reads it once a day. When programs it already has are
+    // replaced or moved, ask for its Refresh Guide task now; a refresh that is running or queued covers this.
+    public void RequestGuideImport(MediaBrowser.Model.Tasks.ITaskManager? fallback = null)
+    {
+        GuideChanges++;
+        try
+        {
+            var manager = tasks ?? fallback;
+            var worker = manager?.ScheduledTasks.FirstOrDefault(x => x.ScheduledTask.Key == "RefreshGuide");
+            if (worker is { State: MediaBrowser.Model.Tasks.TaskState.Idle }) manager!.QueueScheduledTask(worker.ScheduledTask, new MediaBrowser.Model.Tasks.TaskOptions());
+        }
+        catch (Exception ex) { log.LogWarning(ex, "Could not queue Jellyfin's guide refresh after the Library TV guide changed"); }
+    }
+
     public string? LastError { get; private set; }
     public double? LastRefreshMilliseconds { get; private set; }
     public DateTimeOffset? LastRefresh { get; private set; }
@@ -106,6 +124,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         _ = TimeZoneInfo.FindSystemTimeZoneById(c.TimeZoneId);
         if (!Uri.TryCreate(c.InternalBaseUrl, UriKind.Absolute, out var uri) || !uri.IsLoopback || uri.Scheme is not ("http" or "https") || uri.Query.Length != 0 || uri.Fragment.Length != 0) throw new ArgumentException("Internal URL must be a loopback HTTP(S) Jellyfin URL, including any base path.");
         if (c.StreamToken is null || c.StreamToken.Length < 32) throw new ArgumentException("Stream token must have at least 32 characters.");
+        if (c.ExportToken is null || c.ExportToken.Length is < 32 or > 128 || !c.ExportToken.All(char.IsAsciiLetterOrDigit)) throw new ArgumentException("The export token must be 32–128 letters and digits.");
+        if (c.ExportToken == c.StreamToken) throw new ArgumentException("The export token must differ from the stream token.");
         if (c.Channels.Length > 100) throw new ArgumentException("At most 100 manual channels are supported.");
         if (c.Channels.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != c.Channels.Length) throw new ArgumentException("Channel IDs must be unique, including disabled channels.");
         if (c.AutomaticChannels.Select(x => Guid.Parse(x.LibraryId)).Distinct().Count() != c.AutomaticChannels.Length) throw new ArgumentException("Each automatic library can have only one set of channel settings.");
@@ -126,6 +146,10 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
             if (channel.EncodeWith is not ("" or "cpu")) throw new ArgumentException("Encode with must be blank (the server setting) or cpu.");
+            if (channel.NormalizeVolume is not ("off" or "commercials" or "all")) throw new ArgumentException("Even out volume must be off, commercials or all.");
+            if (!StreamPlan.UpNextStyles.Contains(channel.UpNextStyle ?? "")) throw new ArgumentException("Up next is a card, poster, logo or text.");
+            if (channel.BugMinutes is < 5 or > 240 || channel.CardLook is not ("frosted" or "solid")) throw new ArgumentException("The bug shows every 5–240 minutes, and cards are frosted or solid.");
+            if (channel.IdentSeconds is not 0 and (< 3 or > 10)) throw new ArgumentException("Station idents last 3–10 seconds, or 0 for none.");
             if (!StreamPlan.Qualities.Contains(channel.EncodeQuality ?? "") || !StreamPlan.Heights.Contains(channel.EncodeHeight)) throw new ArgumentException("Encoding quality must be fast, balanced, high or best, and the encoded height 480, 576, 720 or 1080.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
             foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
@@ -141,7 +165,9 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             foreach (var block in channel.Blocks)
             {
                 if (block.Id is "default" || block.Id.StartsWith("commercials", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(block.Id)) throw new ArgumentException("Block ID is empty or reserved.");
-                if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) || block.Start == block.End) throw new ArgumentException("Time blocks require different start/end times in HH:mm format.");
+                if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) ) throw new ArgumentException("Time blocks need start and end times in HH:mm format.");
+                if (block.FromDate is null || block.ToDate is null || string.IsNullOrWhiteSpace(block.FromDate) != string.IsNullOrWhiteSpace(block.ToDate)
+                    || block.FromDate.Length > 0 && (TimeBlock.MonthDay(block.FromDate) < 0 || TimeBlock.MonthDay(block.ToDate) < 0)) throw new ArgumentException("Seasonal dates are a month and day (MM-dd) for both the first and last day, or both blank.");
                 if (block.MaxItemsPerDay < 0) throw new ArgumentException("Daily episode limits cannot be negative.");
                 if (block.StartMode is not ("soft" or "exact") || block.Fill is not ("count" or "fit")) throw new ArgumentException("A block starts soft or exact and fills by count or fit.");
                 if (block.MaxLateMinutes is < 0 or > 1440) throw new ArgumentException("Allowed lateness must be 0–1440 minutes.");
@@ -211,6 +237,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         if (pool.ExcludeGenres is null || pool.MaxRating is null || pool.MaxRating.Length > 20) throw new ArgumentException("Content selections cannot be null.");
         if (pool.MinYear is not 0 and (< 1850 or > 2200) || pool.MaxYear is not 0 and (< 1850 or > 2200) || pool.MaxYear != 0 && pool.MaxYear < pool.MinYear) throw new ArgumentException("Years must be between 1850 and 2200, and the last year cannot be before the first.");
         if (pool.MinMinutes < 0 || pool.MaxMinutes < 0 || pool.MaxMinutes != 0 && pool.MaxMinutes < pool.MinMinutes) throw new ArgumentException("Length limits cannot be negative, and the longest cannot be shorter than the shortest.");
+        if (pool.SkipWatchedBy is null || pool.SkipWatchedBy.Length > 0 && !Guid.TryParse(pool.SkipWatchedBy, out _)) throw new ArgumentException("Choose a user, or nobody, for skipping watched programs.");
     }
 
     public async Task SaveConfiguration(Configuration config, CancellationToken ct)
@@ -278,6 +305,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             var networks = new Planner.NetworkIndex(allPrograms.SelectMany(x => (x.Studios ?? []).Concat(x.Tags ?? []))
                 .Concat(definitions.SelectMany(x => x.Blocks.Select(b => b.CommercialNetwork).Append(x.CommercialNetwork))), allPrograms.Select(x => x.Show), labels);
             DateTimeOffset? rebuiltFrom = null;
+            var guideChanged = false;
             var warnings = new Dictionary<string, string[]>();
             foreach (var defined in definitions)
             {
@@ -295,10 +323,13 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
                 // current program, without a manual rebuild; the guide planned days ahead would otherwise keep the old ones.
                 var plannedWith = Fingerprint(channel, config, detections?.Generation ?? 0);
                 DateTimeOffset? from = null;
+                var planned = state.Guide.Where(x => x.Start > now).Select(x => (x.ItemId, x.Start, x.End)).ToArray();
                 if (channel.Id == rebuildChannel || state.PlannedWith != plannedWith && state.Guide.Any(x => x.Start > now)) from = Planner.RewindFuture(state, now);
                 if (channel.Id == rebuildChannel) rebuiltFrom = from;
                 Planner.Extend(channel, state, pools, now, now.AddDays(config.GuideDays), TimeZoneInfo.FindSystemTimeZoneById(config.TimeZoneId), from, config.Restrictions, chapters, networks, credits);
                 state.PlannedWith = plannedWith;
+                // Programs Jellyfin already lists were replaced or moved: its guide must be read again.
+                if (from is not null && !state.Guide.Where(x => x.Start > now).Select(x => (x.ItemId, x.Start, x.End)).Take(planned.Length).SequenceEqual(planned)) guideChanged = true;
                 var notes = new List<string>();
                 if (pools["default"].Count == 0) notes.Add("The default lineup has no eligible local videos. Time outside scheduled blocks may be empty.");
                 foreach (var block in channel.Blocks.Where(x => pools[x.Id].Count == 0)) notes.Add($"The {block.Start}–{block.End} block has no eligible local videos and will use the default lineup.");
@@ -352,6 +383,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             LastRefresh = now;
             LastRefreshMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             LastError = null;
+            if (guideChanged) RequestGuideImport();
             return rebuiltFrom;
             // How the shared clips were sorted, for the builder: counts per network and decade.
             IEnumerable<ClipGroup> Summarize(string kind, List<Media> clips) => clips
@@ -378,9 +410,9 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     // Newly detected credits count too: they move breaks before the credits and speed the credits up.
     private static string Fingerprint(ChannelDefinition c, Configuration config, int detectedCredits) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
     {
-        PlanningRules, DetectedCredits = config.DetectCredits ? detectedCredits : -1,
+        PlanningRules, DetectedCredits = config.DetectCredits && c.CreditsSpeed > 1 ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
-        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
+        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.IdentSeconds, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
     })));
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);

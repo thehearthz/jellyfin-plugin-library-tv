@@ -230,7 +230,7 @@ public sealed class CreditsScanner(IServiceProvider services, CreditsStore store
 
     private static string Seconds(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
-    private static async Task<(byte[] Output, string Log)?> Run(IMediaEncoder encoder, string[] args, string level, TimeSpan limit, CancellationToken ct)
+    internal static async Task<(byte[] Output, string Log)?> Run(IMediaEncoder encoder, string[] args, string level, TimeSpan limit, CancellationToken ct)
     {
         string ffmpeg;
         try { ffmpeg = encoder.EncoderPath; }

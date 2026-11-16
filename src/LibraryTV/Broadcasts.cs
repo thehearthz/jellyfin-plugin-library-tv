@@ -12,7 +12,7 @@ public sealed record RuntimeStatus(int Viewers, int Recoveries, string? LastProb
 
 // One process per watched channel; no timer, media scan, or process while idle.
 public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log, ITaskManager? tasks = null,
-    ISessionManager? sessions = null, ILibraryManager? library = null) : IDisposable
+    ISessionManager? sessions = null, ILibraryManager? library = null, Catalog? catalog = null) : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Broadcast> active = [];
@@ -27,6 +27,13 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
     internal static TimeSpan EarlyEnd { get; set; } = TimeSpan.FromSeconds(5);
     // Shorter gaps are bridged with filler packets: starting a picture for them is not worth the wait.
     internal static TimeSpan OfflineCardMinimum { get; set; } = TimeSpan.FromSeconds(8);
+    // Chunks a viewer may fall behind before being dropped, about 96 MB at most. Jellyfin reads slowly while
+    // it starts its own FFmpeg, and a high-bitrate program fills a small buffer in a second or two.
+    internal const int ViewerBuffer = 8192;
+    // A channel keeps playing this long after its last viewer leaves. Jellyfin first reads a few seconds of a
+    // channel to learn its format, disconnects, then connects again to play it; without this the program
+    // would be started twice, doubling the wait.
+    internal static TimeSpan Linger { get; set; } = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan KeepAlive = TimeSpan.FromMilliseconds(500);
     // With the "restart" picture shape, players are restarted this long after a program of a new shape starts,
     // so Jellyfin sizes the restarted stream from the new program.
@@ -47,7 +54,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
     public async Task Watch(string id, Stream output, CancellationToken ct)
     {
         Broadcast broadcast;
-        var subscriber = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1024) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait });
+        var subscriber = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(ViewerBuffer) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait });
         var key = Guid.NewGuid();
         lock (gate)
         {
@@ -55,13 +62,23 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             // A stopping worker may still be listed briefly; never attach a viewer to it.
             if (!active.TryGetValue(id, out broadcast!) || broadcast.Stop.IsCancellationRequested)
             {
+                // A channel nobody is watching any more gives up its place.
+                if (active.Count >= Plugin.Instance.Configuration.MaxActiveChannels && active.FirstOrDefault(x => x.Value.Viewers.IsEmpty) is { Key: not null } idle)
+                {
+                    idle.Value.Stop.Cancel();
+                    active.Remove(idle.Key);
+                }
                 if (active.Count >= Plugin.Instance.Configuration.MaxActiveChannels) throw new InvalidOperationException("Active channel limit reached.");
                 broadcast = new Broadcast();
                 active[id] = broadcast;
                 broadcast.Viewers[key] = subscriber;
                 broadcast.Run = Task.Run(() => Run(id, broadcast));
             }
-            else broadcast.Viewers[key] = subscriber;
+            else
+            {
+                broadcast.Viewers[key] = subscriber;
+                broadcast.Idle++;
+            }
         }
         try
         {
@@ -76,13 +93,26 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             lock (gate)
             {
                 broadcast.Viewers.TryRemove(key, out _);
-                if (broadcast.Viewers.IsEmpty)
-                {
-                    broadcast.Stop.Cancel();
-                    if (active.GetValueOrDefault(id) == broadcast) active.Remove(id);
-                }
+                LastViewerLeft(id, broadcast);
             }
         }
+    }
+
+    // When the last viewer has gone, the channel stops after its linger time. Call with the gate held.
+    private void LastViewerLeft(string id, Broadcast broadcast)
+    {
+        if (!broadcast.Viewers.IsEmpty || broadcast.Stop.IsCancellationRequested) return;
+        var left = ++broadcast.Idle;
+        if (Linger <= TimeSpan.Zero || disposed) StopIdle(id, broadcast, left);
+        else _ = Task.Delay(Linger).ContinueWith(_ => { lock (gate) StopIdle(id, broadcast, left); }, TaskScheduler.Default);
+    }
+
+    // Stops a channel that still has no viewers, unless someone tuned in (or left again) since `left`. Call with the gate held.
+    private void StopIdle(string id, Broadcast broadcast, int left)
+    {
+        if (!broadcast.Viewers.IsEmpty || broadcast.Idle != left) return;
+        broadcast.Stop.Cancel();
+        if (active.GetValueOrDefault(id) == broadcast) active.Remove(id);
     }
 
     private async Task Run(string id, Broadcast broadcast)
@@ -113,16 +143,16 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     var wait = upcoming.Start - now - ProgramStreamer.Lead;
                     // A channel with an offline card shows it through longer gaps instead of a black screen.
                     var card = scheduler.Channels.FirstOrDefault(x => x.Id == id) is { OfflineCard.Length: > 0 } offline && wait > OfflineCardMinimum && File.Exists(offline.OfflineCard) ? offline : null;
-                    if (card is null) { await Hold(broadcast, wait, ct); continue; }
+                    if (card is null) { await Hold(id, broadcast, wait, ct); continue; }
                     try
                     {
-                        await streamer.Stream(new Airing(id, Guid.Empty, "Off air", card.OfflineCard, now, now + wait, true), card, programShape, chunk => Send(broadcast, chunk, ct), ct);
+                        await streamer.Stream(new Airing(id, Guid.Empty, "Off air", card.OfflineCard, now, now + wait, true), card, programShape, chunk => Send(id, broadcast, chunk, ct), ct);
                     }
                     catch (IOException ex)
                     {
                         ct.ThrowIfCancellationRequested();
                         log.LogWarning(ex, "Library TV channel {Channel}: the offline card could not play", id);
-                        await Hold(broadcast, TimeSpan.FromTicks(Math.Max(0, (upcoming.Start - DateTimeOffset.UtcNow - ProgramStreamer.Lead).Ticks)), ct);
+                        await Hold(id, broadcast, TimeSpan.FromTicks(Math.Max(0, (upcoming.Start - DateTimeOffset.UtcNow - ProgramStreamer.Lead).Ticks)), ct);
                     }
                     continue;
                 }
@@ -143,14 +173,20 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 }
                 try
                 {
-                    var method = await streamer.Stream(item, channel, shape, chunk =>
+                    var playing = item;
+                    if (!item.Commercial && channel.UpNext && UpNext(scheduler.GuideFor(id), item) is { } next)
+                        playing = playing with { Next = catalog?.Details(next.ItemId)?.Card(next.Title) ?? new UpNextCard(next.Title) };
+                    // The program itself, for its Now playing card and the bug.
+                    if (!item.Commercial && (channel.IntroCard || channel.Bug))
+                        playing = playing with { Now = catalog?.Details(item.ItemId)?.Card(item.Heading ?? item.Title) ?? new UpNextCard(item.Heading ?? item.Title) };
+                    var method = await streamer.Stream(playing, channel, shape, chunk =>
                     {
                         if (restartPlayers)
                         {
                             restartPlayers = false;
                             _ = RestartPlayers(id, ct);
                         }
-                        return Send(broadcast, chunk, ct);
+                        return Send(id, broadcast, chunk, ct);
                     }, ct, (text, problem) =>
                     {
                         if (!problem) { lock (gate) playback[id] = text; return; }
@@ -172,10 +208,10 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     // Restart the same program from the current time; viewers stay connected.
                     ct.ThrowIfCancellationRequested();
                     restarts++;
-                    var problem = (ex.Stalled ? "Playback stalled" : "Playback stopped unexpectedly") + " and restarted automatically. If this repeats, check the media file and its storage.";
+                    var problem = (ex.Stalled ? "Playback stalled" : "Playback stopped unexpectedly") + $" during “{item.Title}” and restarted automatically. If this repeats, check the media file and its storage." + Said(ex);
                     Report(id, problem, true);
                     log.LogWarning("Library TV channel {Channel}: {Problem}", id, problem);
-                    await Hold(broadcast, RestartDelay, ct);
+                    await Hold(id, broadcast, RestartDelay, ct);
                 }
                 catch (IOException ex)
                 {
@@ -183,6 +219,7 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                     var problem = ex is FileNotFoundException ? "A scheduled file is missing. Check the library or its storage mount."
                         : ex is PlaybackInterruptedException ? "A scheduled item kept stalling and was skipped. Check the file and its storage."
                         : "A scheduled item could not play. Check file access and media formats; Always encode may help.";
+                    problem = $"“{item.Title}”: {problem}{Said(ex)}";
                     Report(id, problem, false);
                     log.LogWarning("Library TV channel {Channel}: {Problem}", id, problem);
                     if (++consecutiveFailures >= 3 || !await scheduler.SkipFailed(item, DateTimeOffset.UtcNow, ct))
@@ -235,26 +272,33 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
             && (item is MediaBrowser.Controller.LiveTv.LiveTvChannel { ServiceName: "Library TV" } || item.ChannelId != Guid.Empty && library!.GetItemById(item.ChannelId)?.Name == "Library TV");
     }
 
-    private static Task Send(Broadcast broadcast, byte[] chunk, CancellationToken ct)
+    private static string Said(Exception ex) => ex.Data["ffmpeg"] is string said ? $" FFmpeg said: {said}" : "";
+
+    private Task Send(string id, Broadcast broadcast, byte[] chunk, CancellationToken ct)
     {
+        var dropped = false;
         foreach (var viewer in broadcast.Viewers)
             if (!viewer.Value.Writer.TryWrite(chunk))
             {
                 viewer.Value.Writer.TryComplete(new IOException("Viewer could not keep up with the live stream."));
                 broadcast.Viewers.TryRemove(viewer.Key, out _);
+                dropped = true;
             }
-        if (broadcast.Viewers.IsEmpty) { broadcast.Stop.Cancel(); ct.ThrowIfCancellationRequested(); }
+        // A dropped viewer may never notice, so its leaving is counted here.
+        if (dropped) lock (gate) LastViewerLeft(id, broadcast);
+        // With no viewers the channel plays on, unheard, until its linger time runs out.
+        ct.ThrowIfCancellationRequested();
         return Task.CompletedTask;
     }
 
     // Wait while keeping the connection fed, so neither Jellyfin nor the client gives up on the stream.
-    private static async Task Hold(Broadcast broadcast, TimeSpan duration, CancellationToken ct)
+    private async Task Hold(string id, Broadcast broadcast, TimeSpan duration, CancellationToken ct)
     {
         var until = DateTimeOffset.UtcNow + duration;
         for (var left = duration; left > TimeSpan.Zero; left = until - DateTimeOffset.UtcNow)
         {
             await Task.Delay(left < KeepAlive ? left : KeepAlive, ct);
-            if (until > DateTimeOffset.UtcNow) await Send(broadcast, Filler, ct);
+            if (until > DateTimeOffset.UtcNow) await Send(id, broadcast, Filler, ct);
         }
     }
 
@@ -268,17 +312,8 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         }
     }
 
-    // Jellyfin keeps its own copy of the guide. Re-import it once after recovery shifts
-    // program times; a refresh that is already running or queued covers this request.
-    private void RequestGuideImport()
-    {
-        try
-        {
-            var worker = tasks?.ScheduledTasks.FirstOrDefault(x => x.ScheduledTask.Key == "RefreshGuide");
-            if (worker is { State: TaskState.Idle }) tasks!.QueueScheduledTask(worker.ScheduledTask, new TaskOptions());
-        }
-        catch (Exception ex) { log.LogWarning(ex, "Could not queue Jellyfin's guide refresh after Library TV recovery"); }
-    }
+    // Recovery shifted program times, so Jellyfin's copy of the guide must be read again.
+    private void RequestGuideImport() => scheduler.RequestGuideImport(tasks);
 
     public void Dispose() { lock (gate) { disposed = true; foreach (var b in active.Values) b.Stop.Cancel(); } }
     private sealed class Broadcast
@@ -286,5 +321,22 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         public CancellationTokenSource Stop { get; } = new();
         public ConcurrentDictionary<Guid, Channel<byte[]>> Viewers { get; } = new();
         public Task? Run { get; set; }
+        // Counts every time the last viewer leaves or a new one joins, so a stale stop request is ignored.
+        public int Idle { get; set; }
+    }
+
+    // What follows a program's last part, for "Up next", or null when more of the program is still to come.
+    internal static Airing? UpNext(IReadOnlyList<Airing> guide, Airing item)
+    {
+        var at = -1;
+        for (var i = 0; i < guide.Count; i++) if (guide[i].Start == item.Start && guide[i].ItemId == item.ItemId) { at = i; break; }
+        if (at < 0) return null;
+        foreach (var next in guide.Skip(at + 1).Take(40))
+        {
+            if (next.Commercial) continue;
+            if (next.ItemId == item.ItemId && next.Offset > 0) return null;
+            return next;
+        }
+        return null;
     }
 }

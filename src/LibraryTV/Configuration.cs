@@ -21,6 +21,10 @@ public sealed class Configuration : BasePluginConfiguration
     public string TimeZoneId { get; set; } = "UTC";
     public string InternalBaseUrl { get; set; } = "http://127.0.0.1:8096";
     public string StreamToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    // Lets other apps (IPTV players) play the channels through an M3U playlist. Anyone holding a link with the
+    // export token can watch without signing in to Jellyfin, so it is off until an administrator turns it on.
+    public bool ExportEnabled { get; set; }
+    public string ExportToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     public ChannelDefinition[] Channels { get; set; } = [];
     // Applies to every channel: matching genres or tags never air during these windows.
     public ContentRule[] Restrictions { get; set; } = [];
@@ -167,6 +171,26 @@ public sealed class ChannelDefinition
     public string OfflineCard { get; set; } = "";
     // The guide lists a program without its commercial breaks, so it appears to run through them.
     public bool GuideHidesBreaks { get; set; }
+    // Evens out loudness (EBU R128) so clips are not louder or quieter than the shows around them:
+    // "off", "commercials" (commercials and bumpers) or "all" (programs too). Only the sound is re-encoded.
+    public string NormalizeVolume { get; set; } = "commercials";
+    // Shows "Up next: …" near the end of a program, on programs that are encoded (credits sped up, a logo,
+    // captions, Always encode or a picture-shape change). Copied programs are never encoded just for this.
+    public bool UpNext { get; set; }
+    // How "Up next" looks: "card" (poster and title art), "poster" (poster and title), "logo" (title art alone)
+    // or "text" (one line). Programs without the art fall back to their title in text.
+    public string UpNextStyle { get; set; } = "card";
+    // "Now playing" card for the first seconds of each program: its backdrop, title art (or title) and episode.
+    public bool IntroCard { get; set; }
+    // A lower-third bug with the channel's logo, name and what's on, sliding in every BugMinutes on the clock.
+    public bool Bug { get; set; }
+    public int BugMinutes { get; set; } = 30;
+    // How the cards and the bug look: "frosted" (blurred picture behind, translucent) or "solid" (dark). Both have a shadow.
+    public string CardLook { get; set; } = "frosted";
+    // A station ident of this many seconds before each program, built from the channel logo and name (0 = off, 3–10).
+    public int IdentSeconds { get; set; }
+    // The ident plays a short chime.
+    public bool IdentChime { get; set; } = true;
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {
@@ -213,6 +237,8 @@ public sealed class Pool
     public int[] Decades { get; set; } = [];
     // Shows and movies that always air, whatever the filters say.
     public string[] AlwaysItemIds { get; set; } = [];
+    // A Jellyfin user's ID: what they have already watched is left out (until everything is watched).
+    public string SkipWatchedBy { get; set; } = "";
 }
 
 public sealed class ShowTurn
@@ -239,14 +265,33 @@ public sealed class TimeBlock
     public string Fill { get; set; } = "count";
     // The title shown in the Live TV guide for every program of this block, such as "Saturday Morning Cartoons".
     public string GuideTitle { get; set; } = "";
+    // Seasonal blocks: the block runs only between these dates each year ("MM-dd", such as "12-01" to "12-25";
+    // "12-20" to "01-05" wraps over New Year). Both blank means all year.
+    public string FromDate { get; set; } = "";
+    public string ToDate { get; set; } = "";
+
+    internal bool InSeason(DateOnly date)
+    {
+        if (string.IsNullOrWhiteSpace(FromDate) || string.IsNullOrWhiteSpace(ToDate)) return true;
+        var from = MonthDay(FromDate);
+        var to = MonthDay(ToDate);
+        var day = date.Month * 100 + date.Day;
+        return from <= to ? day >= from && day <= to : day >= from || day <= to;
+    }
+
+    internal static int MonthDay(string value) => DateOnly.TryParseExact("2000-" + value.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var date) ? date.Month * 100 + date.Day : -1;
 }
 
 public sealed record Media(Guid Id, string Title, string Path, double Seconds, string Series, int Season, int Episode, int Year = 0, string[]? Genres = null, string[]? Tags = null, string[]? Studios = null, string? Show = null);
 // Offset is where in the file this entry starts: the later parts of a program split by a commercial break.
 // Match says why a commercial or bumper was chosen, for the guide preview.
 // Speed above 1 plays the picture that many times faster (credits), keeping the sound at normal speed.
+// Next is the program that follows, set only while playing (for "Up next"), and never saved.
 public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null,
-    double Speed = 1, string? Heading = null);
+    double Speed = 1, string? Heading = null, [property: System.Text.Json.Serialization.JsonIgnore] UpNextCard? Next = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] UpNextCard? Now = null);
+// What "Up next" shows: the title, a second line (episode or year), the poster and the title art (logo), when known.
+public sealed record UpNextCard(string Title, string? Subtitle = null, string? Poster = null, string? Logo = null, string? Backdrop = null);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
 // program split by a commercial break: the first part holds the selection, so they have nothing to rewind.
