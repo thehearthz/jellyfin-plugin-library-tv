@@ -1445,3 +1445,26 @@ test("idents, the bug, the Now playing card and the card look are saved", async 
     dom.window.close();
   }
 });
+
+test("automatic and smart channels have their own playback settings", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const panel = w.document.querySelector('[data-ui="auto-playback"]');
+    assert.ok(panel.closest('[data-view="automatic"]'));
+    change(w, selectLabel(w, "Even out volume", panel), "all");
+    const upNext = checkbox({ document: panel }, "Up next");
+    upNext.checked = true;
+    upNext.dispatchEvent(new w.Event("change", { bubbles: true }));
+    change(w, selectLabel(w, "Before each program", panel), "5");
+    assert.equal([...panel.querySelectorAll("label.ltv-field span")].some((x) => x.textContent.startsWith("Channel logo")), false);
+    click(w, "Save channels");
+    await settle();
+    const t = w.testApi.saved.AutomaticPlayback;
+    assert.equal(t.NormalizeVolume, "all");
+    assert.equal(t.UpNext, true);
+    assert.equal(t.IdentSeconds, 5);
+  } finally {
+    dom.window.close();
+  }
+});

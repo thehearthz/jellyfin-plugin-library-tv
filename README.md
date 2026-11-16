@@ -40,8 +40,8 @@ Updating: install the new version and restart once. Channels, numbers and episod
 
 | Section | What it is for |
 | --- | --- |
-| **Channels** | Build each channel: Content, Schedule, Commercials, Bumpers, Playback, Guide preview |
-| **Automatic & smart** | A channel per library, and channels from genres, years and decades |
+| **Channels** | Build each channel: Content, Schedule, Commercials, Bumpers, Playback (volume, Up next, cards, bug, idents, encoding), Guide preview |
+| **Automatic & smart** | A channel per library, channels from genres, years and decades, and their shared playback settings (volume, Up next, cards, bug, idents, encoding) |
 | **Commercial library** | Shared commercials and bumpers, how they were sorted, and fixing clips |
 | **Restrictions** | Keep genres or tags off the air during set hours |
 | **Health** | What each channel is doing, problems, and credits detection progress |

@@ -57,6 +57,17 @@ try
     autoFolders.Add(new VirtualFolderInfo { ItemId = secondLibraryId.ToString("N"), Name = "Added library" });
     autoCatalog.PrepareAutomaticChannels(autoConfig);
     Check(autoConfig.AutomaticChannels.First(x => Guid.Parse(x.LibraryId) == autoLibraryId).Number == "101", "Automatic numbers remain stable when manual channels and libraries change");
+    {
+        var styled = new Configuration { AutoChannels = true, AutoLibraryIds = autoConfig.AutoLibraryIds, AutomaticChannels = autoConfig.AutomaticChannels,
+            SmartChannels = [new SmartChannel { Id = "s1", Number = "300", Genres = ["Comedy"] }],
+            AutomaticPlayback = new ChannelDefinition { NormalizeVolume = "all", UpNext = true, UpNextStyle = "poster", IntroCard = true, Bug = true, BugMinutes = 15, CardLook = "solid", IdentSeconds = 5, IdentChime = false, AlwaysEncode = true, Logo = "/x.png", CreditsSpeed = 8 } };
+        var built = autoCatalog.Channels(styled);
+        Check(built.Length == 3 && built.All(x => x is { NormalizeVolume: "all", UpNext: true, UpNextStyle: "poster", IntroCard: true, Bug: true, BugMinutes: 15, CardLook: "solid", IdentSeconds: 5, IdentChime: false, AlwaysEncode: true, Logo: "", CreditsSpeed: 1 }),
+            "Automatic and smart channels take their volume, graphics, idents and encoding from the shared playback settings, but not images or credits");
+        try { Scheduler.Validate(new Configuration { AutomaticPlayback = new ChannelDefinition { IdentSeconds = 30 } }); throw new Exception("Bad automatic ident accepted"); }
+        catch (ArgumentException) { Check(true, "The automatic channels' playback settings are checked when saved"); }
+        Check(SettingsBackup.Export(styled).ApplyTo(new Configuration()).AutomaticPlayback.IdentSeconds == 5, "Backups keep the automatic channels' playback settings");
+    }
     autoConfig.AutomaticChannels[0].Name = "Custom station";
     autoConfig.AutomaticChannels[0].Number = "7-10";
     Check(autoCatalog.Channels(autoConfig).Any(x => x.Name == "Custom station" && x.Number == "7-10"), "Automatic channels use custom names and subchannel numbers");
