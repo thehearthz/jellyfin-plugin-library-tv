@@ -609,6 +609,7 @@ test("playback and commercial era options default on older channels and save per
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const encode = checkbox(w, "Always encode every program");
     assert.equal(encode.checked, false);
     encode.click();
@@ -765,6 +766,7 @@ test("picture shape defaults to widescreen and saves per channel", async () => {
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const select = [...w.document.querySelectorAll("main label.ltv-field")]
       .find((x) => x.textContent.includes("Picture shape"))
       .querySelector("select");
@@ -825,6 +827,7 @@ test("the picture shape can restart players instead of adding black bars", async
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const select = [...w.document.querySelectorAll("main label.ltv-field")]
       .find((x) => x.textContent.includes("Picture shape"))
       .querySelector("select");
@@ -889,6 +892,7 @@ test("captions are off by default and save their mode and language per channel",
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const label = (text) =>
       [...w.document.querySelectorAll("main label.ltv-field")].find((x) =>
         x.textContent.includes(text),
@@ -910,6 +914,7 @@ test("the preferred audio language saves per channel", async () => {
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const input = [...w.document.querySelectorAll("main label.ltv-field")]
       .find((x) => x.textContent.includes("Preferred audio language"))
       .querySelector("input");
@@ -927,6 +932,7 @@ test("credits speed, automatic channel breaks and new channel breaks save", asyn
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     const credits = [...w.document.querySelectorAll("main label.ltv-field")]
       .find((x) => x.textContent.includes("Credits"))
       .querySelector("select");
@@ -1177,6 +1183,7 @@ test("playback order, filters, per-show turns and channel images are saved", asy
     change(w, selectLabel(w, "Never include genres"), "Horror, Reality");
     change(w, selectLabel(w, "Title contains any of"), "night, watch");
     change(w, selectLabel(w, "Title contains none of"), "Reunion");
+    click(w, "Playback");
     change(w, selectLabel(w, "Watermark drawn"), "/media/logo.png");
     change(w, selectLabel(w, "Preferred audio track title"), "Dolby");
     click(w, "Save channels");
@@ -1259,6 +1266,7 @@ test("encoding quality and height are saved", async () => {
   const dom = await ready();
   try {
     const w = dom.window;
+    click(w, "Playback");
     change(w, selectLabel(w, "Encoding quality"), "high");
     change(w, selectLabel(w, "Tallest encoded picture"), "1080");
     click(w, "Save channels");
@@ -1290,6 +1298,7 @@ test("the encoding hardware can be chosen and tested", async () => {
   try {
     const w = dom.window;
     change(w, w.document.querySelector("[data-setting=HardwareEncoder]"), "nvenc");
+    click(w, "Playback");
     change(w, selectLabel(w, "Encode with"), "cpu");
     click(w, "Test hardware encoding");
     await settle();
@@ -1300,6 +1309,46 @@ test("the encoding hardware can be chosen and tested", async () => {
     await settle();
     assert.equal(w.testApi.saved.HardwareEncoder, "nvenc");
     assert.equal(w.testApi.saved.Channels[0].EncodeWith, "cpu");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("sections show one at a time and long help folds behind its first sentence", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const view = (name) => [...w.document.querySelectorAll("[data-view=" + name + "]")];
+    assert.ok(view("channels").every((x) => !x.hidden) && view("server").every((x) => x.hidden));
+    click(w, "Server & export", w.document.querySelector("[data-ui=views]"));
+    assert.ok(view("channels").every((x) => x.hidden) && view("server").every((x) => !x.hidden) && view("health").every((x) => x.hidden));
+    await settle();
+    assert.ok(w.document.querySelectorAll("details.ltv-help").length > 3);
+    assert.equal([...w.document.querySelectorAll("p.ltv-muted:not([data-ui])")].filter((p) => p.textContent.trim().length > 400).length, 0);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("the M3U export shows links only when on, and new links replace the token", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const links = () => [...w.document.querySelectorAll("[data-ui=export-links] input")].map((x) => x.value);
+    assert.equal(links().length, 0);
+    const toggle = w.document.querySelector("[data-setting=ExportEnabled]");
+    toggle.checked = true;
+    toggle.dispatchEvent(new w.Event("change", { bubbles: true }));
+    const before = links();
+    assert.equal(before.length, 2);
+    assert.match(before[0], /^http:\/\/localhost\/api\/LibraryTV\/playlist\.m3u\?token=EXPORTTOKEN/);
+    assert.match(before[1], /LibraryTV\/epg\.xml\?token=/);
+    click(w, "Make new links");
+    assert.notEqual(links()[0], before[0]);
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.ExportEnabled, true);
+    assert.match(w.testApi.saved.ExportToken, /^[0-9A-F]{64}$/);
   } finally {
     dom.window.close();
   }

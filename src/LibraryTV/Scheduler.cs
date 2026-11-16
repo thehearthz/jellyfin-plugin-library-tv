@@ -124,6 +124,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         _ = TimeZoneInfo.FindSystemTimeZoneById(c.TimeZoneId);
         if (!Uri.TryCreate(c.InternalBaseUrl, UriKind.Absolute, out var uri) || !uri.IsLoopback || uri.Scheme is not ("http" or "https") || uri.Query.Length != 0 || uri.Fragment.Length != 0) throw new ArgumentException("Internal URL must be a loopback HTTP(S) Jellyfin URL, including any base path.");
         if (c.StreamToken is null || c.StreamToken.Length < 32) throw new ArgumentException("Stream token must have at least 32 characters.");
+        if (c.ExportToken is null || c.ExportToken.Length is < 32 or > 128 || !c.ExportToken.All(char.IsAsciiLetterOrDigit)) throw new ArgumentException("The export token must be 32–128 letters and digits.");
+        if (c.ExportToken == c.StreamToken) throw new ArgumentException("The export token must differ from the stream token.");
         if (c.Channels.Length > 100) throw new ArgumentException("At most 100 manual channels are supported.");
         if (c.Channels.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != c.Channels.Length) throw new ArgumentException("Channel IDs must be unique, including disabled channels.");
         if (c.AutomaticChannels.Select(x => Guid.Parse(x.LibraryId)).Distinct().Count() != c.AutomaticChannels.Length) throw new ArgumentException("Each automatic library can have only one set of channel settings.");

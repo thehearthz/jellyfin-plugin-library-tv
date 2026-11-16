@@ -153,6 +153,40 @@ public sealed class Controller : ControllerBase
         var address = HttpContext.Connection.RemoteIpAddress;
         if (address is null || !System.Net.IPAddress.IsLoopback(address) || token is null || !CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(token)), SHA256.HashData(Encoding.UTF8.GetBytes(Plugin.Instance.Configuration.StreamToken)) ))
         { Response.StatusCode = 403; return; }
+        await Serve(id, ct);
+    }
+
+    // The channel list for other apps. Links are built from the address the request came to.
+    [AllowAnonymous]
+    [HttpGet("playlist.m3u")]
+    public IActionResult Playlist([FromQuery] string? token)
+    {
+        var config = Plugin.Instance.Configuration;
+        if (!Export.Allowed(config, token)) return StatusCode(403);
+        Response.Headers.CacheControl = "no-store";
+        return Content(Export.M3u(scheduler.Channels, $"{Request.Scheme}://{Request.Host}{Request.PathBase}", config.ExportToken), "audio/x-mpegurl", Encoding.UTF8);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("epg.xml")]
+    public IActionResult Epg([FromQuery] string? token)
+    {
+        if (!Export.Allowed(Plugin.Instance.Configuration, token)) return StatusCode(403);
+        Response.Headers.CacheControl = "no-store";
+        return Content(Export.Xmltv(scheduler.Channels, scheduler.GuideFor, DateTimeOffset.UtcNow), "application/xml", Encoding.UTF8);
+    }
+
+    // A channel as plain MPEG-TS for other apps, from any address, guarded by the export token.
+    [AllowAnonymous]
+    [HttpGet("live/{id}.ts")]
+    public async Task Live(string id, [FromQuery] string? token, CancellationToken ct)
+    {
+        if (!Export.Allowed(Plugin.Instance.Configuration, token)) { Response.StatusCode = 403; return; }
+        await Serve(id, ct);
+    }
+
+    private async Task Serve(string id, CancellationToken ct)
+    {
         var now = DateTimeOffset.UtcNow;
         // A short gap left by content restrictions is bridged by the broadcast, so tuning in may start in one.
         if (scheduler.Current(id, now) is null && !scheduler.GuideFor(id).Any(x => x.Start > now && x.Start - now <= Broadcasts.MaxGap)) { Response.StatusCode = 404; return; }

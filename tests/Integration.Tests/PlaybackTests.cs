@@ -73,7 +73,7 @@ public static class PlaybackTests
                 check(live.StatusFor("playback").Viewers == 0, "The final viewer disconnect stops the media worker with no idle playback");
             }
             // Jellyfin reads a channel briefly to learn its format, disconnects, then connects again to play it.
-            Broadcasts.Linger = TimeSpan.FromSeconds(1);
+            Broadcasts.Linger = TimeSpan.FromSeconds(3);
             var lingerExit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var lingering = new DelegateStreamer(async (_, _, write, ct) =>
             {
@@ -93,11 +93,11 @@ public static class PlaybackTests
                 var playOutput = new SignalStream();
                 var play = live.Watch("playback", playOutput, playStop.Token);
                 await playOutput.Received.Task.WaitAsync(TimeSpan.FromSeconds(5));
-                await Task.Delay(1300);
+                await Task.Delay(3300);
                 check(lingering.Calls == 1 && !lingerExit.Task.IsCompleted && live.StatusFor("playback").Viewers == 1, "A viewer who reconnects within the linger time joins the program already playing instead of starting it again");
                 playStop.Cancel(); await IgnoreCancellation(play);
                 check(!lingerExit.Task.IsCompleted, "A channel keeps playing briefly after its last viewer leaves");
-                await lingerExit.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await lingerExit.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 check(live.StatusFor("playback").Viewers == 0, "A channel nobody returns to stops after the linger time, so nothing runs while idle");
             }
             Broadcasts.Linger = TimeSpan.Zero;

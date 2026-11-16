@@ -469,6 +469,29 @@ try
         Check(true, "Hardware encoder settings pass validation");
     }
     {
+        var exportConfig = new Configuration { ExportEnabled = true };
+        Check(Export.Allowed(exportConfig, exportConfig.ExportToken) && !Export.Allowed(exportConfig, "wrong") && !Export.Allowed(exportConfig, null) && !Export.Allowed(exportConfig, exportConfig.StreamToken)
+            && !Export.Allowed(new Configuration(), new Configuration().ExportToken) && !Export.Allowed(new Configuration { ExportEnabled = false, ExportToken = exportConfig.ExportToken }, exportConfig.ExportToken),
+            "The M3U export answers only when it is turned on and the link carries the export token");
+        var exportChannels = new[] { new ChannelDefinition { Id = "kids", Name = "Kids \"Classics\", 90s", Number = "7.2" }, new ChannelDefinition { Id = "movies", Name = "Movies", Number = "8", GuideHidesBreaks = true } };
+        var m3u = Export.M3u(exportChannels, "https://tv.example.com/jellyfin/", "abc123");
+        Check(m3u.StartsWith("#EXTM3U url-tvg=\"https://tv.example.com/jellyfin/LibraryTV/epg.xml?token=abc123\"\n") && m3u.Contains("#EXTINF:-1 tvg-id=\"kids\" tvg-chno=\"7.2\" tvg-name=\"Kids 'Classics', 90s\" group-title=\"Library TV\",Kids 'Classics'  90s\nhttps://tv.example.com/jellyfin/LibraryTV/live/kids.ts?token=abc123\n")
+            && m3u.Split('\n').Count(x => x.StartsWith("https://")) == 2, "The M3U playlist lists every channel with its number, a safe name and a stream link on the address it was asked for");
+        var at = new DateTimeOffset(2026, 11, 15, 20, 0, 0, TimeSpan.Zero);
+        var exportGuide = new Dictionary<string, Airing[]>
+        {
+            ["kids"] = [new("kids", Guid.NewGuid(), "Old <show> & co", "a", at.AddHours(-2), at.AddHours(-1), false), new("kids", Guid.NewGuid(), "Rugrats — S01E01 Pilot", "b", at.AddMinutes(-10), at.AddMinutes(12), false, Heading: "Saturday Morning"), new("kids", Guid.NewGuid(), "Cola ad", "c", at.AddMinutes(12), at.AddMinutes(13), true)],
+            ["movies"] = [new("movies", Guid.NewGuid(), "Feature", "d", at, at.AddMinutes(90), false), new("movies", Guid.NewGuid(), "Ad", "e", at.AddMinutes(90), at.AddMinutes(92), true)],
+        };
+        var exportXml = System.Xml.Linq.XDocument.Parse(Export.Xmltv(exportChannels, id => exportGuide[id], at));
+        var programmes = exportXml.Root!.Elements("programme").ToArray();
+        Check(exportXml.Root.Elements("channel").Count() == 2 && programmes.Length == 3 && programmes[0].Attribute("start")!.Value == "20261115195000 +0000" && programmes[0].Element("title")!.Value == "Saturday Morning" && programmes[0].Element("desc")!.Value == "Rugrats — S01E01 Pilot"
+            && programmes[2].Attribute("channel")!.Value == "movies" && programmes[2].Attribute("stop")!.Value == "20261115213200 +0000", "The XMLTV guide lists current and coming programs like Jellyfin's guide, without past ones");
+        try { Scheduler.Validate(new Configuration { ExportToken = "short" }); throw new Exception("Short export token accepted"); }
+        catch (ArgumentException) { Check(true, "A short export token is rejected"); }
+        Check(!System.Text.Json.JsonSerializer.Serialize(SettingsBackup.Export(exportConfig)).Contains(exportConfig.ExportToken), "Settings backups never contain the export token");
+    }
+    {
         var hdrFormat = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9, Hdr: true);
         var hdrPlan = StreamPlan.For(hdrFormat, new ChannelDefinition());
         var hdrArgs = ProgramStreamer.Command("ffmpeg", new Airing("c", Guid.NewGuid(), "t", "/hdr.mkv", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), false), hdrPlan, DateTimeOffset.UtcNow).ArgumentList;

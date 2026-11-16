@@ -82,6 +82,7 @@
       color: #ffaaa7;
     }
     .ltv-app input:not([type="checkbox"]),
+    .ltv-app textarea,
     .ltv-app select {
       background: rgba(128, 128, 128, 0.1);
       border: 1px solid var(--ltv-border);
@@ -163,6 +164,26 @@
       max-width: 400px;
       margin: 12px auto 24px;
       line-height: 1.6;
+    }
+    .ltv-views {
+      margin-bottom: 18px;
+    }
+    .ltv-app details.ltv-help {
+      margin: 4px 0 12px;
+    }
+    .ltv-app details.ltv-help > summary {
+      cursor: pointer;
+      font-weight: 400;
+    }
+    .ltv-export-link {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 6px 0;
+    }
+    .ltv-export-link input {
+      flex: 1;
+      min-width: 0;
     }
     .ltv-tabs {
       display: flex;
@@ -466,7 +487,8 @@
       Retry loading builder
     </button>
     <div data-ui="body" hidden>
-      <div class="ltv-layout">
+      <nav class="ltv-tabs ltv-views" data-ui="views" role="tablist" aria-label="Sections"></nav>
+      <div class="ltv-layout" data-view="channels">
         <aside class="ltv-panel ltv-sidebar">
           <h2>Your channels</h2>
           <nav data-ui="channels" aria-label="Channel selection"></nav>
@@ -479,7 +501,7 @@
         </aside>
         <main data-ui="editor"></main>
       </div>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="automatic" open>
         <summary>Automatic channels</summary>
         <div>
           <label class="ltv-check"
@@ -536,7 +558,7 @@
           <button type="button" data-action="add-smart">+ Add smart channel</button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="restrictions" open>
         <summary>Content restrictions</summary>
         <div>
           <p class="ltv-muted">
@@ -550,7 +572,7 @@
           </button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="clips" open>
         <summary>Commercial library</summary>
         <div>
           <p class="ltv-muted">
@@ -588,7 +610,7 @@
           </div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="health" open>
         <summary>Credits detection</summary>
         <div>
           <label class="ltv-check"
@@ -609,7 +631,7 @@
           <div data-ui="credits-scan" aria-live="polite"></div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="health" open>
         <summary>Channel health</summary>
         <div>
           <p class="ltv-muted">
@@ -620,7 +642,30 @@
           <div data-ui="health" aria-live="polite"></div>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="server" open>
+        <summary>Watch in other apps (M3U)</summary>
+        <div>
+          <label class="ltv-check"
+            ><input type="checkbox" data-setting="ExportEnabled" />Let other
+            apps play these channels with a link</label
+          >
+          <div data-ui="export-links"></div>
+          <button type="button" data-action="new-export-token">
+            Make new links
+          </button>
+          <p class="ltv-muted">
+            Add the playlist link to an IPTV app such as VLC, TiviMate or
+            Kodi; the guide link is its XMLTV guide. Anyone who has a link can
+            watch without signing in to Jellyfin, so share it like a password.
+            Make new links to cut off everyone using the old ones. Save after
+            changing this. Links use the address you opened this page with, so
+            open the page from the address your other devices use. Streams are
+            H.264 video with AAC sound in MPEG-TS, and count toward the
+            maximum channels streaming at once.
+          </p>
+        </div>
+      </details>
+      <details class="ltv-panel" data-view="server" open>
         <summary>Backup &amp; restore settings</summary>
         <div>
           <p class="ltv-muted">
@@ -644,7 +689,7 @@
           </button>
         </div>
       </details>
-      <details class="ltv-panel">
+      <details class="ltv-panel" data-view="server" open>
         <summary>Server settings &amp; Plugin Pages</summary>
         <div>
           <p data-ui="plugin-pages" class="ltv-muted"></p>
@@ -1294,6 +1339,72 @@
           target.append(box);
         });
       }
+      // The page is split into sections; one shows at a time.
+      const views = [
+        ["channels", "Channels"],
+        ["automatic", "Automatic & smart"],
+        ["clips", "Commercial library"],
+        ["restrictions", "Restrictions"],
+        ["health", "Health"],
+        ["server", "Server & export"],
+      ];
+      function showView(name) {
+        state.view = name;
+        for (const element of page.querySelectorAll("[data-view]"))
+          element.hidden = element.dataset.view !== name;
+        const bar = ui("views");
+        bar.replaceChildren();
+        for (const [key, label] of views) {
+          const b = button(label, () => showView(key));
+          b.setAttribute("role", "tab");
+          b.setAttribute("aria-selected", String(key === name));
+          bar.append(b);
+        }
+      }
+      // Long explanations fold up behind their first sentence, so settings stay close together.
+      function foldHelp(root) {
+        for (const p of root.querySelectorAll("p.ltv-muted:not([data-ui])")) {
+          const text = p.textContent.replace(/\s+/g, " ").trim();
+          if (text.length < 170 || p.children.length || p.closest("details.ltv-help")) continue;
+          const cut = text.search(/[.:;] /);
+          if (cut < 20 || cut > 150) continue;
+          const more = node("details", { class: "ltv-help ltv-muted" }, node("summary", {}, text.slice(0, cut + 1) + " More…"), node("div", {}, text.slice(cut + 2)));
+          p.replaceWith(more);
+        }
+      }
+      function renderExportLinks() {
+        const target = ui("export-links");
+        if (!target || !state.config) return;
+        target.replaceChildren();
+        if (!state.config.ExportEnabled) return;
+        const token = encodeURIComponent(state.config.ExportToken);
+        for (const [label, path] of [["Playlist (M3U)", "LibraryTV/playlist.m3u"], ["Guide (XMLTV)", "LibraryTV/epg.xml"]]) {
+          const url = new URL(ApiClient.getUrl(path), location.href).href + "?token=" + token;
+          const input = node("input", { type: "text", readonly: "", value: url, "aria-label": label });
+          target.append(
+            node(
+              "div",
+              { class: "ltv-export-link" },
+              node("strong", {}, label),
+              input,
+              button("Copy", async () => {
+                input.select();
+                try {
+                  await navigator.clipboard.writeText(url);
+                  notice(label + " link copied.");
+                } catch (e) {
+                  notice("Select the link and copy it.");
+                }
+              }),
+            ),
+          );
+        }
+      }
+      function newToken() {
+        const bytes = new Uint8Array(32);
+        (window.crypto || globalThis.crypto).getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+      }
       function renderCreditsScan(scan) {
         const target = ui("credits-scan");
         if (!target) return;
@@ -1565,6 +1676,10 @@
                   "How many episodes of one show air before the next show takes a turn. Use 0 to play each show straight through.",
                 ),
                 node(
+                  "details",
+                  { open: p.Order || p.RandomStart || p.KeepMultiPart || p.Turns.length ? "" : null },
+                  node("summary", {}, "Order & turns"),
+                node(
                   "label",
                   { class: "ltv-field" },
                   node("span", {}, "Episodes in a row for particular shows (one per line, like “Show name = 3”)"),
@@ -1600,6 +1715,7 @@
                   "Keep two-part episodes together (“Part 1”, “Part 2”)",
                   p.KeepMultiPart,
                   (v) => (p.KeepMultiPart = v),
+                ),
                 ),
               ]),
           check(
@@ -2606,6 +2722,7 @@
           ["schedule", "Schedule"],
           ["commercials", "Commercials"],
           ["bumpers", "Bumpers"],
+          ["playback", "Playback"],
           ["preview", "Guide preview"],
         ]) {
           const b = button(label, () => {
@@ -2628,6 +2745,16 @@
               "This content fills the day whenever no scheduled block is active.",
             ),
             poolEditor(c.Source, "Channel content"),
+          );
+        }
+        if (state.tab === "playback") {
+          body.append(
+            node("h2", {}, "Picture and sound"),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "How this channel's programs are encoded, shaped, captioned and branded. None of this changes the schedule.",
+            ),
             check(
               "Always encode every program (uses more CPU)",
               c.AlwaysEncode,
@@ -3826,10 +3953,13 @@
                     ? Number(input.value)
                     : input.value;
               dirty();
+              if (key === "ExportEnabled") renderExportLinks();
             };
           }
           renderAutomaticChannels();
           renderSmartChannels();
+          renderExportLinks();
+          showView(state.view || "channels");
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
@@ -3891,6 +4021,14 @@
         e.preventDefault();
         closePreview();
       });
+      page.querySelector("[data-action=new-export-token]").addEventListener("click", () => {
+        state.config.ExportToken = newToken();
+        dirty();
+        renderExportLinks();
+        notice("New links made. Save to switch to them; the old links stop working.");
+      });
+      new MutationObserver(() => foldHelp(page)).observe(page, { childList: true, subtree: true });
+      foldHelp(page);
       page.querySelector("[data-action=test-hardware]").addEventListener("click", async () => {
         const target = ui("hardware-results");
         target.textContent = "Testing the graphics encoders with Jellyfin's FFmpeg…";

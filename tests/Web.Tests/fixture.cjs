@@ -7,6 +7,8 @@ const configuration = () => ({
   TimeZoneId: "America/New_York",
   InternalBaseUrl: "http://127.0.0.1:8096",
   StreamToken: "private-test-token-".repeat(4),
+  ExportEnabled: false,
+  ExportToken: "EXPORTTOKEN".repeat(4),
   Channels: [
     {
       Id: "evening-tv",

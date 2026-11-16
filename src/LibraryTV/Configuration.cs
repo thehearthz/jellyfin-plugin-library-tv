@@ -21,6 +21,10 @@ public sealed class Configuration : BasePluginConfiguration
     public string TimeZoneId { get; set; } = "UTC";
     public string InternalBaseUrl { get; set; } = "http://127.0.0.1:8096";
     public string StreamToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    // Lets other apps (IPTV players) play the channels through an M3U playlist. Anyone holding a link with the
+    // export token can watch without signing in to Jellyfin, so it is off until an administrator turns it on.
+    public bool ExportEnabled { get; set; }
+    public string ExportToken { get; set; } = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     public ChannelDefinition[] Channels { get; set; } = [];
     // Applies to every channel: matching genres or tags never air during these windows.
     public ContentRule[] Restrictions { get; set; } = [];
