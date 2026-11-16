@@ -173,6 +173,23 @@ try
     var mountCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name == "GetItemById" ? new[] { mounted, offlineMedia }.FirstOrDefault(x => x.Id == (Guid)args![0]!) : throw new NotSupportedException(name)));
     var mountReader = mountCatalog.CreateRefreshReader();
     Check(mountReader(new Pool { ItemIds = [mounted.Id.ToString(), offlineMedia.Id.ToString()] }).Select(x => x.Title).SequenceEqual(["Mounted"]), "Refresh skips media whose storage folder is unavailable without checking every file");
+    {
+        // Skip what a user has watched, until everything has been watched.
+        var seen = new Video { Id = Guid.NewGuid(), Name = "Seen", Path = Path.Combine(directory, "seen.mp4"), RunTimeTicks = TimeSpan.FromMinutes(5).Ticks };
+        var fresh = new Video { Id = Guid.NewGuid(), Name = "Fresh", Path = Path.Combine(directory, "fresh.mp4"), RunTimeTicks = TimeSpan.FromMinutes(5).Ticks };
+        var watcher = new User("watcher", "test", "test") { Id = Guid.NewGuid() };
+        var played = new HashSet<Guid> { seen.Id };
+        var watchCatalog = new Catalog(Proxy<ILibraryManager>.Make((name, args) => name == "GetItemById" ? new[] { seen, fresh }.FirstOrDefault(x => x.Id == (Guid)args![0]!) : throw new NotSupportedException(name)),
+            users: Proxy<IUserManager>.Make((name, args) => name switch { "GetUserById" => (Guid)args![0]! == watcher.Id ? watcher : null, "GetUsers" => new[] { watcher }, _ => throw new NotSupportedException(name) }),
+            userData: Proxy<IUserDataManager>.Make((name, args) => name == "GetUserData" ? new UserItemData { Key = "k", Played = played.Contains(((BaseItem)args![1]!).Id) } : throw new NotSupportedException(name)));
+        var both = new Pool { ItemIds = [seen.Id.ToString(), fresh.Id.ToString()], SkipWatchedBy = watcher.Id.ToString("N") };
+        Check(watchCatalog.Read(both).Select(x => x.Title).SequenceEqual(["Fresh"]), "A channel can leave out what a chosen user has already watched");
+        played.Add(fresh.Id);
+        Check(watchCatalog.Read(both).Count == 2, "Once everything has been watched, everything airs again instead of the channel going blank");
+        Check(watchCatalog.Read(new Pool { ItemIds = both.ItemIds, AlwaysItemIds = [seen.Id.ToString()], SkipWatchedBy = both.SkipWatchedBy }).Any(x => x.Title == "Seen") && watchCatalog.Read(new Pool { ItemIds = both.ItemIds }).Count == 2,
+            "Shows that always air, and channels without a chosen user, are not affected");
+        Check(System.Text.Json.JsonSerializer.Serialize(watchCatalog.Users()).Contains("watcher"), "The settings page can list users to choose from");
+    }
     Check(Catalog.YearFromPath("/media/Commercials/1980s/Cola (1985) 1080p.mp4") == 1985 && Catalog.YearFromPath("/media/ads/80s/Cola.mp4") == 1980
         && Catalog.YearFromPath("/media/ads/1990s/clip.mkv") == 1990 && Catalog.YearFromPath("/media/ads/clip 1080p x264.mkv") is null, "Commercial years come from year or decade names in folders and files, ignoring resolutions and codecs");
     Check(Catalog.YearFromPath("/ads/Nickelodeon Gak '94.mp4") == 1994, "Short years with an apostrophe are recognised");
@@ -312,14 +329,39 @@ try
     plugin.UpdateConfiguration(new Configuration { GuideDays = 1, Channels = [new ChannelDefinition { Id = "home-channel", Name = "My channel", Number = "2" }] });
     await scheduler.Refresh(default);
     var listing = await folder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id }, default);
-    Check(listing.Items.Count == 1 && listing.Items[0].Id == "home-channel" && listing.Items[0].IsLiveStream && listing.Items[0].Name.Contains("My channel"), "Home folder contains a stable playable item for each enabled channel");
+    Check(listing.Items.Count == 2 && listing.Items[0].Id == "home-channel" && listing.Items[0].IsLiveStream && listing.Items[0].Name.Contains("My channel") && listing.Items[1].Id == LibraryChannel.FromStartFolder, "Home folder contains a stable playable item for each enabled channel, then the Watch from the start folder");
     Check(before != folder.DataVersion, "Changing channel definitions invalidates Jellyfin's folder listing cache");
     var folderSource = (await folder.GetChannelItemMediaInfo("home-channel", default)).Single();
     Check(folderSource.AnalyzeDurationMs == 3000, "Home folder playback uses the same bounded input analysis as Live TV");
     var tvSource = await tv.GetChannelStream("home-channel", "", default);
     Check(folderSource.Path == tvSource.Path && folderSource.IsInfiniteStream && !folderSource.SupportsDirectPlay, "Home folder reuses the existing protected live stream");
     var pageTwo = await folder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id, StartIndex = 1, Limit = 1 }, default);
-    Check(pageTwo.Items.Count == 0 && pageTwo.TotalRecordCount == 1, "Home folder pagination reports a stable total");
+    Check(pageTwo.Items.Count == 1 && pageTwo.TotalRecordCount == 2, "Home folder pagination reports a stable total");
+    {
+        // Watch from the start: the program on each channel now, played like any library video.
+        var startProgram = Guid.NewGuid();
+        var startState = new Dictionary<string, ChannelState> { ["home-channel"] = new ChannelState { Guide = [
+            new Airing("home-channel", startProgram, "Feature", "f.mkv", DateTimeOffset.UtcNow.AddMinutes(-20), DateTimeOffset.UtcNow.AddMinutes(-2), false),
+            new Airing("home-channel", Guid.NewGuid(), "Ad", "a.mkv", DateTimeOffset.UtcNow.AddMinutes(-2), DateTimeOffset.UtcNow.AddMinutes(2), true),
+            new Airing("home-channel", Guid.NewGuid(), "Later", "l.mkv", DateTimeOffset.UtcNow.AddMinutes(2), DateTimeOffset.UtcNow.AddMinutes(60), false)] } };
+        await File.WriteAllTextAsync(scheduler.StatePath, System.Text.Json.JsonSerializer.Serialize(startState));
+        var startScheduler = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
+        await startScheduler.Refresh(default);
+        var asked = new List<Guid>();
+        var startFolder = new LibraryChannel(startScheduler, users, id => { asked.Add(id); return [new MediaBrowser.Model.Dto.MediaSourceInfo { Id = id.ToString("N"), Path = "/media/feature.mkv", Protocol = MediaBrowser.Model.MediaInfo.MediaProtocol.File }]; });
+        var fromStart = await startFolder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id, FolderId = LibraryChannel.FromStartFolder }, default);
+        Check(fromStart.Items.Count == 1 && fromStart.Items[0].Name.Contains("Feature") && !fromStart.Items[0].IsLiveStream, "During a break, Watch from the start lists the program the break follows");
+        var startSource = (await startFolder.GetChannelItemMediaInfo(fromStart.Items[0].Id, default)).Single();
+        Check(startSource.Path == "/media/feature.mkv" && asked.SequenceEqual([startProgram]), "A program watched from the start plays the library's own file, not the live channel");
+        try { await startFolder.GetChannelItemMediaInfo($"start-home-channel-{Guid.NewGuid():N}", default); throw new Exception("An item the channel never aired was opened"); }
+        catch (ArgumentException) { Check(true, "Watch from the start only opens what the channel has aired lately"); }
+        var folderBefore = startFolder.DataVersion;
+        startState["home-channel"].Guide[0] = startState["home-channel"].Guide[0] with { ItemId = Guid.NewGuid() };
+        await File.WriteAllTextAsync(scheduler.StatePath, System.Text.Json.JsonSerializer.Serialize(startState));
+        var startScheduler2 = new Scheduler(catalog, paths, NullLogger<Scheduler>.Instance);
+        await startScheduler2.Refresh(default);
+        Check(new LibraryChannel(startScheduler2, users).DataVersion != folderBefore, "When a new program starts, Jellyfin's cached folder listing is replaced");
+    }
     viewer.SetPermission(PermissionKind.EnableLiveTvAccess, false);
     Check((await folder.GetChannelItems(new InternalChannelItemQuery { UserId = viewer.Id }, default)).Items.Count == 0, "Viewers without Live TV permission cannot list channel items");
     var preservedId = Guid.NewGuid();
@@ -453,7 +495,7 @@ try
         var va = Command("vaapi");
         Check(va.Contains("h264_vaapi") && va[va.IndexOf("-vaapi_device") + 1] == "/dev/dri/renderD129" && va[va.IndexOf("-vf") + 1].EndsWith("format=nv12,hwupload") && va[va.IndexOf("-qp") + 1] == "26", "VAAPI names its device and uploads the finished picture to the card");
         var vaMark = Command("vaapi", mark: new Watermark("/logo.png", "top-left", 70, 100, 10));
-        Check(vaMark[vaMark.IndexOf("-filter_complex") + 1].EndsWith("format=yuv420p,format=nv12,hwupload[video]"), "VAAPI uploads after the logo is drawn");
+        Check(vaMark[vaMark.IndexOf("-filter_complex") + 1].EndsWith("overlay=10:10:format=auto,format=yuv420p[v1];[v1]null,format=nv12,hwupload[video]"), "VAAPI uploads after the logo is drawn");
         var cpuCommand = Command("cpu");
         Check(cpuCommand.Contains("libx264") && !cpuCommand.Contains("-vaapi_device") && StreamPlan.For(gpuSource, new ChannelDefinition()).Encoder == "cpu", "The CPU encoder is the default and unchanged");
         var copied = ProgramStreamer.Command("ffmpeg", gpuAiring, StreamPlan.Copy with { Encoder = "vaapi" }, DateTimeOffset.UtcNow).ArgumentList;
@@ -503,6 +545,104 @@ try
         Check(ProgramStreamer.Plain(fancy) is { ToneMap: false, Encoder: "cpu", Mark: null, CopyVideo: false } && ProgramStreamer.Plain(StreamPlan.Copy) is null && ProgramStreamer.Plain(StreamPlan.For(hdrFormat with { Hdr = false, Video = "hevc" }, new ChannelDefinition())) is null,
             "A program that cannot start with its extras has a plain plan to fall back on, and plain programs have none");
         Check(HighDynamicRange.Is("smpte2084") && HighDynamicRange.Is("ARIB-STD-B67") && !HighDynamicRange.Is("bt709") && !HighDynamicRange.Is(null), "PQ and HLG transfers count as HDR");
+    }
+    {
+        // Volume, "Up next", seasonal blocks and the richer guide.
+        var plainFormat = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9);
+        var commercialPlan = StreamPlan.For(plainFormat, new ChannelDefinition(), commercial: true);
+        var programPlan = StreamPlan.For(plainFormat, new ChannelDefinition());
+        Check(commercialPlan is { Loudness: true, CopyVideo: true, CopyAudio: false } && programPlan is { Loudness: false, CopyAudio: true }
+            && StreamPlan.For(plainFormat, new ChannelDefinition { NormalizeVolume = "off" }, commercial: true).CopyAudio && StreamPlan.For(plainFormat, new ChannelDefinition { NormalizeVolume = "all" }).Loudness
+            && !StreamPlan.For(plainFormat with { Audio = null }, new ChannelDefinition(), commercial: true).Loudness,
+            "Commercials have their volume evened out by default, programs only when asked, and silent clips never");
+        var now = DateTimeOffset.UtcNow;
+        var ad = new Airing("c", Guid.NewGuid(), "Ad", "/ad.mp4", now, now.AddSeconds(30), true);
+        var adArgs = ProgramStreamer.Command("ffmpeg", ad, commercialPlan, now).ArgumentList;
+        Check(adArgs[adArgs.IndexOf("-af") + 1] == StreamPlan.LoudnessFilter && adArgs[adArgs.IndexOf("-c:v") + 1] == "copy" && adArgs[adArgs.IndexOf("-c:a") + 1] == "aac" && commercialPlan.Describe().Contains("volume evened out"),
+            "A copied commercial keeps its picture and has only its sound levelled");
+        var credits = new Airing("c", Guid.NewGuid(), "Show", "/show.mkv", now, now.AddSeconds(20), false, Speed: 4, Next: new UpNextCard("Movie: The \"Big\" One, 1999 — 50% off: yes"));
+        var upNext = new ChannelDefinition { UpNext = true, NormalizeVolume = "off", UpNextStyle = "text" };
+        var creditsPlan = StreamPlan.For(plainFormat, upNext, speed: 4, next: credits.Next);
+        var creditsArgs = ProgramStreamer.Command("ffmpeg", credits, creditsPlan, now).ArgumentList;
+        var videoFilter = creditsArgs[creditsArgs.IndexOf("-vf") + 1];
+        Check(creditsPlan.UpNext == credits.Next && videoFilter.Contains("drawtext=") && videoFilter.Contains("between(t\\,0\\,12)") && videoFilter.Contains("50%") && videoFilter.Contains("expansion=none"),
+            "Sped-up credits show what is up next straight away, with the title kept literal");
+        Check(StreamPlan.For(plainFormat, upNext, next: new UpNextCard("Later")).UpNext is null && StreamPlan.For(plainFormat, upNext, next: null).UpNext is null && StreamPlan.For(plainFormat, new ChannelDefinition { UpNext = true, AlwaysEncode = true }, next: new UpNextCard("Later")).UpNext?.Title == "Later"
+            && StreamPlan.For(plainFormat, new ChannelDefinition { AlwaysEncode = true }, next: new UpNextCard("Later")).UpNext is null,
+            "Up next is drawn only on programs already being encoded, and only when the channel asks for it");
+        var longPart = new Airing("c", Guid.NewGuid(), "Show", "/show.mkv", now, now.AddMinutes(10), false);
+        Check(ProgramStreamer.UpNextText(longPart, creditsPlan, now).Contains("between(t\\,560\\,572)") && ProgramStreamer.UpNextText(longPart, creditsPlan, now.AddMinutes(10)) == "",
+            "Up next appears forty seconds before a long part ends, and not at all once it is over");
+        Check(ProgramStreamer.Plain(creditsPlan with { Loudness = true }) is { UpNext: null, Loudness: false } && ProgramStreamer.Plain(commercialPlan) is { Loudness: false, CopyVideo: true },
+            "A program that cannot start with Up next or levelled volume falls back to playing without them");
+        var cardChannel = new ChannelDefinition { UpNext = true, NormalizeVolume = "off", AlwaysEncode = true };
+        var cardNext = new UpNextCard("Heat", "1995", "/posters/heat.jpg", "/logos/heat.png");
+        var cardPlan = StreamPlan.For(plainFormat, cardChannel, next: cardNext);
+        var cardArgs = ProgramStreamer.Command("ffmpeg", longPart, cardPlan, now).ArgumentList;
+        var cardGraph = cardArgs[cardArgs.IndexOf("-filter_complex") + 1];
+        Check(cardPlan.UpNextStyle == "card" && cardArgs.Contains("/posters/heat.jpg") && cardArgs.Contains("/logos/heat.png") && cardGraph.Contains("[card]overlay=") && cardGraph.Contains("setpts=PTS+560/TB")
+            && cardGraph.Contains("fade=t=in") && cardGraph.Contains("UP NEXT") && cardArgs[cardArgs.IndexOf("/posters/heat.jpg") - 3] == "-t",
+            "The Up next card draws the poster and title art, slides in forty seconds before the end, and reads its pictures only for its few seconds");
+        var posterOnly = ProgramStreamer.Command("ffmpeg", longPart, StreamPlan.For(plainFormat, cardChannel, next: cardNext with { Logo = null }), now).ArgumentList;
+        Check(!posterOnly.Contains("/logos/heat.png") && posterOnly[posterOnly.IndexOf("-filter_complex") + 1].Contains("Heat"), "Without title art the card writes the title");
+        var logoStyle = StreamPlan.For(plainFormat, new ChannelDefinition { UpNext = true, AlwaysEncode = true, UpNextStyle = "logo" }, next: cardNext);
+        Check(ProgramStreamer.CardWindow(longPart, logoStyle, now) is { Poster: null, Art: "/logos/heat.png" } && ProgramStreamer.CardWindow(longPart, cardPlan, now.AddMinutes(10)) is null
+            && ProgramStreamer.CardWindow(longPart, cardPlan, now.AddSeconds(565)) is { FadeIn: false, Start: 0 } joined && Math.Abs(joined.Duration - 7) < 0.01,
+            "The logo style leaves out the poster, nothing shows once the part is over, and a viewer joining mid-card sees the rest of it");
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { UpNextStyle = "banner" }] }); throw new Exception("Bad Up next style accepted"); }
+        catch (ArgumentException) { Check(true, "Up next accepts only card, poster, logo or text"); }
+        Check(new ProgramDetails("Rugrats", "Pilot", 1, 2, false, true, [], null, 1991, null, null, null, null, null).Card("x") is { Title: "Rugrats", Subtitle: "S1 · E2 · Pilot", Poster: null }
+            && new ProgramDetails("Heat", null, null, null, true, false, [], null, 1995, null, null, null, null, null).Card("x").Subtitle == "1995", "The card's second line is the episode for shows and the year for movies");
+        var item = Guid.NewGuid();
+        var nextItem = Guid.NewGuid();
+        var nextParts = new[]
+        {
+            new Airing("c", item, "Show — S01E01", "/a", now, now.AddMinutes(10), false),
+            new Airing("c", Guid.NewGuid(), "Ad", "/ad", now.AddMinutes(10), now.AddMinutes(11), true),
+            new Airing("c", item, "Show — S01E01", "/a", now.AddMinutes(11), now.AddMinutes(20), false, Offset: 600),
+            new Airing("c", Guid.NewGuid(), "Ad", "/ad", now.AddMinutes(20), now.AddMinutes(21), true),
+            new Airing("c", nextItem, "Movie", "/m", now.AddMinutes(21), now.AddMinutes(120), false),
+        };
+        Check(Broadcasts.UpNext(nextParts, nextParts[0]) is null && Broadcasts.UpNext(nextParts, nextParts[2])?.Title == "Movie" && Broadcasts.UpNext(nextParts, nextParts[4]) is null,
+            "Up next names the following program on a program's last part only");
+        Check(!System.Text.Json.JsonSerializer.Serialize(nextParts[0] with { Next = new UpNextCard("Movie") }).Contains("Movie"), "What is up next is never saved with the schedule");
+        var december = new TimeBlock { FromDate = "12-01", ToDate = "12-25" };
+        var newYear = new TimeBlock { FromDate = "12-20", ToDate = "01-05" };
+        Check(december.InSeason(new DateOnly(2026, 12, 1)) && december.InSeason(new DateOnly(2026, 12, 25)) && !december.InSeason(new DateOnly(2026, 11, 30)) && !december.InSeason(new DateOnly(2026, 12, 26))
+            && newYear.InSeason(new DateOnly(2026, 12, 31)) && newYear.InSeason(new DateOnly(2027, 1, 5)) && !newYear.InSeason(new DateOnly(2027, 1, 6)) && new TimeBlock().InSeason(new DateOnly(2026, 6, 1)),
+            "Seasonal blocks run between their dates each year, including over New Year");
+        var zone = TimeZoneInfo.Utc;
+        var seasonal = new ChannelDefinition { Blocks = [new TimeBlock { Id = "xmas", Start = "00:00", End = "00:00", FromDate = "12-01", ToDate = "12-25" }] };
+        Check(Planner.ActiveBlock(seasonal, new DateTimeOffset(2026, 12, 10, 15, 0, 0, TimeSpan.Zero), zone)?.Block.Id == "xmas" && Planner.ActiveBlock(seasonal, new DateTimeOffset(2026, 12, 26, 15, 0, 0, TimeSpan.Zero), zone) is null
+            && Planner.ActiveBlock(seasonal, new DateTimeOffset(2026, 12, 25, 23, 59, 0, TimeSpan.Zero), zone) is { } lastDay && Planner.BlockEnd(lastDay, zone) == new DateTimeOffset(2026, 12, 26, 0, 0, 0, TimeSpan.Zero),
+            "A block from 00:00 to 00:00 runs all day, on its season's days only");
+        Scheduler.Validate(new Configuration { Channels = [seasonal] });
+        foreach (var (from, to) in new[] { ("12-01", ""), ("13-01", "12-25"), ("12-32", "01-01") })
+        {
+            try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { Blocks = [new TimeBlock { FromDate = from, ToDate = to }] }] }); throw new Exception("Bad season accepted: " + from + " " + to); }
+            catch (ArgumentException) { }
+        }
+        Check(true, "Seasonal dates are checked when settings are saved");
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { NormalizeVolume = "loud" }] }); throw new Exception("Bad volume setting accepted"); }
+        catch (ArgumentException) { Check(true, "Even out volume accepts only off, commercials or all"); }
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { Source = new Pool { SkipWatchedBy = "somebody" } }] }); throw new Exception("Bad user accepted"); }
+        catch (ArgumentException) { Check(true, "Skip watched needs a real user ID"); }
+
+        var about = new ProgramDetails("Rugrats", "Tommy's First Birthday", 1, 1, false, true, ["Animation", "Kids"], "TV-Y", 1991, "The babies explore.", null, "series1", new DateTime(1991, 8, 11), 7.5f);
+        var episode = new Airing("kids", Guid.NewGuid(), "Rugrats — S01E01 Tommy's First Birthday", "/r.mkv", now, now.AddMinutes(22), false);
+        var info = LiveTvService.Program(episode, about);
+        Check(info.Name == "Rugrats" && info.EpisodeTitle == "Tommy's First Birthday" && info.SeasonNumber == 1 && info.EpisodeNumber == 1 && info.IsSeries && !info.IsMovie && info.IsKids && info.Genres!.Contains("Animation")
+            && info.OfficialRating == "TV-Y" && info.ProductionYear == 1991 && info.Overview == "The babies explore." && info.IsRepeat && info.Etag!.StartsWith(episode.ItemId.ToString("N")),
+            "Guide entries carry the show, episode, season and number, genres, rating, year and description, and Kids programs are marked");
+        var blockInfo = LiveTvService.Program(episode with { Heading = "Saturday Morning" }, about);
+        Check(blockInfo.Name == "Saturday Morning" && blockInfo.EpisodeTitle == "Rugrats: Tommy's First Birthday", "A block's guide title keeps the show and episode in the episode line");
+        var movieInfo = LiveTvService.Program(episode, about with { Movie = true, Series = false, Name = "Heat", EpisodeTitle = null, Season = null, Episode = null, Genres = ["Crime"] });
+        Check(movieInfo.IsMovie && !movieInfo.IsSeries && !movieInfo.IsKids && movieInfo.Name == "Heat" && LiveTvService.Program(ad, null).Name == "Ad", "Movies are marked as movies, and commercials stay plain");
+        var detailed = System.Xml.Linq.XDocument.Parse(Export.Xmltv([new ChannelDefinition { Id = "kids", Name = "Kids", Number = "3" }], _ => [episode], now.AddMinutes(-1), _ => about with { Image = "/poster.jpg" }, "https://tv.example.com"));
+        var programme = detailed.Root!.Element("programme")!;
+        Check(programme.Element("sub-title")?.Value == "Tommy's First Birthday" && programme.Elements("category").Any(x => x.Value == "Kids") && programme.Elements("episode-num").First().Value == "0.0." && programme.Element("date")?.Value == "1991"
+            && programme.Element("icon")?.Attribute("src")?.Value == $"https://tv.example.com/Items/{episode.ItemId:N}/Images/Primary" && programme.Element("rating")?.Element("value")?.Value == "TV-Y",
+            "The XMLTV guide carries episodes, categories, years, ratings and pictures for IPTV apps");
     }
     {
         var odd = new SourceFormat("hevc", "yuv420p", 8, false, "ac3", 6, 48000, 1920, 1080, 1, 16.0 / 9);

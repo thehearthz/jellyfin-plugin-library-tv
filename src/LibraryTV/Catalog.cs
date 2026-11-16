@@ -10,8 +10,42 @@ using System.Text.Json;
 namespace Jellyfin.Plugin.LibraryTV;
 
 public sealed class Catalog(ILibraryManager library, StartupGate? startup = null, MediaBrowser.Controller.Chapters.IChapterManager? chapterManager = null,
-    MediaBrowser.Controller.MediaSegments.IMediaSegmentManager? segmentManager = null, CreditsStore? detections = null)
+    MediaBrowser.Controller.MediaSegments.IMediaSegmentManager? segmentManager = null, CreditsStore? detections = null,
+    IUserManager? users = null, IUserDataManager? userData = null)
 {
+    // What the guide shows about a program: its episode, genres, rating, picture and description.
+    public ProgramDetails? Details(Guid id)
+    {
+        if (id == Guid.Empty || startup?.IsReady == false) return null;
+        try
+        {
+            if (library.GetItemById(id) is not { } item) return null;
+            var episode = item as Episode;
+            var series = episode is not null && episode.SeriesId != Guid.Empty ? library.GetItemById(episode.SeriesId) as Series : null;
+            var genres = item.Genres.Concat(series?.Genres ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            string? Image(BaseItem? x, ImageType type) { try { return x?.GetImagePath(type, 0) is { Length: > 0 } path && !path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? path : null; } catch (Exception e) when (e is ArgumentException or InvalidOperationException) { return null; } }
+            var image = episode is not null ? Image(item, ImageType.Primary) ?? Image(series, ImageType.Primary) : Image(item, ImageType.Primary);
+            // For "Up next": the show's poster rather than the episode's still, and its title art.
+            var poster = episode is not null ? Image(series, ImageType.Primary) ?? image : image;
+            var logo = Image(item, ImageType.Logo) ?? Image(series, ImageType.Logo);
+            return new ProgramDetails(episode is not null ? episode.SeriesName ?? series?.Name : item.Name, episode is not null ? item.Name : null, episode?.ParentIndexNumber, episode?.IndexNumber,
+                item is MediaBrowser.Controller.Entities.Movies.Movie, episode is not null, genres, item.OfficialRating ?? series?.OfficialRating,
+                item.ProductionYear ?? series?.ProductionYear, item.Overview ?? series?.Overview, image, series?.Id.ToString("N"), item.PremiereDate, item.CommunityRating ?? series?.CommunityRating, poster, logo);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+    }
+
+    // The users whose watched programs a channel can skip.
+    public object Users()
+    {
+        startup?.RequireReady();
+        return users?.GetUsers().Select(x => new { Id = x.Id.ToString("N"), Name = x.Username }).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    }
+
+    // The file and formats of a library item, for watching a program from its start like any other video.
+    public MediaBrowser.Model.Dto.MediaSourceInfo[] Sources(Guid id, IMediaSourceManager sources) =>
+        library.GetItemById(id) is { } item ? sources.GetStaticMediaSources(item, false, null).ToArray() : [];
+
     private static readonly System.Text.RegularExpressions.Regex CreditsChapter = new(@"\b(end\s*credits|credits|outro|ending|closing)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     // Where a program's credits run, in seconds: an Outro media segment (added by plugins such as Intro
@@ -197,7 +231,7 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
         scan ??= new();
         return pool =>
         {
-            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, pool.TitleContains, pool.TitleExcludes, pool.Years, pool.Decades, pool.AlwaysItemIds, commercials });
+            var key = JsonSerializer.Serialize(new { pool.LibraryIds, pool.FolderIds, pool.ItemIds, pool.Genres, pool.Tags, pool.IncludeSpecials, pool.MinYear, pool.MaxYear, pool.MinMinutes, pool.MaxMinutes, pool.MaxRating, pool.ExcludeGenres, pool.TitleContains, pool.TitleExcludes, pool.Years, pool.Decades, pool.AlwaysItemIds, pool.SkipWatchedBy, commercials });
             if (!cache.TryGetValue(key, out var media)) cache[key] = media = Read(pool, scan, commercials);
             return new List<Media>(media); // Commercial exclusion must not modify cached content.
         };
@@ -262,6 +296,9 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             return series;
         }
         var media = new List<Media>();
+        // Programs a chosen user has watched are set aside, and air again only once everything has been watched.
+        var viewer = !commercials && Guid.TryParse(pool.SkipWatchedBy, out var viewerId) && users is not null && userData is not null ? users.GetUserById(viewerId) : null;
+        var watched = new List<Media>();
         foreach (var x in items.Values.Where(x => x.RunTimeTicks > 0 && !string.IsNullOrEmpty(x.Path) && Available(x.Path)))
         {
             var episode = x as Episode;
@@ -289,10 +326,12 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
                 : x.ProductionYear ?? x.PremiereDate?.Year ?? pathYear;
             if (!always && (pool.MinYear > 0 && year is > 0 && year < pool.MinYear || pool.MaxYear > 0 && year is > 0 && year > pool.MaxYear)) continue;
             if (!always && (pool.Years.Length > 0 || pool.Decades.Length > 0) && (year is not > 0 || !pool.Years.Contains(year.Value) && !pool.Decades.Contains(year.Value / 10 * 10))) continue;
-            media.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
+            var into = !always && viewer is not null && userData!.GetUserData(viewer, x)?.Played == true ? watched : media;
+            into.Add(new Media(x.Id, episode is not null ? $"{episode.SeriesName} — S{episode.ParentIndexNumber:00}E{episode.IndexNumber:00} {x.Name}" : x.Name,
                 x.Path, TimeSpan.FromTicks(x.RunTimeTicks!.Value).TotalSeconds,
                 episode is not null ? SeriesKey(episode, series) : "", x.ParentIndexNumber ?? 0, x.IndexNumber ?? 0, year ?? 0, genres, tags, studios, episode is not null ? episode.SeriesName : x.Name));
         }
+        if (media.Count == 0) media = watched;
         // The same file, or the same episode of the same show in two libraries, airs only once per cycle.
         return media.DistinctBy(x => x.Path, StringComparer.Ordinal)
             .DistinctBy(x => x.Series.Length > 0 && x.Episode > 0 ? $"{x.Series}|{x.Season}|{x.Episode}" : x.Id.ToString())
@@ -348,5 +387,14 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
     }
 }
 
+public sealed record ProgramDetails(string? Name, string? EpisodeTitle, int? Season, int? Episode, bool Movie, bool Series, string[] Genres, string? Rating, int? Year,
+    string? Overview, string? Image, string? SeriesId, DateTime? Aired, float? Score, string? Poster = null, string? Logo = null)
+{
+    // The "Up next" card: the show or movie, then the episode (S1 · E2 · Name) or the movie's year.
+    public UpNextCard Card(string fallback) => new(Name ?? fallback,
+        Series ? string.Join(" · ", new[] { Season is > 0 ? $"S{Season}" : null, Episode is > 0 ? $"E{Episode}" : null, EpisodeTitle }.Where(x => !string.IsNullOrWhiteSpace(x))) is { Length: > 0 } line ? line : null
+            : Year?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        Poster is { } p && File.Exists(p) ? p : null, Logo is { } l && File.Exists(l) ? l : null);
+}
 public sealed record CatalogItem(string Id, string Name, string Type, int? Year, string Overview);
 public sealed record CatalogPage(CatalogItem[] Items, int TotalRecordCount);

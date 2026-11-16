@@ -896,6 +896,7 @@
         ExcludeGenres: [],
         TitleContains: [],
         TitleExcludes: [],
+        SkipWatchedBy: "",
       });
       function normalize(p) {
         p = p || pool();
@@ -914,6 +915,7 @@
         if (!Number.isInteger(p.EpisodesInARow)) p.EpisodesInARow = 2;
         p.Order = p.Order || "";
         p.MaxRating = p.MaxRating || "";
+        p.SkipWatchedBy = p.SkipWatchedBy || "";
         for (const key of ["MinYear", "MaxYear", "MinMinutes", "MaxMinutes"])
           if (!Number.isInteger(p[key])) p[key] = 0;
         return p;
@@ -1739,6 +1741,7 @@
                 p.TitleContains.length +
                 p.TitleExcludes.length +
                 (p.MaxRating ? 1 : 0) +
+                (p.SkipWatchedBy ? 1 : 0) +
                 p.MinYear +
                 p.MaxYear +
                 p.MinMinutes +
@@ -1747,7 +1750,7 @@
                 ? ""
                 : null,
           },
-          node("summary", {}, "Filters: genre, tag, title, rating, year & length"),
+          node("summary", {}, "Filters: genre, tag, title, rating, year, length & watched"),
         );
         advanced.append(
           node(
@@ -1792,6 +1795,23 @@
                 p.MaxRating,
                 [["", "Any"], ["G", "G / TV-Y / TV-G"], ["TV-Y7", "TV-Y7"], ["PG", "PG / TV-PG"], ["PG-13", "PG-13 / TV-14"], ["R", "R / TV-MA"]],
                 (v) => (p.MaxRating = v),
+              ),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Skip what this person has watched",
+                p.SkipWatchedBy,
+                [["", "Nobody (air everything)"], ...(state.users || []).map((u) => [u.Id, u.Name])].concat(
+                  p.SkipWatchedBy && !(state.users || []).some((u) => u.Id === p.SkipWatchedBy) ? [[p.SkipWatchedBy, "A user who no longer exists"]] : [],
+                ),
+                (v) => (p.SkipWatchedBy = v),
+              ),
+              node(
+                "p",
+                { class: "ltv-muted" },
+                "Played episodes and movies are left out at the next refresh. When everything has been watched, everything airs again. Watching on Live TV doesn't mark things as played.",
               ),
             ),
             node(
@@ -2797,6 +2817,44 @@
               { class: "ltv-muted" },
               "Leave this off to play H.264/AAC files directly and encode only programs in other formats. Turn it on if a channel still freezes when programs change; every program is then converted to 720p.",
             ),
+            node("h3", {}, "Volume"),
+            selectField(
+              "Even out volume",
+              c.NormalizeVolume,
+              [
+                ["commercials", "Commercials and bumpers (default)"],
+                ["all", "Everything, programs too"],
+                ["off", "Off"],
+              ],
+              (v) => (c.NormalizeVolume = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "Levels loudness to broadcast TV's standard so clips aren't louder or quieter than the shows around them. Only the sound is re-encoded, which costs very little CPU.",
+            ),
+            node("h3", {}, "Up next"),
+            check(
+              'Show "Up next" near the end of programs',
+              c.UpNext,
+              (v) => (c.UpNext = v),
+            ),
+            selectField(
+              "Up next style",
+              c.UpNextStyle,
+              [
+                ["card", "Card: poster and title art"],
+                ["poster", "Card: poster and title"],
+                ["logo", "Card: title art only"],
+                ["text", "One line of text"],
+              ],
+              (v) => (c.UpNextStyle = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "A card slides in at the lower left 40 seconds before a program ends, or during sped-up credits, and stays for 12 seconds. It uses the poster and title art from your library; programs without title art show their title. It only appears on programs that are already being encoded (sped-up credits, a logo, captions, a picture-shape change or Always encode), so it never adds encoding on its own.",
+            ),
             node(
               "label",
               { class: "ltv-field" },
@@ -2968,6 +3026,8 @@
                 MaxLateMinutes: 0,
                 Fill: "count",
                 GuideTitle: "",
+                FromDate: "",
+                ToDate: "",
               });
               dirty();
               renderEditor();
@@ -3204,6 +3264,29 @@
             "text",
             { placeholder: "e.g. Saturday Morning Cartoons", maxlength: 100 },
           ),
+          node(
+            "div",
+            { class: "ltv-cols" },
+            field(
+              "Only from (month-day, optional)",
+              b.FromDate,
+              (v) => (b.FromDate = v.trim()),
+              "text",
+              { placeholder: "e.g. 12-01", maxlength: 5, pattern: "[0-1][0-9]-[0-3][0-9]" },
+            ),
+            field(
+              "Until (month-day)",
+              b.ToDate,
+              (v) => (b.ToDate = v.trim()),
+              "text",
+              { placeholder: "e.g. 12-25", maxlength: 5, pattern: "[0-1][0-9]-[0-3][0-9]" },
+            ),
+          ),
+          node(
+            "p",
+            { class: "ltv-muted" },
+            "Seasonal blocks: with dates, the block runs only between them each year (12-20 to 01-05 runs over New Year). Put seasonal blocks first; the first block that fits wins. 00:00 to 00:00 means all day.",
+          ),
           poolEditor(b.Source, "Content for this block"),
         );
         return box;
@@ -3352,6 +3435,9 @@
           BreakFreeEndMinutes: 0,
           CommercialCountMax: 0,
           GuideHidesBreaks: false,
+          NormalizeVolume: "commercials",
+          UpNext: false,
+          UpNextStyle: "card",
           AudioTitle: "",
           Watermark: "",
           WatermarkPosition: "bottom-right",
@@ -3889,6 +3975,11 @@
           } catch (e) {
             state.genres = [];
           }
+          try {
+            state.users = await api("users");
+          } catch (e) {
+            state.users = [];
+          }
           for (const c of state.config.Channels) {
             c.Source = normalize(c.Source);
             c.Commercials = normalize(c.Commercials);
@@ -3908,6 +3999,8 @@
               b.StartMode = b.StartMode || "soft";
               b.Fill = b.Fill || "count";
               b.GuideTitle = b.GuideTitle || "";
+              b.FromDate = b.FromDate || "";
+              b.ToDate = b.ToDate || "";
               if (!Number.isInteger(b.MaxLateMinutes)) b.MaxLateMinutes = 0;
             }
             if (c.MatchCommercialEra === undefined) c.MatchCommercialEra = true;

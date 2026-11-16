@@ -145,6 +145,7 @@ function install(window, options = {}) {
           ],
         };
       if (path === "genres") return ["Animation", "Comedy", "Drama"];
+      if (path === "users") return [{ Id: "1111aaaa1111aaaa1111aaaa1111aaaa", Name: "Sam" }];
       if (path === "libraries")
         return [
           { ItemId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "TV Shows" },

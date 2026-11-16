@@ -1353,3 +1353,65 @@ test("the M3U export shows links only when on, and new links replace the token",
     dom.window.close();
   }
 });
+
+function checkbox(window, text) {
+  const label = [...window.document.querySelectorAll("label")].find((x) => x.textContent.includes(text) && x.querySelector("input[type=checkbox]"));
+  assert.ok(label, "Checkbox " + text);
+  return label.querySelector("input[type=checkbox]");
+}
+
+test("volume levelling and the Up next card are saved from the Playback tab", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Playback");
+    assert.equal(selectLabel(w, "Even out volume").value, "commercials");
+    change(w, selectLabel(w, "Even out volume"), "all");
+    const upNext = checkbox(w, "Up next");
+    upNext.checked = true;
+    upNext.dispatchEvent(new w.Event("change", { bubbles: true }));
+    change(w, selectLabel(w, "Up next style"), "poster");
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.NormalizeVolume, "all");
+    assert.equal(c.UpNext, true);
+    assert.equal(c.UpNextStyle, "poster");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("seasonal block dates are saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Schedule");
+    click(w, "+ Add time block");
+    const block = w.document.querySelector(".ltv-block");
+    change(w, selectLabel(w, "Only from", block), "12-01");
+    change(w, selectLabel(w, "Until", block), "12-25");
+    click(w, "Save channels");
+    await settle();
+    const saved = w.testApi.saved.Channels[0].Blocks[0];
+    assert.equal(saved.FromDate, "12-01");
+    assert.equal(saved.ToDate, "12-25");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("a channel can skip what a chosen user has watched", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    const skip = selectLabel(w, "Skip what this person has watched");
+    assert.deepEqual([...skip.options].map((x) => x.textContent), ["Nobody (air everything)", "Sam"]);
+    change(w, skip, "1111aaaa1111aaaa1111aaaa1111aaaa");
+    click(w, "Save channels");
+    await settle();
+    assert.equal(w.testApi.saved.Channels[0].Source.SkipWatchedBy, "1111aaaa1111aaaa1111aaaa1111aaaa");
+  } finally {
+    dom.window.close();
+  }
+});

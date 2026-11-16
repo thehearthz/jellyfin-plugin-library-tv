@@ -146,6 +146,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.AudioLanguage is null || channel.AudioLanguage.Length > 40) throw new ArgumentException("The audio language must be 40 characters or fewer.");
             if (channel.CreditsSpeed is < 1 or > 8) throw new ArgumentException("Credits speed must be 1 (normal) to 8.");
             if (channel.EncodeWith is not ("" or "cpu")) throw new ArgumentException("Encode with must be blank (the server setting) or cpu.");
+            if (channel.NormalizeVolume is not ("off" or "commercials" or "all")) throw new ArgumentException("Even out volume must be off, commercials or all.");
+            if (!StreamPlan.UpNextStyles.Contains(channel.UpNextStyle ?? "")) throw new ArgumentException("Up next is a card, poster, logo or text.");
             if (!StreamPlan.Qualities.Contains(channel.EncodeQuality ?? "") || !StreamPlan.Heights.Contains(channel.EncodeHeight)) throw new ArgumentException("Encoding quality must be fast, balanced, high or best, and the encoded height 480, 576, 720 or 1080.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
             foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
@@ -161,7 +163,9 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             foreach (var block in channel.Blocks)
             {
                 if (block.Id is "default" || block.Id.StartsWith("commercials", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(block.Id)) throw new ArgumentException("Block ID is empty or reserved.");
-                if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) || block.Start == block.End) throw new ArgumentException("Time blocks require different start/end times in HH:mm format.");
+                if (!TimeOnly.TryParseExact(block.Start, "HH:mm", out _) || !TimeOnly.TryParseExact(block.End, "HH:mm", out _) ) throw new ArgumentException("Time blocks need start and end times in HH:mm format.");
+                if (block.FromDate is null || block.ToDate is null || string.IsNullOrWhiteSpace(block.FromDate) != string.IsNullOrWhiteSpace(block.ToDate)
+                    || block.FromDate.Length > 0 && (TimeBlock.MonthDay(block.FromDate) < 0 || TimeBlock.MonthDay(block.ToDate) < 0)) throw new ArgumentException("Seasonal dates are a month and day (MM-dd) for both the first and last day, or both blank.");
                 if (block.MaxItemsPerDay < 0) throw new ArgumentException("Daily episode limits cannot be negative.");
                 if (block.StartMode is not ("soft" or "exact") || block.Fill is not ("count" or "fit")) throw new ArgumentException("A block starts soft or exact and fills by count or fit.");
                 if (block.MaxLateMinutes is < 0 or > 1440) throw new ArgumentException("Allowed lateness must be 0–1440 minutes.");
@@ -231,6 +235,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
         if (pool.ExcludeGenres is null || pool.MaxRating is null || pool.MaxRating.Length > 20) throw new ArgumentException("Content selections cannot be null.");
         if (pool.MinYear is not 0 and (< 1850 or > 2200) || pool.MaxYear is not 0 and (< 1850 or > 2200) || pool.MaxYear != 0 && pool.MaxYear < pool.MinYear) throw new ArgumentException("Years must be between 1850 and 2200, and the last year cannot be before the first.");
         if (pool.MinMinutes < 0 || pool.MaxMinutes < 0 || pool.MaxMinutes != 0 && pool.MaxMinutes < pool.MinMinutes) throw new ArgumentException("Length limits cannot be negative, and the longest cannot be shorter than the shortest.");
+        if (pool.SkipWatchedBy is null || pool.SkipWatchedBy.Length > 0 && !Guid.TryParse(pool.SkipWatchedBy, out _)) throw new ArgumentException("Choose a user, or nobody, for skipping watched programs.");
     }
 
     public async Task SaveConfiguration(Configuration config, CancellationToken ct)

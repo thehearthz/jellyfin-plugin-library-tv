@@ -183,6 +183,47 @@ public static class PlaybackTests
                 check(transport.Response.StatusCode == 503, "A channel that cannot play returns a clean unavailable response instead of an unhandled server error");
             }
             scheduler = await Fresh();
+            var feed = new DelegateStreamer(async (_, _, write, ct) => { while (true) { await write(new byte[188]); await Task.Delay(100, ct); } });
+            var exportWasOn = Plugin.Instance.Configuration.ExportEnabled;
+            using (var live = new Broadcasts(scheduler, feed, NullLogger<Broadcasts>.Instance))
+            {
+                // The M3U stream route, from another device on the network.
+                Controller Remote()
+                {
+                    var c = new Controller(catalog, scheduler, live) { ControllerContext = new() { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() } };
+                    c.HttpContext.Connection.RemoteIpAddress = System.Net.IPAddress.Parse("192.168.1.50");
+                    c.HttpContext.Response.Body = new CountingStream();
+                    return c;
+                }
+                var token = Plugin.Instance.Configuration.ExportToken;
+                Plugin.Instance.Configuration.ExportEnabled = false;
+                var off = Remote(); await off.Live("playback", token, default);
+                Plugin.Instance.Configuration.ExportEnabled = true;
+                var wrong = Remote(); await wrong.Live("playback", "wrong", default);
+                var internalRoute = Remote(); await internalRoute.Stream("playback", Plugin.Instance.Configuration.StreamToken, default);
+                var internalWithExport = Remote(); await internalWithExport.Stream("playback", token, default);
+                check(off.Response.StatusCode == 403 && wrong.Response.StatusCode == 403 && internalRoute.Response.StatusCode == 403 && internalWithExport.Response.StatusCode == 403 && feed.Calls == 0,
+                    "The M3U stream refuses wrong links and links while export is off, and its token never opens Jellyfin's own stream route");
+                var missing = Remote(); await missing.Live("no-such-channel", token, default);
+                check(missing.Response.StatusCode == 404, "An M3U link to a channel that no longer exists answers not found");
+                var tuned = Remote();
+                using var stop = new CancellationTokenSource();
+                var body = (CountingStream)tuned.Response.Body;
+                var watching = tuned.Live("playback", token, stop.Token);
+                await body.WaitFor(188, TimeSpan.FromSeconds(5));
+                check(tuned.Response.ContentType == "video/mp2t" && tuned.Response.Headers.CacheControl == "no-store" && live.StatusFor("playback").Viewers == 1,
+                    "An M3U link streams the channel as MPEG-TS to another app, counted as a viewer like any other");
+                var second = Remote();
+                using var stopSecond = new CancellationTokenSource();
+                var secondBody = (CountingStream)second.Response.Body;
+                var watchingSecond = second.Live("playback", token, stopSecond.Token);
+                await secondBody.WaitFor(188, TimeSpan.FromSeconds(5));
+                check(feed.Calls == 1 && live.StatusFor("playback").Viewers == 2, "A second app on the same channel shares the running broadcast instead of starting another");
+                stop.Cancel(); stopSecond.Cancel();
+                await watching.WaitAsync(TimeSpan.FromSeconds(10)); await watchingSecond.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            Plugin.Instance.Configuration.ExportEnabled = exportWasOn;
+            scheduler = await Fresh();
             DelegateStreamer stalledOnce = null!;
             stalledOnce = new DelegateStreamer(async (_, _, write, ct) =>
             {

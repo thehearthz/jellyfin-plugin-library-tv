@@ -21,6 +21,37 @@ Things to know:
 - Every app watching counts as a viewer; channels in use count toward **Maximum channels streaming at once**.
 - The export has been tested with FFmpeg and automated tests, not with every IPTV app.
 
+## Watch from the start
+
+The **Library TV** folder on the home screen has a **Watch from the start** folder. It lists what each channel is showing now (during a break, the program the break interrupts). Playing one plays that episode or movie's own file from its beginning, through Jellyfin's normal playback and transcoding. The channel itself carries on live. Only programs a channel aired in the last few hours can be opened this way.
+
+## The guide
+
+Guide entries carry what your library knows about each program: the show and episode name, season and episode number, description, genres, rating, year and picture. Live TV's **Movies**, **Shows**, **Kids**, **News** and **Sports** sections use the genres (Kids covers Kids, Children and Family; Sports and News match genres containing those words). Programs are marked as repeats, so the guide doesn't badge them as new. The XMLTV export carries the same details for IPTV apps.
+
+## Volume
+
+**Even out volume** (Playback tab) levels loudness to the broadcast standard (EBU R128, about −24 LUFS) so commercials aren't louder or quieter than the shows around them.
+
+- **Commercials and bumpers** (the default) levels only clips. **Everything** levels programs too. **Off** leaves sound untouched.
+- Only the sound is re-encoded (to stereo AAC); the picture is still copied when it can be. Levelling costs very little CPU.
+- It's done live in one pass, so the first second or two of a clip can be slightly uneven.
+
+## Up next
+
+Turn on **Show "Up next" near the end of programs** (Playback tab) for a card in the lower left that names the next program. It slides in 40 seconds before the program ends, or at the start of sped-up credits, stays for 12 seconds and fades out. The card has rounded corners, a gold accent and a dark translucent background.
+
+| Style | What it shows |
+| --- | --- |
+| **Card: poster and title art** (default) | The show's or movie's poster, "UP NEXT", the title art (logo) and the episode or year |
+| **Card: poster and title** | The poster with the title written out |
+| **Card: title art only** | The title art without a poster |
+| **One line of text** | "Up next: Title" on one line |
+
+The poster and title art come from Jellyfin (the series' poster and logo for episodes). A program without title art has its title written instead; one without a poster gets a narrower card.
+
+The card is drawn on the picture, so it only appears on programs that are **already being encoded**: sped-up credits, a channel logo, captions, a picture-shape change or **Always encode**. A copied program is never encoded just for the card. If drawing it fails, the program plays without it and Health says so.
+
 ## Playback
 
 Every channel plays files directly when it can and encodes only when it has to. For each program the plugin reads the file's streams from Jellyfin's library data (or FFprobe, if Jellyfin has none), then:

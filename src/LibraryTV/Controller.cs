@@ -73,6 +73,9 @@ public sealed class Controller : ControllerBase
     [HttpGet("genres")]
     public ActionResult<string[]> Genres() => catalog.Genres();
 
+    [HttpGet("users")]
+    public object Users() => catalog.Users();
+
     [HttpGet("libraries")]
     public object Libraries() => catalog.Libraries();
 
@@ -173,7 +176,7 @@ public sealed class Controller : ControllerBase
     {
         if (!Export.Allowed(Plugin.Instance.Configuration, token)) return StatusCode(403);
         Response.Headers.CacheControl = "no-store";
-        return Content(Export.Xmltv(scheduler.Channels, scheduler.GuideFor, DateTimeOffset.UtcNow), "application/xml", Encoding.UTF8);
+        return Content(Export.Xmltv(scheduler.Channels, scheduler.GuideFor, DateTimeOffset.UtcNow, catalog.Details, $"{Request.Scheme}://{Request.Host}{Request.PathBase}"), "application/xml", Encoding.UTF8);
     }
 
     // A channel as plain MPEG-TS for other apps, from any address, guarded by the export token.

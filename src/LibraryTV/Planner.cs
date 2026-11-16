@@ -238,7 +238,7 @@ public static class Planner
             var date = DateOnly.FromDateTime(local.DateTime);
             var active = start < end ? time >= start && time < end : time >= start || time < end;
             if (start >= end && time < end) date = date.AddDays(-1);
-            if (active && block.Days.Contains(date.DayOfWeek)) return (block, date);
+            if (active && block.Days.Contains(date.DayOfWeek) && block.InSeason(date)) return (block, date);
         }
         return null;
     }
@@ -271,7 +271,7 @@ public static class Planner
             for (var d = 0; d <= 9; d++)
             {
                 var day = first.AddDays(d);
-                if (!block.Days.Contains(day.DayOfWeek)) continue;
+                if (!block.Days.Contains(day.DayOfWeek) || !block.InSeason(day)) continue;
                 var start = Instant(day, time, zone);
                 if (start <= at) continue;
                 if (best is null || start < best) best = start;

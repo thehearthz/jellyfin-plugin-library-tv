@@ -12,7 +12,7 @@ public sealed record RuntimeStatus(int Viewers, int Recoveries, string? LastProb
 
 // One process per watched channel; no timer, media scan, or process while idle.
 public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, ILogger<Broadcasts> log, ITaskManager? tasks = null,
-    ISessionManager? sessions = null, ILibraryManager? library = null) : IDisposable
+    ISessionManager? sessions = null, ILibraryManager? library = null, Catalog? catalog = null) : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Broadcast> active = [];
@@ -173,7 +173,9 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 }
                 try
                 {
-                    var method = await streamer.Stream(item, channel, shape, chunk =>
+                    var playing = channel.UpNext && !item.Commercial && UpNext(scheduler.GuideFor(id), item) is { } next
+                        ? item with { Next = catalog?.Details(next.ItemId)?.Card(next.Title) ?? new UpNextCard(next.Title) } : item;
+                    var method = await streamer.Stream(playing, channel, shape, chunk =>
                     {
                         if (restartPlayers)
                         {
@@ -317,5 +319,20 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
         public Task? Run { get; set; }
         // Counts every time the last viewer leaves or a new one joins, so a stale stop request is ignored.
         public int Idle { get; set; }
+    }
+
+    // What follows a program's last part, for "Up next", or null when more of the program is still to come.
+    internal static Airing? UpNext(IReadOnlyList<Airing> guide, Airing item)
+    {
+        var at = -1;
+        for (var i = 0; i < guide.Count; i++) if (guide[i].Start == item.Start && guide[i].ItemId == item.ItemId) { at = i; break; }
+        if (at < 0) return null;
+        foreach (var next in guide.Skip(at + 1).Take(40))
+        {
+            if (next.Commercial) continue;
+            if (next.ItemId == item.ItemId && next.Offset > 0) return null;
+            return next;
+        }
+        return null;
     }
 }

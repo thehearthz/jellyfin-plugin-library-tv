@@ -41,6 +41,16 @@ Each time block has three timing settings on the Schedule tab:
 
 A block's **Guide title** replaces the program name in the Live TV guide for every program in it (for example "Saturday Morning Cartoons"); the real title is shown in the description. Clip padding fills at most two hours; beyond that the channel waits as a gap, and gaps longer than 15 minutes stop the stream as before.
 
+## Seasonal blocks
+
+A time block can run only between two dates each year: fill in **Only from** and **Until** as month-day (`12-01` to `12-25`). A range like `12-20` to `01-05` runs over New Year. Outside its dates the block doesn't exist and the rest of the schedule airs as normal.
+
+- Put seasonal blocks **first** in the list: when two blocks cover the same time, the first one wins.
+- A block from `00:00` to `00:00` runs all day, so a seasonal block can take over a whole channel for the season.
+- Use the block's own content and filters to choose what airs, for example tag your holiday episodes `Christmas` and set **Tags** to `Christmas`, or use **Title contains** with words like `Christmas, Halloween`.
+
+Example: on a sitcom channel, add a block `00:00`–`00:00`, dates `12-01` to `12-25`, with **Tags: Christmas**. Every December the channel shows holiday episodes, then returns to its usual lineup on the 26th.
+
 ## Padding to round times
 
 **Start programs on the clock** (Commercials tab) pads each program, after its final break, with commercials and bumpers that fit until the next 5, 10, 15, 20, 30 or 60 minutes on the local clock. A 22-minute episode on a half-hour grid gets about eight minutes of clips and the next program starts on :00 or :30. Clips never run past the next round time or an exact block start. Whatever is shorter than the shortest clip remains a short gap. Padding needs commercials or bumpers (the channel's own or the shared library); Channel health says when there are none.
@@ -54,6 +64,7 @@ Under each content selection:
 - **Keep two-part episodes together** stops a turn ending in the middle of "Part 1" / "Part 2" (and "(1)" / "(2)", "Part One"…). Parts are recognised from the episode name.
 - In the **Choose shows & movies** picker, the **Genre** and **From/To year** boxes narrow what you browse (alongside the search box and library), so you can pick from, say, Comedies of the 1990s.
 - **Episodes in a row for particular shows** (`Show name = 3` per line) overrides the pool-wide number for those shows.
+- **Skip what this person has watched** (under Filters) leaves out episodes and movies a chosen Jellyfin user has played. It's checked at each refresh. Once everything has been watched, everything airs again, so the channel never goes blank. Shows chosen to always air are not affected, and watching on Live TV doesn't mark anything as played.
 - **Filters** act like a saved search: genres and tags to include, genres to never include, words the title must or must not contain (any-of, case-insensitive, matched on the show's or movie's title), never include genres, highest content rating (G, TV-Y7, PG, PG-13, R; unrated programs are kept), earliest and latest year, shortest and longest program. Year and rating use Jellyfin's metadata.
 
 ## Content restrictions

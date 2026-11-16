@@ -27,7 +27,12 @@ Updating: install the new version and restart once. Channels, numbers and episod
 - **Credits.** Finds where credits start and can speed through them.
 - **Light on the server.** H.264/AAC files play directly; only other formats are encoded, on the CPU or a graphics card (NVENC, VAAPI, Quick Sync), and only while someone is watching.
 - **Looks right.** Consistent picture shape, HDR tone-mapped to SDR, optional burned-in captions, audio language choice, channel logo and watermark.
-- **Guide.** A rolling 1–7 day guide in Jellyfin's Live TV, kept in step when the schedule changes.
+- **Sounds right.** Commercials levelled to broadcast loudness, so breaks aren't jarring.
+- **Up next.** A card with the next show's poster and title art near the end of each program.
+- **Seasonal programming.** Blocks that run only between dates, such as holiday episodes every December.
+- **Fresh picks.** Channels can skip what a chosen person has already watched.
+- **Watch from the start.** Play what's on now from its beginning, while the channel carries on.
+- **Guide.** A rolling 1–7 day guide in Jellyfin's Live TV with posters, episodes, genres and ratings, kept in step when the schedule changes.
 - **Other apps.** An optional M3U playlist and XMLTV guide for IPTV players such as VLC, TiviMate or Kodi.
 - **Safe to run.** Channel health explains problems, playback recovers from stalled or missing files, and settings can be backed up and restored.
 
@@ -52,13 +57,14 @@ Updating: install the new version and restart once. Channels, numbers and episod
 
 ## Documentation
 
-- [Building channels](docs/channels.md): content, time blocks, timing, filters, smart channels, collections, restrictions, channel numbers.
+- [Building channels](docs/channels.md): content, time blocks, seasonal blocks, timing, filters, skipping watched, smart channels, collections, restrictions, channel numbers.
 - [Commercials, bumpers and credits](docs/commercials.md): breaks, the shared clip library, network and era matching, credits.
-- [Playback, encoding and other apps](docs/playback.md): what is copied or encoded, quality, CPU or GPU, picture shape, captions, M3U export, recovery.
+- [Playback, encoding and other apps](docs/playback.md): watch from the start, guide details, volume, Up next, what is copied or encoded, quality, CPU or GPU, picture shape, captions, M3U export, recovery.
+- [Troubleshooting](docs/troubleshooting.md): what each Health message means and what to do.
 - [Administration and development](docs/admin.md): Plugin Pages navigation, backups, building and releasing.
 
 ## Problems?
 
-Open **Health** in the settings page first: it names the program that failed and quotes FFmpeg's message. Then [open an issue](https://github.com/thehearthz/jellyfin-plugin-library-tv/issues) with that text, your client app and Jellyfin's log.
+Open **Health** in the settings page first: it names the program that failed and quotes FFmpeg's message. [Troubleshooting](docs/troubleshooting.md) explains each message. Then [open an issue](https://github.com/thehearthz/jellyfin-plugin-library-tv/issues) with that text, your client app and Jellyfin's log.
 
 License: GPL-3.0-only.

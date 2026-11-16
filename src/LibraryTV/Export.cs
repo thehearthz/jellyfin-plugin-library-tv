@@ -30,18 +30,34 @@ public static class Export
         static string Clean(string value) => value.Replace("\"", "'").Replace("\r", " ").Replace("\n", " ").Trim();
     }
 
-    // Programs still on or coming up, listed the way Jellyfin's own guide lists them.
-    public static string Xmltv(IEnumerable<ChannelDefinition> channels, Func<string, IReadOnlyList<Airing>> guide, DateTimeOffset now)
+    // Programs still on or coming up, listed the way Jellyfin's own guide lists them, with what the library
+    // knows about each: episode, genres, rating, year and a picture from Jellyfin.
+    public static string Xmltv(IEnumerable<ChannelDefinition> channels, Func<string, IReadOnlyList<Airing>> guide, DateTimeOffset now, Func<Guid, ProgramDetails?>? details = null, string? baseUrl = null)
     {
         var tv = new XElement("tv", new XAttribute("generator-info-name", "Library TV"));
         var all = channels.ToArray();
+        var known = new Dictionary<Guid, ProgramDetails?>();
         foreach (var channel in all)
             tv.Add(new XElement("channel", new XAttribute("id", channel.Id), new XElement("display-name", channel.Name), new XElement("display-name", channel.Number)));
         foreach (var channel in all)
-            foreach (var program in LiveTvService.Listings(guide(channel.Id), channel.GuideHidesBreaks).Where(x => x.End > now))
-                tv.Add(new XElement("programme", new XAttribute("start", Time(program.Start)), new XAttribute("stop", Time(program.End)), new XAttribute("channel", channel.Id),
-                    new XElement("title", program.Heading ?? program.Title),
-                    new XElement("desc", program.Commercial ? "Commercial break" : program.Heading is null ? "From your Jellyfin library" : program.Title)));
+            foreach (var entry in LiveTvService.Listings(guide(channel.Id), channel.GuideHidesBreaks).Where(x => x.End > now))
+            {
+                var about = entry.Commercial || details is null ? null : known.TryGetValue(entry.ItemId, out var found) ? found : known[entry.ItemId] = details(entry.ItemId);
+                var info = LiveTvService.Program(entry, about);
+                var program = new XElement("programme", new XAttribute("start", Time(entry.Start)), new XAttribute("stop", Time(entry.End)), new XAttribute("channel", channel.Id),
+                    new XElement("title", info.Name));
+                if (info.EpisodeTitle is { Length: > 0 } episode) program.Add(new XElement("sub-title", episode));
+                program.Add(new XElement("desc", info.Overview));
+                if (info.ProductionYear is { } year) program.Add(new XElement("date", year.ToString(CultureInfo.InvariantCulture)));
+                foreach (var genre in info.Genres ?? []) program.Add(new XElement("category", genre));
+                if (info.IsMovie) program.Add(new XElement("category", "Movie"));
+                if (about?.Image is not null && baseUrl is not null) program.Add(new XElement("icon", new XAttribute("src", $"{baseUrl.TrimEnd('/')}/Items/{entry.ItemId:N}/Images/Primary")));
+                if (info.SeasonNumber is > 0 || info.EpisodeNumber is > 0)
+                    program.Add(new XElement("episode-num", new XAttribute("system", "xmltv_ns"), $"{(info.SeasonNumber is > 0 ? (info.SeasonNumber - 1)!.Value.ToString(CultureInfo.InvariantCulture) : "")}.{(info.EpisodeNumber is > 0 ? (info.EpisodeNumber - 1)!.Value.ToString(CultureInfo.InvariantCulture) : "")}."),
+                        new XElement("episode-num", new XAttribute("system", "onscreen"), $"S{info.SeasonNumber ?? 0:00}E{info.EpisodeNumber ?? 0:00}"));
+                if (info.OfficialRating is { Length: > 0 } rating) program.Add(new XElement("rating", new XElement("value", rating)));
+                tv.Add(program);
+            }
         return new XDocument(new XDeclaration("1.0", "utf-8", null), tv).ToString(SaveOptions.DisableFormatting);
         static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + " +0000";
     }

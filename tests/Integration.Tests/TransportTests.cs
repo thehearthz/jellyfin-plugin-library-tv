@@ -323,6 +323,43 @@ public static class TransportTests
                 "With real FFmpeg, every break plays bumper, commercial, bumper, each show gets its own bumpers and its network's commercials, and every clip streams video");
         }
         finally { Plugin.Instance.UpdateConfiguration(keptBreakConfig); Planner.MinimumVariety = 8; }
+        {
+            var problems = new List<string>();
+            using var levelled = new MemoryStream();
+            var how = await streamer.Stream(Item(clips[1]) with { Commercial = true }, Auto, null, bytes => { levelled.Write(bytes); return Task.CompletedTask; }, default, (text, problem) => { if (problem) problems.Add(text); });
+            var levelledPath = Path.Combine(root, "levelled.ts"); await File.WriteAllBytesAsync(levelledPath, levelled.ToArray());
+            var levelledCodecs = JsonDocument.Parse(await Run(ffprobe, ["-v","error","-show_entries","stream=codec_name,sample_rate","-of","json",levelledPath])).RootElement.GetProperty("streams").EnumerateArray().ToArray();
+            check(how.Contains("volume evened out") && problems.Count == 0 && levelledCodecs.Any(x => x.GetProperty("codec_name").GetString() == "h264") && levelledCodecs.Any(x => x.GetProperty("codec_name").GetString() == "aac" && x.GetProperty("sample_rate").GetString() == "48000"),
+                "With real FFmpeg, a commercial plays with its volume evened out, its picture copied and its sound still 48 kHz AAC");
+            problems.Clear();
+            using var titled = new MemoryStream();
+            var withNext = await streamer.Stream(Item(clips[0], 4) with { Next = new UpNextCard("Movie: \"Heat\", 1995 — 100% [HD]; it's on") }, new ChannelDefinition { UpNext = true, AlwaysEncode = true, UpNextStyle = "text" }, null,
+                bytes => { titled.Write(bytes); return Task.CompletedTask; }, default, (text, problem) => { if (problem) problems.Add(text); });
+            var titledPath = Path.Combine(root, "upnext.ts"); await File.WriteAllBytesAsync(titledPath, titled.ToArray());
+            if (Environment.GetEnvironmentVariable("LIBRARY_TV_KEEP") is { Length: > 0 } keep) File.Copy(titledPath, Path.Combine(keep, "upnext.ts"), true);
+            var titledFrames = await Run(ffprobe, ["-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=nb_read_frames","-of","csv=p=0",titledPath]);
+            check(withNext.Contains("Up next") && problems.Count == 0 && titledFrames.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Any(x => int.TryParse(x.Trim().TrimEnd(','), out var count) && count > 20),
+                "With real FFmpeg, Up next is drawn on an encoded program, with quotes, commas, brackets and percent signs in the title");
+        }
+        {
+            // The Up next card, with a real poster and transparent title art.
+            var poster = Path.Combine(root, "poster [1].jpg");
+            var art = Path.Combine(root, "title art.png");
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","gradients=s=400x600:c0=0x1b3a6b:c1=0xd9822b:n=2","-frames:v","1",poster]);
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=0xc0392b:s=560x60","-vf","drawbox=x=0:y=0:w=560:h=60:color=0xf0e6d2:t=6,format=rgba,pad=600:160:20:50:color=black@0","-frames:v","1",art]);
+            foreach (var (style, next, name) in new[] { ("card", new UpNextCard("Heat", "1995", poster, art), "card"), ("poster", new UpNextCard("The Adventures of Pete & Pete", "S2 · E5 · Hard Day's Pete", poster), "poster"), ("logo", new UpNextCard("Heat", "1995", null, art), "logo") })
+            {
+                var problems = new List<string>();
+                using var shown = new MemoryStream();
+                var how = await streamer.Stream(Item(clips[0], 4) with { Next = next }, new ChannelDefinition { UpNext = true, AlwaysEncode = true, UpNextStyle = style }, null,
+                    bytes => { shown.Write(bytes); return Task.CompletedTask; }, default, (text, problem) => { if (problem) problems.Add(text); });
+                var shownPath = Path.Combine(root, $"upnext-{name}.ts"); await File.WriteAllBytesAsync(shownPath, shown.ToArray());
+                if (Environment.GetEnvironmentVariable("LIBRARY_TV_KEEP") is { Length: > 0 } keepCard) File.Copy(shownPath, Path.Combine(keepCard, $"upnext-{name}.ts"), true);
+                var shownFrames = await Run(ffprobe, ["-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=nb_read_frames","-of","csv=p=0",shownPath]);
+                check(how.Contains("Up next\" card") && problems.Count == 0 && shownFrames.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Any(x => int.TryParse(x.Trim().TrimEnd(','), out var count) && count > 20),
+                    $"With real FFmpeg, the {style} style of Up next plays without falling back");
+            }
+        }
         // Without a lead, so the clip still plays in real time when it is canceled.
         ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;
