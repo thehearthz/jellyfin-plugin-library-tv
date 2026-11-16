@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.14.0.0",
+        "changelog": "Guide matches playback: Jellyfin re-reads the guide when programs change. Programs that fail with extras retry without them instead of being skipped. Faster tune-in. M3U and XMLTV export for IPTV apps. Richer guide with posters, episodes, genres and ratings. Even out volume, measured ahead of time and level from the first second, for commercials or whole channels, in every app. Up next and Now playing cards, a lower-third channel bug, frosted cards with drop shadows, and animated station idents. Seasonal time blocks, skip what a user has watched, and Watch from the start. Tabbed settings with a Playback tab, a shorter README and a troubleshooting page.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.14.0.0/library-tv-0.14.0.0.zip",
+        "checksum": "3bb2e9d8d72aade1fa537904d34bf66c",
+        "timestamp": "2026-11-16T07:38:24Z"
+      },
+      {
         "version": "0.13.0.0",
         "changelog": "Choose whether encoding runs on the CPU or a graphics card (NVIDIA NVENC, VAAPI, Intel Quick Sync), with a hardware test button and automatic CPU fallback; per-channel Encode with option.",
         "targetAbi": "12.2.0.0",
