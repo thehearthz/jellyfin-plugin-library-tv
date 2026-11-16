@@ -8,6 +8,14 @@
     "category": "Live TV",
     "versions": [
       {
+        "version": "0.14.1.0",
+        "changelog": "Automatic and smart channels now have playback settings: Automatic & smart → Playback for automatic & smart channels sets volume levelling, Up next, the Now playing card, the channel bug, card look, station idents and encoding for all of them. Hand-built channels keep their own on each channel's Playback tab.",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/thehearthz/jellyfin-plugin-library-tv/releases/download/v0.14.1.0/library-tv-0.14.1.0.zip",
+        "checksum": "53eb7a19269dd79cc4541487a8d7bef7",
+        "timestamp": "2026-11-16T08:40:19Z"
+      },
+      {
         "version": "0.14.0.0",
         "changelog": "Guide matches playback: Jellyfin re-reads the guide when programs change. Programs that fail with extras retry without them instead of being skipped. Faster tune-in. M3U and XMLTV export for IPTV apps. Richer guide with posters, episodes, genres and ratings. Even out volume, measured ahead of time and level from the first second, for commercials or whole channels, in every app. Up next and Now playing cards, a lower-third channel bug, frosted cards with drop shadows, and animated station idents. Seasonal time blocks, skip what a user has watched, and Watch from the start. Tabbed settings with a Playback tab, a shorter README and a troubleshooting page.",
         "targetAbi": "12.2.0.0",
