@@ -180,6 +180,17 @@ public sealed class ChannelDefinition
     // How "Up next" looks: "card" (poster and title art), "poster" (poster and title), "logo" (title art alone)
     // or "text" (one line). Programs without the art fall back to their title in text.
     public string UpNextStyle { get; set; } = "card";
+    // "Now playing" card for the first seconds of each program: its backdrop, title art (or title) and episode.
+    public bool IntroCard { get; set; }
+    // A lower-third bug with the channel's logo, name and what's on, sliding in every BugMinutes on the clock.
+    public bool Bug { get; set; }
+    public int BugMinutes { get; set; } = 30;
+    // How the cards and the bug look: "frosted" (blurred picture behind, translucent) or "solid" (dark). Both have a shadow.
+    public string CardLook { get; set; } = "frosted";
+    // A station ident of this many seconds before each program, built from the channel logo and name (0 = off, 3–10).
+    public int IdentSeconds { get; set; }
+    // The ident plays a short chime.
+    public bool IdentChime { get; set; } = true;
 
     internal ChannelDefinition WithClips(Pool commercials, Pool bumpers)
     {
@@ -277,9 +288,10 @@ public sealed record Media(Guid Id, string Title, string Path, double Seconds, s
 // Speed above 1 plays the picture that many times faster (credits), keeping the sound at normal speed.
 // Next is the program that follows, set only while playing (for "Up next"), and never saved.
 public sealed record Airing(string ChannelId, Guid ItemId, string Title, string Path, DateTimeOffset Start, DateTimeOffset End, bool Commercial, PlanningUndo? Undo = null, double Offset = 0, string? Match = null,
-    double Speed = 1, string? Heading = null, [property: System.Text.Json.Serialization.JsonIgnore] UpNextCard? Next = null);
+    double Speed = 1, string? Heading = null, [property: System.Text.Json.Serialization.JsonIgnore] UpNextCard? Next = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] UpNextCard? Now = null);
 // What "Up next" shows: the title, a second line (episode or year), the poster and the title art (logo), when known.
-public sealed record UpNextCard(string Title, string? Subtitle = null, string? Poster = null, string? Logo = null);
+public sealed record UpNextCard(string Title, string? Subtitle = null, string? Poster = null, string? Logo = null, string? Backdrop = null);
 // Index is where the rotation entry was taken from (SeenIndex when an allowed item was repeated early);
 // Token is that entry when a series cursor aired a different episode. Part marks the later parts of a
 // program split by a commercial break: the first part holds the selection, so they have nothing to rewind.

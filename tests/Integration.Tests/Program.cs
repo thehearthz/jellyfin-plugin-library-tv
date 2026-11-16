@@ -580,19 +580,65 @@ try
         var cardPlan = StreamPlan.For(plainFormat, cardChannel, next: cardNext);
         var cardArgs = ProgramStreamer.Command("ffmpeg", longPart, cardPlan, now).ArgumentList;
         var cardGraph = cardArgs[cardArgs.IndexOf("-filter_complex") + 1];
-        Check(cardPlan.UpNextStyle == "card" && cardArgs.Contains("/posters/heat.jpg") && cardArgs.Contains("/logos/heat.png") && cardGraph.Contains("[card]overlay=") && cardGraph.Contains("setpts=PTS+560/TB")
-            && cardGraph.Contains("fade=t=in") && cardGraph.Contains("UP NEXT") && cardArgs[cardArgs.IndexOf("/posters/heat.jpg") - 3] == "-t",
-            "The Up next card draws the poster and title art, slides in forty seconds before the end, and reads its pictures only for its few seconds");
+        Check(cardPlan.UpNextStyle == "card" && cardArgs.Contains("/posters/heat.jpg") && cardArgs.Contains("/logos/heat.png") && cardGraph.Contains("[nextd]") && cardGraph.Contains("between(t\\,560\\,572)")
+            && cardGraph.Contains("UP NEXT") && cardGraph.Contains("boxblur") && cardArgs[cardArgs.IndexOf("/posters/heat.jpg") - 1] == "-i" && cardArgs[cardArgs.IndexOf("/posters/heat.jpg") - 2] != "1",
+            "The Up next card draws the poster and title art over a frosted, shadowed panel forty seconds before the end, reading each picture once");
         var posterOnly = ProgramStreamer.Command("ffmpeg", longPart, StreamPlan.For(plainFormat, cardChannel, next: cardNext with { Logo = null }), now).ArgumentList;
         Check(!posterOnly.Contains("/logos/heat.png") && posterOnly[posterOnly.IndexOf("-filter_complex") + 1].Contains("Heat"), "Without title art the card writes the title");
         var logoStyle = StreamPlan.For(plainFormat, new ChannelDefinition { UpNext = true, AlwaysEncode = true, UpNextStyle = "logo" }, next: cardNext);
-        Check(ProgramStreamer.CardWindow(longPart, logoStyle, now) is { Poster: null, Art: "/logos/heat.png" } && ProgramStreamer.CardWindow(longPart, cardPlan, now.AddMinutes(10)) is null
-            && ProgramStreamer.CardWindow(longPart, cardPlan, now.AddSeconds(565)) is { FadeIn: false, Start: 0 } joined && Math.Abs(joined.Duration - 7) < 0.01,
+        Check(Graphics.UpNext(longPart, logoStyle, now, 1280, 720) is { Images: ["/logos/heat.png"] } && Graphics.UpNext(longPart, cardPlan, now.AddMinutes(10), 1280, 720) is null
+            && Graphics.UpNext(longPart, cardPlan, now.AddSeconds(565), 1280, 720) is { Windows: [(0, var joinedEnd)] } && Math.Abs(joinedEnd - 7) < 0.01,
             "The logo style leaves out the poster, nothing shows once the part is over, and a viewer joining mid-card sees the rest of it");
+        Check(!ProgramStreamer.Command("ffmpeg", longPart, StreamPlan.For(plainFormat, cardChannel, next: cardNext) with { Frosted = false }, now).ArgumentList.Any(x => x.Contains("boxblur")),
+            "The solid look draws no blur");
         try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { UpNextStyle = "banner" }] }); throw new Exception("Bad Up next style accepted"); }
         catch (ArgumentException) { Check(true, "Up next accepts only card, poster, logo or text"); }
         Check(new ProgramDetails("Rugrats", "Pilot", 1, 2, false, true, [], null, 1991, null, null, null, null, null).Card("x") is { Title: "Rugrats", Subtitle: "S1 · E2 · Pilot", Poster: null }
             && new ProgramDetails("Heat", null, null, null, true, false, [], null, 1995, null, null, null, null, null).Card("x").Subtitle == "1995", "The card's second line is the episode for shows and the year for movies");
+        // The Now playing card, the bug, station idents and measured levelling.
+        var introChannel = new ChannelDefinition { Name = "Retro TV", Number = "7", IntroCard = true, Bug = true, BugMinutes = 15, NormalizeVolume = "off", AlwaysEncode = true };
+        var hour = new DateTimeOffset(2026, 11, 16, 20, 0, 0, TimeSpan.Zero);
+        var feature = new Airing("c", Guid.NewGuid(), "Heat", "/heat.mkv", hour, hour.AddMinutes(50), false);
+        var nowCard = new UpNextCard("Heat", "1995", "/p.jpg", null, "/backdrop.jpg");
+        var introPlan = StreamPlan.For(plainFormat, introChannel, now: nowCard, intro: true, zone: "UTC");
+        Check(Graphics.Intro(feature, introPlan, hour, 1280, 720) is { Windows: [(1, 9)], Images: ["/backdrop.jpg"] } && Graphics.Intro(feature, StreamPlan.For(plainFormat, introChannel, now: nowCard, intro: false), hour, 1280, 720) is null
+            && Graphics.Intro(feature, introPlan, hour.AddMinutes(1), 1280, 720) is null, "The Now playing card shows with the backdrop at the start of a program's first part only");
+        var bugPanel = Graphics.Bug(feature, introPlan, hour, 1280, 720, [(1, 9)]);
+        Check(bugPanel is { Windows.Length: 3 } && bugPanel.Windows.Select(w => w.A).SequenceEqual([900.0, 1800, 2700]) && introPlan.Bug is { Channel: "Retro TV", Number: "7", Title: "Heat", Minutes: 15 },
+            "The bug shows every 15 minutes on the clock, skipping the moment the Now playing card is up");
+        var tokyo = Graphics.Bug(feature, introPlan with { Bug = introPlan.Bug! with { Minutes = 60, Zone = "Asia/Kolkata" } }, hour, 1280, 720, []);
+        Check(tokyo is { Windows: [(1800, 1808)] }, "The bug follows the local clock, so a half-hour time zone shows it at half past UTC");
+        Check(StreamPlan.For(plainFormat, new ChannelDefinition { Bug = true }, now: nowCard) is { Bug: null, CopyVideo: true } && StreamPlan.For(plainFormat, introChannel, commercial: true, now: nowCard) is { Bug: null, Intro: null },
+            "The bug and cards are never drawn on copied programs or on commercials");
+        var everything = ProgramStreamer.Command("ffmpeg", feature, introPlan with { UpNext = cardNext }, hour).ArgumentList;
+        var everythingGraph = everything[everything.IndexOf("-filter_complex") + 1];
+        Check(everythingGraph.Contains("[introd]") && everythingGraph.Contains("[bugd]") && everythingGraph.Contains("[nextd]") && everythingGraph.Contains("NOW PLAYING") && everythingGraph.Contains("Now · Heat")
+            && ProgramStreamer.Plain(introPlan) is { Intro: null, Bug: null }, "Cards and the bug can share a program, and a program falls back to playing without them");
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { BugMinutes = 2 }] }); throw new Exception("Bad bug interval accepted"); }
+        catch (ArgumentException) { Check(true, "The bug interval is 5–240 minutes"); }
+        try { Scheduler.Validate(new Configuration { Channels = [new ChannelDefinition { IdentSeconds = 30 }] }); throw new Exception("Bad ident length accepted"); }
+        catch (ArgumentException) { Check(true, "Station idents last 3–10 seconds"); }
+        var identChannel = new ChannelDefinition { Id = "id", Name = "Retro TV", Number = "7", IdentSeconds = 5, Source = new Pool { LibraryIds = ["x"] } };
+        var identState = new ChannelState();
+        var shows = Enumerable.Range(1, 3).Select(n => new Media(Guid.NewGuid(), "Show " + n, "/s" + n + ".mkv", 1320, "", 0, 0)).ToList();
+        Planner.Extend(identChannel, identState, new Dictionary<string, List<Media>> { ["default"] = shows, ["commercials"] = [], ["bumpers"] = [] }, hour, hour.AddHours(2), TimeZoneInfo.Utc);
+        var identGuide = identState.Guide;
+        Check(identGuide.Count > 4 && identGuide.Where(x => !x.Commercial).All(p => identGuide.Any(i => Planner.IsIdent(i.Path) && i.End == p.Start && (i.End - i.Start).TotalSeconds == 5 && i.Commercial))
+            && LiveTvService.Program(identGuide[0], null).Overview == "Station ident", "A five-second station ident leads into every program");
+        var identPlan = StreamPlan.ForIdent(new ChannelDefinition { Name = "Retro TV", Number = "7", PictureShape = "4:3", IdentChime = true }, null);
+        var identArgs = ProgramStreamer.Command("ffmpeg", identGuide[0], identPlan, identGuide[0].Start).ArgumentList;
+        Check(identPlan is { FrameWidth: 960, FrameHeight: 720, Ident.Logo: null } && identArgs.Any(x => x.StartsWith("color=c=0x0b0d12:s=960x720")) && identArgs.Any(x => x.StartsWith("aevalsrc=")) && identArgs[identArgs.IndexOf("-filter_complex") + 1].Contains("CHANNEL") is false
+            && identArgs[identArgs.IndexOf("-filter_complex") + 1].Contains("Retro TV") && identPlan.Describe() == "Station ident with its chime" && ProgramStreamer.Plain(identPlan) is null,
+            "An ident is drawn in the channel's shape with its name and number and a chime, without needing any file");
+        var lateIdent = ProgramStreamer.Command("ffmpeg", identGuide[0], identPlan, identGuide[0].Start.AddSeconds(2)).ArgumentList;
+        Check(lateIdent[lateIdent.IndexOf("-filter_complex") + 1].Contains("trim=start=2") && lateIdent[lateIdent.IndexOf("-ss") + 1] == "2.000", "Tuning in mid-ident plays the rest of it, picture and chime together");
+        Check(LoudnessStore.GainFor(-30) == 6 && LoudnessStore.GainFor(-12) == -12 && LoudnessStore.GainFor(-50) == 12 && LoudnessStore.GainFor(-1) == -18,
+            "Measured levelling brings files to -24 LUFS, boosting at most 12 dB and cutting at most 18 dB");
+        var measuredArgs = ProgramStreamer.Command("ffmpeg", ad, commercialPlan with { Gain = 6 }, now).ArgumentList;
+        Check(measuredArgs[measuredArgs.IndexOf("-af") + 1] == "volume=6dB,alimiter=limit=0.891:attack=5:release=50:level=false" && (commercialPlan with { Gain = 6 }).Describe().Contains("+6 dB, measured"),
+            "A measured clip gets a fixed gain with a limiter, so it is level from its first second");
+        Check(LoudnessScanner.Parse("[Parsed_ebur128_0 @ 0x1] Summary:\n\n  Integrated loudness:\n    I:         -31.4 LUFS\n    Threshold: -41.6 LUFS\n\n  True peak:\n    Peak:       -3.2 dBFS\n") == (-31.4, -3.2)
+            && LoudnessScanner.Parse("I: -20 LUFS") is null, "FFmpeg's loudness summary is read for the level and true peak");
         var item = Guid.NewGuid();
         var nextItem = Guid.NewGuid();
         var nextParts = new[]

@@ -27,8 +27,8 @@ Updating: install the new version and restart once. Channels, numbers and episod
 - **Credits.** Finds where credits start and can speed through them.
 - **Light on the server.** H.264/AAC files play directly; only other formats are encoded, on the CPU or a graphics card (NVENC, VAAPI, Quick Sync), and only while someone is watching.
 - **Looks right.** Consistent picture shape, HDR tone-mapped to SDR, optional burned-in captions, audio language choice, channel logo and watermark.
-- **Sounds right.** Commercials levelled to broadcast loudness, so breaks aren't jarring.
-- **Up next.** A card with the next show's poster and title art near the end of each program.
+- **Sounds right.** Clips, or the whole channel, levelled to broadcast loudness on the server, measured ahead so it's even from the first second, in every app.
+- **On-screen graphics.** Up next and Now playing cards with posters and title art, a lower-third channel bug, and animated station idents, with frosted glass and drop shadows.
 - **Seasonal programming.** Blocks that run only between dates, such as holiday episodes every December.
 - **Fresh picks.** Channels can skip what a chosen person has already watched.
 - **Watch from the start.** Play what's on now from its beginning, while the channel carries on.

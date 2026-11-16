@@ -629,6 +629,14 @@
             again.
           </p>
           <div data-ui="credits-scan" aria-live="polite"></div>
+          <h3>Volume measuring</h3>
+          <p class="ltv-muted">
+            Clips on channels that even out volume, and programs on channels
+            that even out everything, are measured once in the background so
+            each one plays at the same level from its first second. Until a
+            file is measured it is levelled as it plays.
+          </p>
+          <div data-ui="loudness-scan" aria-live="polite"></div>
         </div>
       </details>
       <details class="ltv-panel" data-view="health" open>
@@ -1441,12 +1449,25 @@
         for (const line of lines)
           target.append(node("p", { class: "ltv-muted" }, line));
       }
+      function renderLoudnessScan(scan) {
+        const target = ui("loudness-scan");
+        if (!target) return;
+        target.replaceChildren();
+        if (!scan) return;
+        let line;
+        if (!scan.Enabled) line = "No channel evens out volume.";
+        else if (scan.Running)
+          line = "Measuring: " + scan.Remaining + " of " + scan.Files + " files left" + (scan.Current ? " · now " + scan.Current : "") + ".";
+        else line = "Measured " + scan.Measured + " of " + scan.Files + " files" + (scan.LastPass ? ", last checked " + new Date(scan.LastPass).toLocaleString() : "") + ".";
+        target.append(node("p", { class: "ltv-muted" }, line));
+      }
       async function refreshHealth() {
         const target = ui("health");
         target.textContent = "Checking saved channels…";
         try {
           const result = await api("status");
           renderCreditsScan(result.CreditsScan);
+          renderLoudnessScan(result.LoudnessScan);
           target.replaceChildren();
           if (result.LastError)
             target.append(
@@ -2831,7 +2852,7 @@
             node(
               "p",
               { class: "ltv-muted" },
-              "Levels loudness to broadcast TV's standard so clips aren't louder or quieter than the shows around them. Only the sound is re-encoded, which costs very little CPU.",
+              "Levels loudness to broadcast TV's standard (−24 LUFS) so clips aren't louder or quieter than the shows around them, in every app, with no app add-on. Each file is measured once in the background (see Health) and then played with a fixed correction and a limiter, so it is even from its first second, never clips and is never muted. Only the sound is re-encoded, which costs very little CPU.",
             ),
             node("h3", {}, "Up next"),
             check(
@@ -2854,6 +2875,64 @@
               "p",
               { class: "ltv-muted" },
               "A card slides in at the lower left 40 seconds before a program ends, or during sped-up credits, and stays for 12 seconds. It uses the poster and title art from your library; programs without title art show their title. It only appears on programs that are already being encoded (sped-up credits, a logo, captions, a picture-shape change or Always encode), so it never adds encoding on its own.",
+            ),
+            node("h3", {}, "On-screen graphics"),
+            check(
+              'Show a "Now playing" card as each program starts',
+              c.IntroCard,
+              (v) => (c.IntroCard = v),
+            ),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              check(
+                "Show a lower-third channel bug",
+                c.Bug,
+                (v) => (c.Bug = v),
+              ),
+              selectField(
+                "Bug appears every",
+                c.BugMinutes,
+                [[5, "5 minutes"], [10, "10 minutes"], [15, "15 minutes"], [20, "20 minutes"], [30, "30 minutes (default)"], [60, "Hour"], [120, "2 hours"]].concat(
+                  [5, 10, 15, 20, 30, 60, 120].includes(c.BugMinutes) ? [] : [[c.BugMinutes, c.BugMinutes + " minutes"]],
+                ),
+                (v) => (c.BugMinutes = Number(v)),
+              ),
+            ),
+            selectField(
+              "Card and bug look",
+              c.CardLook,
+              [
+                ["frosted", "Frosted glass with a shadow (default)"],
+                ["solid", "Solid dark with a shadow"],
+              ],
+              (v) => (c.CardLook = v),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "The Now playing card shows the program's backdrop and title art for 8 seconds. The bug slides in with the channel logo (or number), name and what's on for 8 seconds on the clock: every 30 minutes means :00 and :30. Like Up next, these appear only on programs that are already being encoded. Frosted glass blurs the picture behind the card, which costs a little CPU while it shows.",
+            ),
+            node("h3", {}, "Station ident"),
+            node(
+              "div",
+              { class: "ltv-cols" },
+              selectField(
+                "Before each program",
+                c.IdentSeconds,
+                [[0, "No ident"], [3, "3-second ident"], [5, "5-second ident"], [8, "8-second ident"], [10, "10-second ident"]],
+                (v) => (c.IdentSeconds = Number(v)),
+              ),
+              check(
+                "Play a chime with the ident",
+                c.IdentChime,
+                (v) => (c.IdentChime = v),
+              ),
+            ),
+            node(
+              "p",
+              { class: "ltv-muted" },
+              "An animated ident made from the channel's logo (Guide image, or the watermark) and name, or its number when there's no logo. It's added to the schedule, so changing it rebuilds the guide from the next program.",
             ),
             node(
               "label",
@@ -3438,6 +3517,12 @@
           NormalizeVolume: "commercials",
           UpNext: false,
           UpNextStyle: "card",
+          IntroCard: false,
+          Bug: false,
+          BugMinutes: 30,
+          CardLook: "frosted",
+          IdentSeconds: 0,
+          IdentChime: true,
           AudioTitle: "",
           Watermark: "",
           WatermarkPosition: "bottom-right",
@@ -4056,6 +4141,7 @@
           renderRestrictions();
           renderClipLibrary(status.ClipLibrary, status.ClipMinimum);
           renderCreditsScan(status.CreditsScan);
+          renderLoudnessScan(status.LoudnessScan);
           state.clips = freshClips();
           renderClipRules();
           await loadClips();

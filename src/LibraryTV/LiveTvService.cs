@@ -42,7 +42,7 @@ public sealed class LiveTvService : ILiveTvService
         var info = new ProgramInfo
         {
             Id = $"{x.ChannelId}-{x.Start.UtcTicks}", ChannelId = x.ChannelId, Name = x.Heading ?? x.Title,
-            StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = x.Commercial ? "Commercial break" : x.Heading is null ? "From your Jellyfin library" : x.Title,
+            StartDate = x.Start.UtcDateTime, EndDate = x.End.UtcDateTime, Overview = Planner.IsIdent(x.Path) ? "Station ident" : x.Commercial ? "Commercial break" : x.Heading is null ? "From your Jellyfin library" : x.Title,
             // A new Etag when what airs in a slot changes makes Jellyfin replace its copy of the entry.
             Etag = $"{x.ItemId:N}-{x.End.UtcTicks}", IsRepeat = true,
         };

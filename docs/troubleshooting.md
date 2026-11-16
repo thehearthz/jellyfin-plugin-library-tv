@@ -13,7 +13,9 @@ What Library TV's messages mean and what to do about them. Start with **Health**
 | Tuning in loads for a long time | A program had to be encoded and the server is slow, or the file failed to start | Check Health for "could not start" or "too slow" messages below |
 | The picture freezes every few seconds | Encoding can't keep up with real time | See "Encoding runs at …× real time" below |
 | Commercials are much louder than shows | Volume levelling is off | Playback tab → **Even out volume: Commercials and bumpers** |
-| "Up next" never appears | The program isn't being encoded, or the option is off | See [Up next](playback.md#up-next): the card only shows on programs already being encoded |
+| "Up next", the Now playing card or the bug never appears | The program isn't being encoded, or the option is off | They only show on programs already being encoded: sped-up credits, a channel logo, captions, a picture-shape change or **Always encode** |
+| Cards, the bug or idents never appear, and Health quotes a font error | FFmpeg found no font to write with | Install a font such as DejaVu Sans on the server (Debian/Ubuntu: `fonts-dejavu-core`). Programs play without the graphics meanwhile; an ident that can't be drawn is skipped |
+| Volume still jumps at the start of clips | Those clips haven't been measured yet | Check **Health → Volume measuring**; measured files are level from their first second |
 | An IPTV app can't play the M3U | Export is off, the link is old, or the address isn't reachable | Turn export on, copy fresh links from the address your devices use |
 | Credits aren't sped up | No credits markers yet | See "None of the upcoming programs have credits markers" below |
 

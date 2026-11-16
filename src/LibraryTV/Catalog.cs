@@ -28,9 +28,10 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
             // For "Up next": the show's poster rather than the episode's still, and its title art.
             var poster = episode is not null ? Image(series, ImageType.Primary) ?? image : image;
             var logo = Image(item, ImageType.Logo) ?? Image(series, ImageType.Logo);
+            var backdrop = Image(item, ImageType.Backdrop) ?? Image(series, ImageType.Backdrop) ?? (episode is not null ? Image(item, ImageType.Primary) : null);
             return new ProgramDetails(episode is not null ? episode.SeriesName ?? series?.Name : item.Name, episode is not null ? item.Name : null, episode?.ParentIndexNumber, episode?.IndexNumber,
                 item is MediaBrowser.Controller.Entities.Movies.Movie, episode is not null, genres, item.OfficialRating ?? series?.OfficialRating,
-                item.ProductionYear ?? series?.ProductionYear, item.Overview ?? series?.Overview, image, series?.Id.ToString("N"), item.PremiereDate, item.CommunityRating ?? series?.CommunityRating, poster, logo);
+                item.ProductionYear ?? series?.ProductionYear, item.Overview ?? series?.Overview, image, series?.Id.ToString("N"), item.PremiereDate, item.CommunityRating ?? series?.CommunityRating, poster, logo, backdrop);
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
     }
@@ -388,13 +389,13 @@ public sealed class Catalog(ILibraryManager library, StartupGate? startup = null
 }
 
 public sealed record ProgramDetails(string? Name, string? EpisodeTitle, int? Season, int? Episode, bool Movie, bool Series, string[] Genres, string? Rating, int? Year,
-    string? Overview, string? Image, string? SeriesId, DateTime? Aired, float? Score, string? Poster = null, string? Logo = null)
+    string? Overview, string? Image, string? SeriesId, DateTime? Aired, float? Score, string? Poster = null, string? Logo = null, string? Backdrop = null)
 {
     // The "Up next" card: the show or movie, then the episode (S1 · E2 · Name) or the movie's year.
     public UpNextCard Card(string fallback) => new(Name ?? fallback,
         Series ? string.Join(" · ", new[] { Season is > 0 ? $"S{Season}" : null, Episode is > 0 ? $"E{Episode}" : null, EpisodeTitle }.Where(x => !string.IsNullOrWhiteSpace(x))) is { Length: > 0 } line ? line : null
             : Year?.ToString(System.Globalization.CultureInfo.InvariantCulture),
-        Poster is { } p && File.Exists(p) ? p : null, Logo is { } l && File.Exists(l) ? l : null);
+        Poster is { } p && File.Exists(p) ? p : null, Logo is { } l && File.Exists(l) ? l : null, Backdrop is { } b && File.Exists(b) ? b : null);
 }
 public sealed record CatalogItem(string Id, string Name, string Type, int? Year, string Overview);
 public sealed record CatalogPage(CatalogItem[] Items, int TotalRecordCount);

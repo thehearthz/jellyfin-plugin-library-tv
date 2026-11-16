@@ -111,8 +111,12 @@ public sealed record Watermark(string Path, string Position, int Opacity, int Wi
 
 public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = true, bool Deinterlace = false, bool Normalize = false, int FrameWidth = 0, int FrameHeight = 0,
     CaptionTrack? Captions = null, int AudioIndex = 0, string? AudioLanguage = null, double Speed = 1, Watermark? Mark = null, string Quality = "balanced", int Height = 720, bool ToneMap = false, string Encoder = "cpu", string Device = "", bool Hlg = false,
-    bool Loudness = false, UpNextCard? UpNext = null, string UpNextStyle = "card")
+    bool Loudness = false, UpNextCard? UpNext = null, string UpNextStyle = "card", UpNextCard? Intro = null, BugInfo? Bug = null, bool Frosted = true,
+    IdentInfo? Ident = null, double? Gain = null)
 {
+    // A fixed correction, then a limiter a decibel below full scale so a boosted clip never clips.
+    public static string GainFilter(double gain) => $"volume={gain.ToString("0.##", CultureInfo.InvariantCulture)}dB,alimiter=limit=0.891:attack=5:release=50:level=false";
+
     // EBU R128 loudness, in one pass so it works live: TV programs average about -24 LUFS.
     public const string LoudnessFilter = "loudnorm=I=-24:TP=-2:LRA=15";
 
@@ -167,15 +171,38 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     // Evening out the volume re-encodes only the sound. "Up next" is drawn only on pictures already being encoded.
     public static readonly string[] UpNextStyles = ["card", "poster", "logo", "text"];
 
-    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1, bool watermark = true, bool commercial = false, UpNextCard? next = null)
+    // Now is the program itself (its intro card and the bug's title); intro is true on a program's first part.
+    public static StreamPlan For(SourceFormat? format, ChannelDefinition channel, double? shapeOverride = null, double speed = 1, bool watermark = true, bool commercial = false, UpNextCard? next = null,
+        UpNextCard? now = null, bool intro = false, string zone = "UTC", string? title = null)
     {
-        var plan = Base(format, channel, shapeOverride, speed, watermark);
+        var plan = Base(format, channel, shapeOverride, speed, watermark) with { Frosted = channel.CardLook != "solid" };
         if (plan.HasAudio && (channel.NormalizeVolume == "all" || channel.NormalizeVolume == "commercials" && commercial)) plan = plan with { Loudness = true, CopyAudio = false };
-        if (plan.CopyVideo || !channel.UpNext || commercial || next is null || string.IsNullOrWhiteSpace(next.Title)) return plan;
-        var style = UpNextStyles.Contains(channel.UpNextStyle) ? channel.UpNextStyle : "card";
-        plan = plan with { UpNext = next, UpNextStyle = style };
-        // The card is sized from the picture, so the picture needs a known size.
-        return style == "text" ? plan : Sized(plan, format);
+        if (plan.CopyVideo || commercial) return plan;
+        var sized = false;
+        if (channel.UpNext && next is not null && !string.IsNullOrWhiteSpace(next.Title))
+        {
+            var style = UpNextStyles.Contains(channel.UpNextStyle) ? channel.UpNextStyle : "card";
+            plan = plan with { UpNext = next, UpNextStyle = style };
+            sized = style != "text";
+        }
+        if (channel.IntroCard && intro && now is not null) (plan, sized) = (plan with { Intro = now }, true);
+        if (channel.Bug)
+        {
+            var logo = new[] { channel.Logo, channel.Watermark }.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x) && File.Exists(x));
+            (plan, sized) = (plan with { Bug = new BugInfo(channel.Name, channel.Number, logo, now?.Title ?? title ?? "", channel.BugMinutes, zone) }, true);
+        }
+        // Cards are sized from the picture, so the picture needs a known size.
+        return sized ? Sized(plan, format) : plan;
+    }
+
+    // A station ident in the channel's picture shape.
+    public static StreamPlan ForIdent(ChannelDefinition channel, double? shapeOverride)
+    {
+        var height = Heights.Contains(channel.EncodeHeight) ? channel.EncodeHeight : 720;
+        var shape = shapeOverride ?? (channel.PictureShape == "4:3" ? 4.0 / 3 : 16.0 / 9);
+        var logo = new[] { channel.Logo, channel.Watermark }.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x) && File.Exists(x) && ProgramStreamer.IsImage(x));
+        return Encode with { HasAudio = false, FrameWidth = Even(height * shape), FrameHeight = height, Height = height, Quality = Qualities.Contains(channel.EncodeQuality) ? channel.EncodeQuality : "balanced",
+            Ident = new IdentInfo(channel.Name, channel.Number, logo, channel.IdentChime) };
     }
 
     // Programs that keep their own shape keep their own size, up to the channel's height (16:9 wide).
@@ -240,10 +267,11 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     {
         var on = Encoder switch { "nvenc" => " on the GPU (NVENC)", "vaapi" => " on the GPU (VAAPI)", "qsv" => " on the GPU (Quick Sync)", _ => "" };
         var captions = Captions is null ? "" : $"; captions burned in ({(string.IsNullOrEmpty(Captions.Language) ? "unknown language" : Captions.Language)}{(Captions.Forced ? ", forced" : "")}{(Captions.HearingImpaired ? ", SDH" : "")})";
-        var extras = (Loudness ? "; volume evened out" : "") + (UpNext is null ? "" : $"; \"Up next\" {(UpNextStyle == "text" ? "line" : "card")} shown near the end");
+        if (Ident is not null) return "Station ident" + (Ident.Chime ? " with its chime" : "");
+        var extras = (Loudness ? Gain is { } g ? $"; volume evened out ({g:+0.#;-0.#;0} dB, measured)" : "; volume evened out" : "") + (Intro is null ? "" : "; Now playing card") + (Bug is null ? "" : "; channel bug") + (UpNext is null ? "" : $"; \"Up next\" {(UpNextStyle == "text" ? "line" : "card")} shown near the end");
         if (Normalize && Speed <= 1) return $"Encoding to {Height}p H.264/AAC (always encode)" + on + captions + (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "") + extras;
         if (CopyVideo && CopyAudio && HasAudio) return "Direct: video and audio copied without encoding" + (AudioLanguage is null ? "" : $" ({AudioLanguage} audio)");
-        if (CopyVideo && Loudness) return "Video copied; audio encoded to AAC stereo with its volume evened out" + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
+        if (CopyVideo && Loudness) return "Video copied; audio encoded to AAC stereo with its volume evened out" + (Gain is { } measured ? $" ({measured:+0.#;-0.#;0} dB, measured)" : " (as it plays; not measured yet)") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
         var video = CopyVideo ? "Video copied" : FrameWidth > 0 ? $"Video encoded to H.264 in a {FrameWidth}×{FrameHeight} picture" : "Video encoded to H.264";
         var audio = (!HasAudio ? "silent audio track added" : CopyAudio ? "audio copied" : "audio encoded to AAC stereo") + (AudioLanguage is null ? "" : $" ({AudioLanguage})");
         var mark = (Mark is null ? "" : "; channel logo drawn on the picture") + (ToneMap ? "; HDR tone-mapped to SDR" : "");
@@ -252,7 +280,7 @@ public sealed record StreamPlan(bool CopyVideo, bool CopyAudio, bool HasAudio = 
     }
 }
 
-public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? sources = null) : IProgramStreamer
+public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? sources = null, LoudnessStore? loudness = null) : IProgramStreamer
 {
     private static readonly System.Text.RegularExpressions.Regex ProgressLine = new("^[a-z0-9_]+=", System.Text.RegularExpressions.RegexOptions.Compiled);
     internal Action<int>? ProcessStarted { get; set; }
@@ -263,11 +291,11 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     internal TimeSpan StallTimeout { get; set; } = TimeSpan.FromSeconds(12);
 
     // A filter option value in single quotes: a quote inside it closes, escapes and reopens the quotes.
-    private static string Quote(string value) => "'" + value.Replace("'", @"'\''") + "'";
+    internal static string Quote(string value) => "'" + value.Replace("'", @"'\''") + "'";
 
     // Protects a filter's arguments from the filter-graph parser, which reads \ ' [ ] , ; itself before
     // the filter reads its own options; paths with spaces, quotes, colons or brackets then arrive intact.
-    private static string FilterValue(string arguments) => string.Concat(arguments.Select(c => c is '\\' or '\'' or '[' or ']' or ',' or ';' ? "\\" + c : c.ToString()));
+    internal static string FilterValue(string arguments) => string.Concat(arguments.Select(c => c is '\\' or '\'' or '[' or ']' or ',' or ';' ? "\\" + c : c.ToString()));
 
     // Square the pixels, fit the picture inside the frame, and add black bars to fill it.
     private static string Fit(int width, int height) =>
@@ -293,22 +321,36 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         var upload = plan.CopyVideo ? "" : plan.Encoder == "vaapi" ? ",format=nv12,hwupload" : "";
         if (!plan.CopyVideo && plan.Encoder == "vaapi") Args("-vaapi_device", string.IsNullOrWhiteSpace(plan.Device) ? StreamPlan.DefaultVaapiDevice : plan.Device);
         // A sped-up part covers its file that many times faster than the clock. A still image (the offline card) is looped.
-        if (IsImage(item.Path)) Args("-loop", "1", "-framerate", "30", "-i", item.Path);
+        var frameHeight = plan.FrameHeight > 0 ? plan.FrameHeight : plan.Height;
+        var frameWidth = plan.FrameWidth > 0 ? plan.FrameWidth : (int)Math.Round(frameHeight * 16.0 / 9 / 2) * 2;
+        var length = (item.End - item.Start).TotalSeconds;
+        var elapsed = Math.Max(0, (from - item.Start).TotalSeconds);
+        // A station ident is drawn from nothing: a dark background its whole length, cut to what is left.
+        if (plan.Ident is not null) Args("-f", "lavfi", "-i", $"color=c=0x0b0d12:s={frameWidth}x{frameHeight}:r=30:d={Num(length)}");
+        else if (IsImage(item.Path)) Args("-loop", "1", "-framerate", "30", "-i", item.Path);
         else Args("-ss", Num(seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed), "-i", item.Path);
         // Programs without audio get a silent track, so the stream layout never changes between programs.
-        if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
+        if (plan.Ident is { Chime: true }) Args("-ss", Num(elapsed), "-f", "lavfi", "-i", Graphics.Chime(length));
+        else if (!plan.HasAudio) Args("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
         // Still pictures drawn on the program follow, each a numbered input: the channel logo, then the
         // "Up next" card's poster and title art (read only for the card's few seconds).
         var inputs = plan.HasAudio ? 1 : 2;
         var markInput = -1;
         if (plan.Mark is { } logo) { Args("-loop", "1", "-i", logo.Path); markInput = inputs++; }
-        var card = CardWindow(item, plan, from);
-        var posterInput = -1;
-        var artInput = -1;
-        if (card is { } shown)
+        var identLogo = -1;
+        if (plan.Ident is { Logo: { } identPicture }) { Args("-i", identPicture); identLogo = inputs++; }
+        // Cards and the bug: each picture they show is one more input, read once.
+        var panels = new List<(Graphics.Panel Panel, int[] Inputs)>();
+        if (!plan.CopyVideo && plan.Ident is null)
         {
-            if (shown.Poster is { } poster) { Args("-loop", "1", "-t", Num(shown.Duration + 1), "-i", poster); posterInput = inputs++; }
-            if (shown.Art is { } art) { Args("-loop", "1", "-t", Num(shown.Duration + 1), "-i", art); artInput = inputs++; }
+            var cards = new[] { Graphics.UpNext(item, plan, from, frameWidth, frameHeight), Graphics.Intro(item, plan, from, frameWidth, frameHeight) }.OfType<Graphics.Panel>().ToList();
+            if (Graphics.Bug(item, plan, from, frameWidth, frameHeight, cards.SelectMany(x => x.Windows)) is { } bug) cards.Add(bug);
+            foreach (var panel in cards)
+            {
+                var numbers = new List<int>();
+                foreach (var image in panel.Images) { Args("-i", image); numbers.Add(inputs++); }
+                panels.Add((panel, numbers.ToArray()));
+            }
         }
         var position = seek ?? item.Offset + (from - item.Start).TotalSeconds * item.Speed;
         var deinterlace = (plan.Deinterlace ? "yadif," : "") + (plan.Speed > 1 ? $"setpts=PTS/{Num(plan.Speed)}," : "");
@@ -323,7 +365,8 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         else
         {
             string main;
-            if (plan.Captions is { Image: true } picture)
+            if (plan.Ident is { } ident) main = Graphics.Ident(ident, identLogo, frameWidth, frameHeight, length, elapsed)[..^"[v0]".Length];
+            else if (plan.Captions is { Image: true } picture)
                 // Picture subtitles come from the same file, so they are seeked with the video.
                 main = $"[0:v:0][0:s:{picture.EmbeddedIndex}]overlay=eof_action=pass:repeatlast=0,{deinterlace}{size}{tone}{finish}";
             else
@@ -345,13 +388,8 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
                 steps.Add($"{label}[mark]overlay={x}:{y}:format=auto,format=yuv420p[v1]");
                 label = "[v1]";
             }
-            if (card is { } c)
-            {
-                steps.Add(CardGraph(c, posterInput, artInput));
-                steps.Add($"{label}[card]overlay={FilterValue($"x={Quote(c.SlideX)}:y={c.Y}:eval=frame:eof_action=pass:format=auto")},format=yuv420p[v2]");
-                label = "[v2]";
-            }
-            if (steps.Count == 1 && plan.Captions is not { Image: true }) Args("-t", seconds, "-vf", main["[0:v:0]".Length..] + upload);
+            foreach (var (panel, numbers) in panels) label = Graphics.Compose(steps, label, panel, numbers, plan.Frosted);
+            if (steps.Count == 1 && plan.Captions is not { Image: true } && plan.Ident is null) Args("-t", seconds, "-vf", main["[0:v:0]".Length..] + upload);
             else
             {
                 steps.Add($"{label}null{upload}[video]");
@@ -367,7 +405,9 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         else Args(plan.VideoEncoder(forceKeyFrames: !plan.Normalize));
         // Sped-up credits keep their music at normal speed, fading out just before the next program.
         var sound = new List<string>();
-        if (plan.Loudness && plan.HasAudio) sound.Add(StreamPlan.LoudnessFilter);
+        // A measured level is corrected with a fixed gain and a limiter, even from the first second; without a
+        // measurement yet, FFmpeg levels it as it plays.
+        if (plan.Loudness && plan.HasAudio) sound.Add(plan.Gain is { } gain ? StreamPlan.GainFilter(gain) : StreamPlan.LoudnessFilter);
         if (plan.Speed > 1 && plan.HasAudio) sound.Add($"afade=t=out:st={Num(Math.Max(0, double.Parse(seconds, CultureInfo.InvariantCulture) - 1.5))}:d=1.5");
         if (sound.Count > 0) Args("-af", string.Join(",", sound));
         if (plan.CopyAudio && plan.HasAudio && !plan.Normalize && !plan.Loudness) Args("-c:a", "copy");
@@ -393,82 +433,12 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
         return ",drawtext=" + FilterValue($"{font}text={Quote("Up next: " + next)}:expansion=none:fontcolor=white:fontsize={size}:box=1:boxcolor=black@0.6:boxborderw={size / 2}:x=w*0.05:y=h-th-h*0.09:enable={Quote($"between(t,{N(a)},{N(b)})")}");
     }
 
-    // When and where the "Up next" card shows, laid out for the picture's size: the poster on the left, then
-    // "UP NEXT", the title art (or the title in text) and a second line. Times are from the start of this output.
-    internal sealed record CardLayout(double Start, double Duration, bool FadeIn, int Width, int Height, int Y, string SlideX, int Pad, int Accent,
-        string? Poster, int PosterWidth, int PosterHeight, string? Art, int TextX, int TextWidth, string Title, string? Subtitle, int LabelSize, int TitleSize, int SubtitleSize, int ArtY, int ArtHeight);
-
-    internal static CardLayout? CardWindow(Airing item, StreamPlan plan, DateTimeOffset from)
-    {
-        if (plan.UpNext is not { } next || plan.UpNextStyle == "text") return null;
-        var show = item.End - TimeSpan.FromSeconds(40) is var early && early > item.Start ? early : item.Start;
-        var a = (show - from).TotalSeconds;
-        var b = a + 12;
-        if (b <= 1) return null;
-        var start = Math.Max(0, a);
-        int E(double x) => (int)Math.Round(x / 2) * 2;
-        var h = plan.FrameHeight > 0 ? plan.FrameHeight : plan.Height;
-        var w = plan.FrameWidth > 0 ? plan.FrameWidth : E(h * 16.0 / 9);
-        var poster = plan.UpNextStyle is "card" or "poster" ? next.Poster : null;
-        var art = plan.UpNextStyle is "card" or "logo" ? next.Logo : null;
-        var pad = Math.Max(6, E(h * 0.028));
-        var accent = Math.Max(3, E(h * 0.008));
-        var height = poster is null ? E(h * 0.2) : E(h * 0.3);
-        var posterHeight = height - 2 * pad;
-        var posterWidth = poster is null ? 0 : E(posterHeight * 2 / 3.0);
-        var textX = accent + pad + (poster is null ? 0 : posterWidth + pad);
-        var textWidth = E(Math.Min(w * 0.34, w - textX - pad - w * 0.1));
-        var width = textX + textWidth + pad;
-        var labelSize = Math.Max(10, h / 34);
-        var titleSize = Math.Max(14, h / 19);
-        var subtitleSize = Math.Max(10, h / 30);
-        var artY = pad + labelSize + pad / 2;
-        var artHeight = Math.Max(titleSize, height - artY - pad - (next.Subtitle is null ? 0 : subtitleSize + pad / 2));
-        var margin = E(h * 0.06);
-        static string Fit(string text, int width, int size) { var most = Math.Max(4, (int)(width / (size * 0.66))); return text.Length > most ? text[..(most - 1)].TrimEnd() + "…" : text; }
-        static string N(double x) => x.ToString("0.###", CultureInfo.InvariantCulture);
-        // Slides in from the left over half a second, easing to a stop.
-        var slide = $"{margin}-{width + margin}*pow(max(0,1-(t-{N(start)})/0.5),3)";
-        return new CardLayout(start, b - start, a >= 0, width, height, h - margin - height, a >= 0 ? slide : margin.ToString(CultureInfo.InvariantCulture), pad, accent,
-            poster, posterWidth, posterHeight, art, textX, textWidth, Fit(next.Title, textWidth, titleSize), next.Subtitle is { } sub ? Fit(sub, textWidth, subtitleSize) : null,
-            labelSize, titleSize, subtitleSize, artY, artHeight);
-    }
-
-    // The card is drawn on its own, then faded and moved to its time, so the program is only touched while it shows.
-    internal static string CardGraph(CardLayout c, int posterInput, int artInput)
-    {
-        static string N(double x) => x.ToString("0.###", CultureInfo.InvariantCulture);
-        var font = Font is { } file ? "fontfile=" + Quote(file) + ":" : "";
-        string Text(string text, string color, int size, string x, string y) => "drawtext=" + FilterValue($"{font}text={Quote(text)}:expansion=none:fontcolor={color}:fontsize={size}:x={x}:y={y}");
-        var steps = new List<string> { $"color=c=0x0d0f14@0.88:s={c.Width}x{c.Height}:r=30:d={N(c.Duration)},format=rgba,drawbox=x=0:y=0:w={c.Accent}:h=ih:color=0xf5c542@1:t=fill[c0]" };
-        var label = "[c0]";
-        if (c.Poster is not null)
-        {
-            steps.Add($"[{posterInput}:v]scale={c.PosterWidth}:{c.PosterHeight}:force_original_aspect_ratio=increase,crop={c.PosterWidth}:{c.PosterHeight},format=rgba,{Rounded(Math.Max(3, c.Pad / 2))}[poster]");
-            steps.Add($"{label}[poster]overlay={c.Accent + c.Pad}:{c.Pad}:format=auto[c1]");
-            label = "[c1]";
-        }
-        if (c.Art is not null)
-        {
-            steps.Add($"[{artInput}:v]scale=w={c.TextWidth}:h={c.ArtHeight}:force_original_aspect_ratio=decrease,format=rgba[art]");
-            steps.Add($"{label}[art]overlay={c.TextX}:{c.ArtY}+({c.ArtHeight}-overlay_h)/2:format=auto[c2]");
-            label = "[c2]";
-        }
-        var lines = new List<string> { Text("UP NEXT", "0xf5c542", c.LabelSize, c.TextX.ToString(CultureInfo.InvariantCulture), c.Pad.ToString(CultureInfo.InvariantCulture)) };
-        if (c.Art is null) lines.Add(Text(c.Title, "white", c.TitleSize, c.TextX.ToString(CultureInfo.InvariantCulture), $"{c.ArtY}+({c.ArtHeight}-th)/2"));
-        if (c.Subtitle is { } sub) lines.Add(Text(sub, "white@0.78", c.SubtitleSize, c.TextX.ToString(CultureInfo.InvariantCulture), $"h-{c.Pad}-th"));
-        lines.Add(Rounded(Math.Max(6, c.Height / 9)));
-        var fade = (c.FadeIn ? "fade=t=in:st=0:d=0.4:alpha=1," : "") + $"fade=t=out:st={N(Math.Max(0, c.Duration - 0.6))}:d=0.6:alpha=1";
-        steps.Add($"{label}{string.Join(",", lines)},{fade},setpts=PTS+{N(c.Start)}/TB[card]");
-        return string.Join(";", steps);
-    }
-
     // Rounds a picture's corners by clearing its alpha outside a rounded rectangle, with a one-pixel soft edge.
-    internal static string Rounded(int radius)
+    internal static string Rounded(int radius, string? enable = null)
     {
         var r = radius.ToString(CultureInfo.InvariantCulture);
         var distance = $"hypot(max(0,max({r}-X,X-(W-1-{r}))),max(0,max({r}-Y,Y-(H-1-{r}))))";
-        return "geq=" + FilterValue($"r={Quote("r(X,Y)")}:g={Quote("g(X,Y)")}:b={Quote("b(X,Y)")}:a={Quote($"alpha(X,Y)*clip({r}+0.5-{distance},0,1)")}");
+        return "geq=" + FilterValue($"r={Quote("r(X,Y)")}:g={Quote("g(X,Y)")}:b={Quote("b(X,Y)")}:a={Quote($"alpha(X,Y)*clip({r}+0.5-{distance},0,1)")}" + (enable is null ? "" : $":enable={Quote(enable)}"));
     }
 
     // A font for "Up next", from the usual places; without one, FFmpeg asks fontconfig for its default font.
@@ -547,9 +517,13 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     public async Task<string> Stream(Airing program, ChannelDefinition channel, double? shape, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report = null)
     {
         ct.ThrowIfCancellationRequested();
+        if (Planner.IsIdent(program.Path)) return await Play(program, StreamPlan.ForIdent(channel, shape), StreamPlan.ForIdent(channel, shape).Describe(), output, ct, report);
         if (!File.Exists(program.Path)) throw new FileNotFoundException("Scheduled media is missing.");
+        var zone = (object?)Plugin.Instance is null ? "UTC" : Plugin.Instance.Configuration.TimeZoneId;
         // The offline card is a still picture with no sound; it is always encoded, in the channel's picture shape.
-        var plan = IsImage(program.Path) ? StreamPlan.Encode with { HasAudio = false } : StreamPlan.For(await Format(program, ct), channel, shape, program.Speed, string.IsNullOrWhiteSpace(channel.Watermark) || File.Exists(channel.Watermark), program.Commercial, program.Next);
+        var plan = IsImage(program.Path) ? StreamPlan.Encode with { HasAudio = false } : StreamPlan.For(await Format(program, ct), channel, shape, program.Speed, string.IsNullOrWhiteSpace(channel.Watermark) || File.Exists(channel.Watermark), program.Commercial, program.Next,
+            program.Now, program.Offset == 0 && program.Speed <= 1, zone, program.Heading ?? program.Title);
+        if (plan.Loudness && loudness?.Gain(program.ItemId, program.Path) is { } gain) plan = plan with { Gain = gain };
         // Without FFmpeg's zscale filter an HDR picture cannot be tone-mapped; it is encoded as it is.
         // Encoding runs on the CPU unless the server (or the channel) asks for the graphics card and it works.
         var gpuNote = "";
@@ -578,10 +552,10 @@ public sealed class ProgramStreamer(IMediaEncoder encoder, IMediaSourceManager? 
     }
 
     // The same plan without its extras, or null when it has none.
-    internal static StreamPlan? Plain(StreamPlan plan) => !(plan.ToneMap || plan.Encoder != "cpu" || plan.Captions is not null || plan.Mark is not null || plan.UpNext is not null || plan.Loudness) ? null
-        : plan with { ToneMap = false, Encoder = "cpu", Device = "", Captions = null, Mark = null, UpNext = null, Loudness = false };
+    internal static StreamPlan? Plain(StreamPlan plan) => plan.Ident is not null || !(plan.ToneMap || plan.Encoder != "cpu" || plan.Captions is not null || plan.Mark is not null || plan.UpNext is not null || plan.Loudness || plan.Intro is not null || plan.Bug is not null) ? null
+        : plan with { ToneMap = false, Encoder = "cpu", Device = "", Captions = null, Mark = null, UpNext = null, Loudness = false, Intro = null, Bug = null };
 
-    private static string Extras(StreamPlan plan) => string.Join(", ", new[] { plan.Encoder != "cpu" ? "the graphics-card encoder" : null, plan.ToneMap ? "HDR tone mapping" : null, plan.Captions is not null ? "captions" : null, plan.Mark is not null ? "the channel logo" : null, plan.UpNext is not null ? "\"Up next\"" : null, plan.Loudness ? "evening out the volume" : null }.OfType<string>());
+    private static string Extras(StreamPlan plan) => string.Join(", ", new[] { plan.Encoder != "cpu" ? "the graphics-card encoder" : null, plan.ToneMap ? "HDR tone mapping" : null, plan.Captions is not null ? "captions" : null, plan.Mark is not null ? "the channel logo" : null, plan.UpNext is not null ? "\"Up next\"" : null, plan.Intro is not null ? "the Now playing card" : null, plan.Bug is not null ? "the channel bug" : null, plan.Loudness ? "evening out the volume" : null }.OfType<string>());
 
     private async Task<string> Play(Airing program, StreamPlan plan, string how, Func<byte[], Task> output, CancellationToken ct, Action<string, bool>? report)
     {

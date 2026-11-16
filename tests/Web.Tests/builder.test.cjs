@@ -1415,3 +1415,33 @@ test("a channel can skip what a chosen user has watched", async () => {
     dom.window.close();
   }
 });
+
+test("idents, the bug, the Now playing card and the card look are saved", async () => {
+  const dom = await ready();
+  try {
+    const w = dom.window;
+    click(w, "Playback");
+    for (const text of ["Now playing", "lower-third channel bug"]) {
+      const box = checkbox(w, text);
+      box.checked = true;
+      box.dispatchEvent(new w.Event("change", { bubbles: true }));
+    }
+    change(w, selectLabel(w, "Bug appears every"), "15");
+    change(w, selectLabel(w, "Card and bug look"), "solid");
+    change(w, selectLabel(w, "Before each program"), "5");
+    const chime = checkbox(w, "chime");
+    chime.checked = false;
+    chime.dispatchEvent(new w.Event("change", { bubbles: true }));
+    click(w, "Save channels");
+    await settle();
+    const c = w.testApi.saved.Channels[0];
+    assert.equal(c.IntroCard, true);
+    assert.equal(c.Bug, true);
+    assert.equal(c.BugMinutes, 15);
+    assert.equal(c.CardLook, "solid");
+    assert.equal(c.IdentSeconds, 5);
+    assert.equal(c.IdentChime, false);
+  } finally {
+    dom.window.close();
+  }
+});

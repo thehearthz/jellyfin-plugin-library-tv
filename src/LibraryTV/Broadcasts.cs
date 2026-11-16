@@ -173,8 +173,12 @@ public sealed class Broadcasts(Scheduler scheduler, IProgramStreamer streamer, I
                 }
                 try
                 {
-                    var playing = channel.UpNext && !item.Commercial && UpNext(scheduler.GuideFor(id), item) is { } next
-                        ? item with { Next = catalog?.Details(next.ItemId)?.Card(next.Title) ?? new UpNextCard(next.Title) } : item;
+                    var playing = item;
+                    if (!item.Commercial && channel.UpNext && UpNext(scheduler.GuideFor(id), item) is { } next)
+                        playing = playing with { Next = catalog?.Details(next.ItemId)?.Card(next.Title) ?? new UpNextCard(next.Title) };
+                    // The program itself, for its Now playing card and the bug.
+                    if (!item.Commercial && (channel.IntroCard || channel.Bug))
+                        playing = playing with { Now = catalog?.Details(item.ItemId)?.Card(item.Heading ?? item.Title) ?? new UpNextCard(item.Heading ?? item.Title) };
                     var method = await streamer.Stream(playing, channel, shape, chunk =>
                     {
                         if (restartPlayers)

@@ -227,6 +227,11 @@ public static class Planner
         }
     }
 
+    // Station idents are drawn by FFmpeg, not read from a file.
+    public const string IdentPrefix = "ident:";
+    public static string IdentPath(string channelId) => IdentPrefix + channelId;
+    public static bool IsIdent(string path) => path.StartsWith(IdentPrefix, StringComparison.Ordinal);
+
     public static (TimeBlock Block, DateOnly Date)? ActiveBlock(ChannelDefinition channel, DateTimeOffset at, TimeZoneInfo zone)
     {
         var local = TimeZoneInfo.ConvertTime(at, zone);
@@ -368,6 +373,8 @@ public static class Planner
             // credits speed, its credits are a faster part of their own, and anything after them plays normally.
             var run = channel.CreditsSpeed > 1 ? credits?.Invoke(next) : null;
             var content = run?.Start ?? next.Seconds;
+            // A station ident leads into the program.
+            if (channel.IdentSeconds > 0) Add(new Media(Guid.Empty, "Station ident", IdentPath(channel.Id), channel.IdentSeconds, "", 0, 0), true, new PlanningUndo("ident", Guid.Empty, [], false, null, Part: true));
             var from = 0.0;
             foreach (var cut in Cuts(next, network, content).Append(content))
             {
@@ -492,7 +499,7 @@ public static class Planner
         bool Allowed(Media item) => rules is null || !Restricted(item, at, at.AddSeconds(item.Seconds), rules, zone);
         bool AllowedProgram(Media item)
         {
-            var length = item.Seconds + BreakCount(item) * breakSeconds;
+            var length = item.Seconds + BreakCount(item) * breakSeconds + channel.IdentSeconds;
             return (deadline is not { } limit || at.AddSeconds(length) <= limit) && (rules is null || !Restricted(item, at, at.AddSeconds(length), rules, zone));
         }
         // A series continues from the last episode this channel aired, whichever lineup or block aired it.

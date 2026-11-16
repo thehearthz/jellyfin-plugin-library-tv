@@ -31,11 +31,13 @@ Guide entries carry what your library knows about each program: the show and epi
 
 ## Volume
 
-**Even out volume** (Playback tab) levels loudness to the broadcast standard (EBU R128, about −24 LUFS) so commercials aren't louder or quieter than the shows around them.
+**Even out volume** (Playback tab) levels loudness to broadcast TV's standard (−24 LUFS, ATSC A/85) so commercials aren't louder or quieter than the shows around them.
 
-- **Commercials and bumpers** (the default) levels only clips. **Everything** levels programs too. **Off** leaves sound untouched.
-- Only the sound is re-encoded (to stereo AAC); the picture is still copied when it can be. Levelling costs very little CPU.
-- It's done live in one pass, so the first second or two of a clip can be slightly uneven.
+- **Commercials and bumpers** (the default) levels only clips. **Everything** levels the whole channel, programs too. **Off** leaves sound untouched.
+- **It works in every app.** Levelling happens on the server, in the stream itself, so the Jellyfin web app, TV apps, phones and IPTV players all hear the same levels with no add-on or custom app.
+- **Measured ahead of time.** A background task measures each file once, at low priority (progress is under **Health → Volume measuring**). Clips are measured whole; programs over 40 minutes from three ten-minute stretches. A measured file then plays with a fixed correction, so it is level from its first second and keeps its own dynamics.
+- **Never silent, never clipping.** Corrections are capped (at most +12 dB louder, −18 dB quieter), files quieter than −60 LUFS are left alone, and a limiter keeps peaks a decibel below full scale. Until a file is measured, FFmpeg levels it as it plays (the first second or two can be uneven). If levelling ever stops a program from starting, it plays without levelling and Health says so.
+- Only the sound is re-encoded (to stereo AAC); the picture is still copied when it can be.
 
 ## Up next
 
@@ -51,6 +53,21 @@ Turn on **Show "Up next" near the end of programs** (Playback tab) for a card in
 The poster and title art come from Jellyfin (the series' poster and logo for episodes). A program without title art has its title written instead; one without a poster gets a narrower card.
 
 The card is drawn on the picture, so it only appears on programs that are **already being encoded**: sped-up credits, a channel logo, captions, a picture-shape change or **Always encode**. A copied program is never encoded just for the card. If drawing it fails, the program plays without it and Health says so.
+
+## Now playing card, channel bug and card look
+
+Also on the Playback tab, and drawn only on programs that are already being encoded, like Up next:
+
+- **Now playing card**: one second into a program, a card with its backdrop, "NOW PLAYING", the title art (or title) and the episode or year slides in for 8 seconds. It shows on a program's first part only, not after each break.
+- **Channel bug**: a lower-third with the channel's logo (its Guide image, or the watermark; the number in gold when there's neither), its name and "Now · title". It slides in for 8 seconds at every interval you choose on the local clock: every 30 minutes means :00 and :30. It skips a moment when a card is already showing.
+- **Card and bug look**: **Frosted glass** (the default) blurs the picture behind the card under a translucent panel; **Solid** uses a dark panel. Both have rounded corners and a soft drop shadow. Frosting costs a little CPU, only while a card is on screen.
+
+## Station idents
+
+**Station ident** (Playback tab) plays a short animated ident before every program: the channel's logo (or its number in gold) rises and fades in, a gold line draws out beneath it, then the channel name and number appear, with an optional three-note chime. Choose 3, 5, 8 or 10 seconds.
+
+- Idents are drawn by FFmpeg; there are no files to make. They're encoded in the channel's picture shape.
+- They're part of the schedule (listed as "Station ident" in the guide preview), so turning them on or changing their length rebuilds the guide from the next program.
 
 ## Playback
 

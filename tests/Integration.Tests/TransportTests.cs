@@ -360,6 +360,63 @@ public static class TransportTests
                     $"With real FFmpeg, the {style} style of Up next plays without falling back");
             }
         }
+        {
+            // Idents, the Now playing card, the bug and both looks, rendered straight to files.
+            var keep = Environment.GetEnvironmentVariable("LIBRARY_TV_KEEP");
+            var poster = Path.Combine(root, "poster [1].jpg");
+            var art = Path.Combine(root, "title art.png");
+            var longClip = Path.Combine(root, "long clip.mp4");
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=1280x720:rate=30","-f","lavfi","-i","sine=frequency=330:sample_rate=48000","-t","12","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-c:a","aac","-ac","2",longClip]);
+            async Task<int> Render(Airing airing, StreamPlan plan, string name)
+            {
+                var command = ProgramStreamer.Command(ffmpeg, airing, plan, airing.Start);
+                var output = Path.Combine(root, name + ".ts");
+                command.ArgumentList[command.ArgumentList.Count - 1] = output;
+                command.ArgumentList.Insert(0, "-y");
+                using var process = Process.Start(command)!;
+                var errors = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+                var said = await errors;
+                if (process.ExitCode != 0) throw new Exception(name + " failed: " + string.Join("\n", said.Split('\n').Where(x => !x.Contains('=')).TakeLast(5)));
+                if (keep is { Length: > 0 }) File.Copy(output, Path.Combine(keep, name + ".ts"), true);
+                var counted = await Run(ffprobe, ["-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=nb_read_frames","-of","csv=p=0",output]);
+                return counted.Split(['\r','\n'], StringSplitOptions.RemoveEmptyEntries).Select(x => int.TryParse(x.Trim().TrimEnd(','), out var c) ? c : 0).Max();
+            }
+            var hour = new DateTimeOffset(2026, 11, 16, 20, 0, 0, TimeSpan.Zero);
+            var format = new SourceFormat("h264", "yuv420p", 8, false, "aac", 2, 48000, 1280, 720, 1, 16.0 / 9);
+            var channel = new ChannelDefinition { Name = "Retro TV", Number = "7", AlwaysEncode = true, IntroCard = true, NormalizeVolume = "off", Logo = art };
+            var feature = new Airing("t", Guid.NewGuid(), "Heat", longClip, hour, hour.AddSeconds(12), false);
+            var introFrames = await Render(feature, StreamPlan.For(format, channel, now: new UpNextCard("Heat", "1995", poster, art, poster), intro: true), "intro-frosted");
+            var introSolid = await Render(feature, StreamPlan.For(format, channel, now: new UpNextCard("The Adventures of Pete & Pete", "S2 · E5 · Hard Day's Pete", null, null, poster), intro: true) with { Frosted = false }, "intro-solid");
+            var bugFrames = await Render(feature, StreamPlan.For(format, new ChannelDefinition { Name = "Retro TV", Number = "7", AlwaysEncode = true, Bug = true, BugMinutes = 30, Logo = art, NormalizeVolume = "off" }, now: new UpNextCard("Heat")), "bug-frosted");
+            var bugNumber = await Render(feature, StreamPlan.For(format, new ChannelDefinition { Name = "Cartoon Classics", Number = "12", AlwaysEncode = true, Bug = true, NormalizeVolume = "off" }, now: new UpNextCard("Rugrats")), "bug-number");
+            var nextFrames = await Render(feature, StreamPlan.For(format, new ChannelDefinition { UpNext = true, AlwaysEncode = true, NormalizeVolume = "off" }, next: new UpNextCard("Heat", "1995", poster, art)), "next-frosted");
+            check(new[] { introFrames, introSolid, bugFrames, bugNumber, nextFrames }.All(x => x >= 300), "With real FFmpeg, the Now playing card, the bug (with a logo or the number) and Up next render frosted or solid for the whole program");
+            var ident = new Airing("t", Guid.Empty, "Station ident", Planner.IdentPath("t"), hour, hour.AddSeconds(5), true);
+            var identLogo = await Render(ident, StreamPlan.ForIdent(new ChannelDefinition { Name = "Retro TV", Number = "7", Logo = art }, null), "ident-logo");
+            var identNumber = await Render(ident, StreamPlan.ForIdent(new ChannelDefinition { Name = "Cartoon Classics", Number = "12", PictureShape = "4:3", IdentChime = false }, null), "ident-number");
+            var identAudio = await Run(ffprobe, ["-v","error","-show_entries","stream=codec_name,sample_rate,channels","-of","csv=p=0",Path.Combine(root, "ident-logo.ts")]);
+            check(identLogo >= 145 && identNumber >= 145 && identAudio.Contains("aac,48000,2"), "With real FFmpeg, a five-second ident renders with its logo or number, with a stereo chime");
+            using var identStream = new MemoryStream();
+            var now = DateTimeOffset.UtcNow;
+            var identHow = await streamer.Stream(new Airing("t", Guid.Empty, "Station ident", Planner.IdentPath("t"), now, now.AddSeconds(3), true), new ChannelDefinition { Name = "Retro TV", Number = "7" }, null, b => { identStream.Write(b); return Task.CompletedTask; }, default);
+            check(identHow.StartsWith("Station ident") && identStream.Length > 10000, "A scheduled ident streams live without any file behind it");
+            // A quiet commercial is measured, then played at the target level from its first second.
+            var quiet = Path.Combine(root, "quiet ad.mp4");
+            await Run(ffmpeg, ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","testsrc2=size=320x180:rate=25","-f","lavfi","-i","sine=frequency=1000:sample_rate=48000,volume=-14dB","-t","6","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-c:a","aac","-ac","2",quiet]);
+            var quietMedia = new Media(Guid.NewGuid(), "Quiet ad", quiet, 6, "", 0, 0);
+            var level = await LoudnessScanner.Measure(encoder, quietMedia, default);
+            var store = new LoudnessStore(Proxy<MediaBrowser.Common.Configuration.IApplicationPaths>.Make((name, _) => name.StartsWith("get_") ? root : null));
+            store.Put(quietMedia.Id, new MeasuredLoudness(quiet, 0, 0, level!.Value.Integrated, level.Value.Peak, "measured", DateTimeOffset.UtcNow));
+            var levelling = new ProgramStreamer(encoder, null, store);
+            using var levelled = new MemoryStream();
+            now = DateTimeOffset.UtcNow;
+            var levelHow = await levelling.Stream(new Airing("t", quietMedia.Id, "Quiet ad", quiet, now, now.AddSeconds(6), true), new ChannelDefinition(), null, b => { levelled.Write(b); return Task.CompletedTask; }, default);
+            var levelledPath = Path.Combine(root, "levelled-measured.ts"); await File.WriteAllBytesAsync(levelledPath, levelled.ToArray());
+            var after = await LoudnessScanner.Measure(encoder, new Media(Guid.NewGuid(), "after", levelledPath, 6, "", 0, 0), default);
+            check(level.Value.Integrated < -30 && levelHow.Contains("measured") && after is { } a && Math.Abs(a.Integrated - LoudnessStore.Target) < 2 && a.Peak <= -0.5,
+                $"With real FFmpeg, a quiet commercial ({level.Value.Integrated:0.#} LUFS) is measured and played at about -24 LUFS ({after?.Integrated:0.#}) without clipping");
+        }
         // Without a lead, so the clip still plays in real time when it is canceled.
         ProgramStreamer.Lead = TimeSpan.Zero;
         var pid = 0;

@@ -31,6 +31,9 @@ public sealed class Services : IPluginServiceRegistrator
         services.AddSingleton<MediaBrowser.Controller.Channels.IChannel, LibraryChannel>();
         services.AddSingleton<CreditsStore>();
         services.AddSingleton<CreditsScanner>();
+        services.AddSingleton<LoudnessStore>();
+        services.AddSingleton<LoudnessScanner>();
+        services.AddHostedService(x => x.GetRequiredService<LoudnessScanner>());
         services.AddHostedService<RefreshService>();
         services.AddHostedService(x => x.GetRequiredService<CreditsScanner>());
         services.AddHostedService<PluginPagesIntegration>();

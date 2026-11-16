@@ -148,6 +148,8 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
             if (channel.EncodeWith is not ("" or "cpu")) throw new ArgumentException("Encode with must be blank (the server setting) or cpu.");
             if (channel.NormalizeVolume is not ("off" or "commercials" or "all")) throw new ArgumentException("Even out volume must be off, commercials or all.");
             if (!StreamPlan.UpNextStyles.Contains(channel.UpNextStyle ?? "")) throw new ArgumentException("Up next is a card, poster, logo or text.");
+            if (channel.BugMinutes is < 5 or > 240 || channel.CardLook is not ("frosted" or "solid")) throw new ArgumentException("The bug shows every 5–240 minutes, and cards are frosted or solid.");
+            if (channel.IdentSeconds is not 0 and (< 3 or > 10)) throw new ArgumentException("Station idents last 3–10 seconds, or 0 for none.");
             if (!StreamPlan.Qualities.Contains(channel.EncodeQuality ?? "") || !StreamPlan.Heights.Contains(channel.EncodeHeight)) throw new ArgumentException("Encoding quality must be fast, balanced, high or best, and the encoded height 480, 576, 720 or 1080.");
             if (channel.PadMinutes is not (0 or 5 or 10 or 15 or 20 or 30 or 60)) throw new ArgumentException("Padding must be off or 5, 10, 15, 20, 30 or 60 minutes.");
             foreach (var image in new[] { channel.Watermark, channel.Logo, channel.OfflineCard })
@@ -410,7 +412,7 @@ public sealed partial class Scheduler(Catalog catalog, IApplicationPaths paths, 
     {
         PlanningRules, DetectedCredits = config.DetectCredits && c.CreditsSpeed > 1 ? detectedCredits : -1,
         c.Source, c.Blocks, c.Commercials, c.CommercialCount, c.EpisodeBreaks, c.MovieBreaks, c.Bumpers,
-        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
+        c.MatchCommercialEra, c.MatchCommercialNetwork, c.CommercialNetwork, c.CreditsSpeed, c.IdentSeconds, c.PadMinutes, c.BreakMode, c.BreakIntervalMinutes, c.MaxBreaksPerProgram, c.MinBreakProgramMinutes, c.BreakFreeEndMinutes, c.CommercialCountMax, config.Restrictions, config.TimeZoneId, config.ClipRules, config.ClipOverrides
     })));
     public string[] WarningsFor(string id) => Volatile.Read(ref published).Warnings.GetValueOrDefault(id) ?? [];
     private sealed record PublishedSchedule(ChannelDefinition[] Channels, Airing[] Guide, Dictionary<string, Airing[]> ByChannel, Dictionary<string, string[]> Warnings);
